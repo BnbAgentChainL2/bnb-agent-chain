@@ -1,0 +1,28 @@
+== 区块与 gas ==
+block number                               123358047
+block time (1000 blocks avg, s)            0.45
+gas price                                  50000000
+
+== Flap AI Oracle 0xaEe3a7Ca6fe6b53f6c32a3e8407eC5A9dF8B7E39 ==
+callbackGasLimit()                         8000000 [8e6]
+getFee()                                   Error: server returned an error response: error code 3: execution reverted: 0x, data: "0x"
+fee()                                      Error: server returned an error response: error code 3: execution reverted: 0x, data: "0x"
+getConsumerRateLimit(self)                 0
+paused()                                   Error: server returned an error response: error code 3: execution reverted: 0x, data: "0x"
+
+== Trigger Service 0xcf4EE25035CF883895110f367F5BA8172416a7F9 ==
+getFee()                                   200000000000000 [2e14]
+getMaxCallbackGas()                        2000000 [2e6]
+
+== Portal / VaultPortal ==
+Portal.version()                           "v5.24.0"
+VaultPortal.version()                      "1.15.0"
+VaultPortal.guardian()                     Error: server returned an error response: error code 3: execution reverted: 0x, data: "0x"
+Guardian code size                         2882
+
+== eth_getLogs 上限（公共 RPC）==
+span 500                                   REJECTED: Error: Max retries exceeded server returned an error response: error code -32005
+span 1000                                  REJECTED: Error: Max retries exceeded server returned an error response: error code -32005
+span 2000                                  REJECTED: Error: Max retries exceeded server returned an error response: error code -32005
+span 5000                                  REJECTED: Error: Max retries exceeded server returned an error response: error code -32005
+span 10000                                 REJECTED: Error: Max retries exceeded server returned an error response: error code -32005

@@ -1,0 +1,36 @@
+{
+  "name": "@bac/agent-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BNB Agent Chain agent SDK / BNB Agent Chain 的 agent SDK",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "pretest": "npm run build",
+    "test": "node --test \"test/*.test.js\"",
+    "bench": "node --test \"test/solvePool.test.js\""
+  },
+  "dependencies": {
+    "ethers": "6.13.4"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3",
+    "@types/node": "22.7.5"
+  }
+}

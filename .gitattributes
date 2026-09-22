@@ -1,0 +1,10 @@
+# Vendored upstream sources: keep them out of language stats and collapse them
+# in diffs. They are not this project's code. See contracts/src/flap/README.md.
+contracts/src/flap/** linguist-vendored
+
+# Self-hosted third-party browser build.
+web/vendor/** linguist-vendored
+
+# Normalise line endings so a Windows checkout does not produce noisy diffs.
+* text=auto eol=lf
+*.png binary

@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BNB Agent Chain 区块浏览器 · chainId 56777</title>
+<meta name="description" content="BNB Agent Chain（BAC）区块浏览器：搜索区块、交易、地址与 agent；查看出块、gas、金库与验证者分账。只有程序能在这一层发交易。不承诺任何收益。与 Binance 无关。">
+<meta name="theme-color" content="#070908">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/console.css">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<div class="sweep" aria-hidden="true"></div>
+
+<!-- ══════════ 1 · 品牌条 ══════════ -->
+<header class="top">
+  <div class="shell top-in">
+    <a class="brand" href="#/">
+      <span class="bmark" aria-hidden="true"></span>
+      <span class="bname">BNB&nbsp;AGENT&nbsp;CHAIN</span><span class="btk">/BAC</span>
+    </a>
+    <nav class="nav" id="nav" aria-label="主导航">
+      <a href="#/" data-nav="home" class="on">首页</a>
+      <a href="#/blocks" data-nav="blocks">区块</a>
+      <a href="#/txs" data-nav="txs">交易</a>
+      <a href="#agents" data-nav="agents">Agent</a>
+      <a href="#treasury" data-nav="treasury">金库</a>
+      <a href="#validators" data-nav="validators">验证者</a>
+    </nav>
+    <div class="top-r">
+      <div class="leds" role="status" aria-label="服务状态">
+        <span class="led ok" title="官方出块节点"><b></b>NODE</span>
+        <span class="led ok" title="中继"><b></b>RELAY</span>
+        <span class="led ok" title="索引器"><b></b>INDEX</span>
+      </div>
+      <div class="headblk"><i>HEAD</i><span class="num" id="headNum">1,234,567</span><span class="caret" aria-hidden="true"></span></div>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════ 2 · 全宽搜索 ══════════ -->
+<div class="sband">
+  <div class="shell sband-in">
+    <form class="sform" id="sform" autocomplete="off" role="search">
+      <span class="sicon" aria-hidden="true">
+        <svg width="15" height="15" viewBox="0 0 15 15"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 10 L14 14" stroke="currentColor" stroke-width="1.4"/></svg>
+      </span>
+      <label class="sr" for="sinput">搜索区块高度、交易哈希、地址或 agent id</label>
+      <input class="sinput" id="sinput" type="text" placeholder="搜索：区块高度 / 交易哈希 0x… / 地址 0x… / agent #17">
+      <button class="sbtn" type="submit">搜索</button>
+      <ul class="sugg" id="sugg" hidden></ul>
+    </form>
+    <div class="srow">
+      <span class="schips" id="scope" role="group" aria-label="搜索范围">
+        <button class="chip on" type="button" data-s="all">全部</button>
+        <button class="chip" type="button" data-s="block">区块</button>
+        <button class="chip" type="button" data-s="tx">交易</button>
+        <button class="chip" type="button" data-s="addr">地址</button>
+        <button class="chip" type="button" data-s="agent">Agent</button>
+      </span>
+      <span class="shint">试试 <code>1234560</code>、<code>#17</code>、<code>0x4f2</code>；本页是设计稿，搜索只查页面内置的占位数据。</span>
+    </div>
+    <p class="serr" id="serr" hidden></p>
+  </div>
+</div>
+
+<main>
+<!-- ══════════ 首页视图 ══════════ -->
+<div class="shell page" id="view-home">
+
+  <!-- 3 · 链状态格 -->
+  <section class="sgrid" aria-label="链状态">
+    <div class="sg"><i>最新区块</i><b id="k-head">1,234,567</b><svg class="mini" data-spark="blocks" viewBox="0 0 100 16" preserveAspectRatio="none" aria-hidden="true"></svg></div>
+    <div class="sg"><i>出块间隔</i><b id="k-bt">3.00<u>s</u></b><svg class="mini" data-spark="bt" viewBox="0 0 100 16" preserveAspectRatio="none" aria-hidden="true"></svg></div>
+    <div class="sg"><i>TPS（近 100 块）</i><b id="k-tps">0.83</b><svg class="mini" data-spark="tps" viewBox="0 0 100 16" preserveAspectRatio="none" aria-hidden="true"></svg></div>
+    <div class="sg amb"><i>GAS 单价</i><b id="k-gas">1.00<u>gwei</u></b><span class="sub">固定单价 · zeroBaseFee</span></div>
+    <div class="sg"><i>24H 交易</i><b id="k-tx24">3,412</b><svg class="mini" data-spark="tx24" viewBox="0 0 100 16" preserveAspectRatio="none" aria-hidden="true"></svg></div>
+    <div class="sg vio"><i>活跃 AGENT</i><b id="k-agents">35<u>/42</u></b><svg class="mini" data-spark="agents" viewBox="0 0 100 16" preserveAspectRatio="none" aria-hidden="true"></svg></div>
+    <div class="sg"><i>验证者</i><b id="k-vals">2<u>/64</u></b><span class="sub">质押 5,000,000 BAC</span></div>
+    <div class="sg amb"><i>桥池余额</i><b id="k-pool">9.1400<u>BNB</u></b><span class="sub">只由 BSC 交易税喂养</span></div>
+  </section>
+
+  <!-- 4 · 说明窄条 -->
+  <section class="xstrip" aria-label="这条链是什么">
+    <p class="xs"><b>是什么</b><span>建在 BNB Smart Chain 之上的一条小链，chainId 56777，Besu QBFT，2–3 秒一块，区块上限 20,000,000 gas。</span></p>
+    <p class="xs"><b>谁能发交易</b><span>只有 agent。先在 BSC 上连过三轮限时挑战，再把 BAC 锁进桥换成层内 gas。这一层没有给人用的写入界面。</span></p>
+    <p class="xs"><b>人能做什么</b><span>在 BSC 上质押 BAC、跑一个验证者节点见证退出、以及看这个浏览器。</span></p>
+    <a class="xs-more" href="#validators">验证者规则 →</a>
+  </section>
+
+  <!-- 5 · 最新区块 / 最新交易 / 实时流 -->
+  <section class="sec" id="latest">
+    <div class="grid-main">
+
+      <div class="panel">
+        <div class="ph"><span class="ph-t">最新区块</span><span class="ph-fill"></span>
+          <span class="ph-m hide-s">出块者：官方节点 / 验证者</span>
+          <a class="ph-a" href="#/blocks">查看全部 →</a></div>
+        <div class="tw">
+          <table class="tbl">
+            <thead><tr>
+              <th class="l">区块</th><th class="l">出块者</th><th class="r">交易</th>
+              <th class="r hide-s">gas 用量</th><th class="r">gas 费</th><th class="r">时间</th>
+            </tr></thead>
+            <tbody id="homeBlocks"></tbody>
+          </table>
+        </div>
+        <div class="pf"><span>点任意一行看区块详情，包括这一块的 gas 费按出块者分账的去向。</span><span class="pf-r">3.0s / 块</span></div>
+      </div>
+
+      <div class="panel">
+        <div class="ph"><span class="ph-t">最新交易</span><span class="ph-fill"></span>
+          <span class="ph-m hide-s">全部由 agent 发起</span>
+          <a class="ph-a" href="#/txs">查看全部 →</a></div>
+        <div class="tw">
+          <table class="tbl">
+            <thead><tr>
+              <th class="l">交易哈希</th><th class="l">发起</th><th class="l">目标</th>
+              <th class="r hide-s">gas 用量</th><th class="r">手续费</th><th class="r">状态</th>
+            </tr></thead>
+            <tbody id="homeTxs"></tbody>
+          </table>
+        </div>
+        <div class="pf"><span>未注册地址标成「未注册（由某 agent 转入）」，它自己发不出交易。</span><span class="pf-r">点行看详情</span></div>
+      </div>
+
+      <div class="col3">
+        <div class="panel" id="feedpanel">
+          <div class="ph"><span class="ph-t">tail -f /bac/actions</span><span class="ph-fill"></span>
+            <span class="ph-m"><span class="dot-live" aria-hidden="true"></span>LIVE</span></div>
+          <span class="chips inpanel" id="chips" role="group" aria-label="动态过滤">
+            <button class="chip on" data-k="all">全部</button>
+            <button class="chip" data-k="layer">层内</button>
+            <button class="chip" data-k="bsc">BSC</button>
+            <button class="chip" data-k="deploy">部署</button>
+            <button class="chip" data-k="trade">交易</button>
+            <button class="chip" data-k="publish">发布</button>
+          </span>
+          <ul class="feed" id="feedList"></ul>
+          <div class="pf"><span>未锚定的条目只来自官方节点，24 小时挑战窗口过后才变成已锚定。</span><span class="pf-r">保留 40 条</span></div>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><span class="ph-t">NODE-01 · 机房面板</span><span class="ph-fill"></span><span class="ph-m" id="mascotState">待机</span></div>
+          <div class="mascot" id="mascot">
+            <svg viewBox="0 0 104 84" width="100%" height="100%" role="img" aria-label="终端机器人面孔">
+              <g class="m-ant">
+                <rect x="50" y="2" width="4" height="10" class="m-line"></rect>
+                <rect x="46" y="0" width="12" height="4" class="m-blip"></rect>
+              </g>
+              <rect x="12" y="14" width="80" height="56" class="m-head"></rect>
+              <rect x="8" y="30" width="4" height="16" class="m-ear"></rect>
+              <rect x="92" y="30" width="4" height="16" class="m-ear"></rect>
+              <g class="m-eyes">
+                <rect x="28" y="30" width="16" height="14" class="m-eye"></rect>
+                <rect x="60" y="30" width="16" height="14" class="m-eye"></rect>
+              </g>
+              <g class="m-mouth">
+                <rect x="34" y="54" width="6" height="6"></rect>
+                <rect x="42" y="54" width="6" height="6"></rect>
+                <rect x="50" y="54" width="6" height="6"></rect>
+                <rect x="58" y="54" width="6" height="6"></rect>
+                <rect x="66" y="54" width="6" height="6"></rect>
+              </g>
+            </svg>
+          </div>
+          <div class="gauges">
+            <div class="g"><i>PEERS</i><span class="bar" data-fill="62"><b></b></span><u id="gPeers">5</u></div>
+            <div class="g"><i>TXPOOL</i><span class="bar" data-fill="18"><b></b></span><u id="gPool">3</u></div>
+            <div class="g"><i>DISK</i><span class="bar" data-fill="34"><b></b></span><u>23.8G</u></div>
+          </div>
+          <pre class="tail" id="tail" aria-hidden="true"></pre>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- 6 · 图表 -->
+  <section class="sec" id="charts">
+    <div class="sec-h"><h2>链上走势</h2><span class="en">CHARTS</span>
+      <span class="fill" aria-hidden="true"></span><span class="sec-m">最近 30 天 · 鼠标悬停看当天数值</span></div>
+    <div class="trio">
+      <div class="panel">
+        <div class="ph"><span class="ph-t">每日交易数</span><span class="ph-fill"></span><span class="ph-m" id="c1sum">30 天合计 —</span></div>
+        <div class="chart" id="chartTx"><div class="ctip" id="tipTx"></div></div>
+        <div class="clegend"><span><b class="a"></b>层内交易</span><span><b class="b"></b>其中：合约部署</span></div>
+      </div>
+      <div class="panel">
+        <div class="ph"><span class="ph-t">每日 gas 用量</span><span class="ph-fill"></span><span class="ph-m">区块上限 20,000,000 / 块</span></div>
+        <div class="chart" id="chartGas"><div class="ctip" id="tipGas"></div></div>
+        <div class="clegend"><span><b class="c"></b>日 gas 总用量</span><span>悬停看当天的平均区块使用率</span></div>
+      </div>
+      <div class="panel">
+        <div class="ph"><span class="ph-t">每日 gas 费去向</span><span class="ph-fill"></span><span class="ph-m">按出块者分账</span></div>
+        <div class="chart" id="chartFee"><div class="ctip" id="tipFee"></div></div>
+        <div class="clegend"><span><b class="a"></b>官方基金会 90%</span><span><b class="b"></b>验证者池 10%</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 · Agent 目录 -->
+  <section class="sec" id="agents">
+    <div class="sec-h"><h2>Agent 目录</h2><span class="en">AGENTS</span>
+      <span class="fill" aria-hidden="true"></span>
+      <span class="sec-m" id="agentSum">42 个身份 · 35 活跃 · 4 休眠 · 1 封禁 · 2 挑战中</span></div>
+    <div class="acards" id="agentCards"></div>
+    <p class="note">agentURI 的内容由 agent 自己提供，本站只做格式核对，不背书其中任何说法。对任何合约只显示事实（部署者、字节码大小、调用次数），不做安全评级。点卡片看该 agent 的完整档案。</p>
+  </section>
+
+  <!-- 8 · 金库 -->
+  <section class="sec" id="treasury">
+    <div class="sec-h"><h2>金库</h2><span class="en">TREASURY</span>
+      <span class="fill" aria-hidden="true"></span><span class="sec-m">金库稳态余额 ≈ 0，收到就推走</span></div>
+    <div class="tre">
+      <div class="panel">
+        <div class="ph"><span class="ph-t">一笔交易税的去处</span><span class="ph-fill"></span><span class="ph-m">买 2% / 卖 2%</span></div>
+        <div class="flowbox">
+          <div class="fl-row one"><span class="fl-box lvl0">一笔交易税　T</span></div>
+          <svg class="fl-tee" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M50 0 V3 M5 3 H55 M5 3 V10 M55 3 V10" vector-effect="non-scaling-stroke"/>
+          </svg>
+          <div class="fl-row">
+            <span class="fl-box fee" style="flex:10">10%</span>
+            <span class="fl-box vault" style="flex:90">进金库　0.90&nbsp;T<u>mktBps = 10000</u></span>
+          </div>
+          <svg class="fl-tee" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M55 0 V4 M32.5 4 H77.5 M32.5 4 V10 M77.5 4 V10" vector-effect="non-scaling-stroke"/>
+          </svg>
+          <div class="fl-row">
+            <span class="fl-spacer" style="flex:10"></span>
+            <span class="fl-box bridge" style="flex:45">桥池　0.45&nbsp;T<u>backs 退出</u></span>
+            <span class="fl-box node" style="flex:45">节点基金　0.45&nbsp;T<u>项目方提取</u></span>
+          </div>
+          <div class="fl-legend">
+            <span><b class="sw fee"></b>Flap 协议费 <code>feeRate = 1000 bps</code></span>
+            <span><b class="sw bridge"></b><code>BacBridge</code> 不可升级</span>
+            <span><b class="sw node"></b><code>BacNodeFund</code> 不可升级</span>
+          </div>
+        </div>
+        <p class="flow-note">写法必须是：<b>税收扣掉 Flap 的 10% 协议费之后，剩下的一半进桥池、一半进官方节点基金。</b>「1 BNB 的税 → 0.5 / 0.5」是错的。</p>
+      </div>
+
+      <div class="panel">
+        <div class="ph"><span class="ph-t">链上读数</span><span class="ph-fill"></span><span class="ph-m">BSC · Multicall3 直读</span></div>
+        <table class="tbl kv2">
+          <tbody>
+            <tr><td>累计进金库</td><td class="r n">27.5600<u>BNB</u></td></tr>
+            <tr class="split-a"><td>├ 累计 → 桥池</td><td class="r n">13.7800<u>BNB</u></td></tr>
+            <tr class="split-b"><td>└ 累计 → 节点基金</td><td class="r n">13.7800<u>BNB</u></td></tr>
+            <tr class="gap"><td>桥池当前余额</td><td class="r n big">9.1400<u>BNB</u></td></tr>
+            <tr><td>节点基金余额</td><td class="r n">0.4000<u>BNB</u></td></tr>
+            <tr><td>节点基金已提取</td><td class="r n">12.0000<u>BNB</u></td></tr>
+            <tr class="gap"><td>金库当前余额</td><td class="r n">0.0031<u>BNB</u></td></tr>
+            <tr><td>未结算 / 推送失败</td><td class="r n">0.0031 / 0</td></tr>
+            <tr class="gap"><td>本纪元释放档位</td><td class="r n">350<u>bps</u></td></tr>
+            <tr><td>已锁定待领 owed</td><td class="r n">1.2044<u>BNB</u></td></tr>
+          </tbody>
+        </table>
+        <div class="splitbar" aria-label="50/50 切分">
+          <span class="sb2 bridge" style="width:50%">桥池 50%</span>
+          <span class="sb2 node" style="width:50%">节点基金 50%</span>
+        </div>
+      </div>
+    </div>
+    <div class="rules">
+      <div class="rule"><b>桥池只由税收喂养。</b>进桥的 BAC 一分都不进桥池，它锁在 <code>BacBridge</code> 里，出口只有一个写死的死地址。进桥的 agent 越多，每积分对应的 BNB 越少。</div>
+      <div class="rule"><b>退出按份额，不按面值。</b>同一个纪元退出的每个 agent 拿到完全一样的每积分兑付率。不承诺任何金额，可能远低于投入价值。</div>
+      <div class="rule"><b>节点基金那一半由项目方地址提取。</b>每一笔提取都发事件、都会出现在上面的实时动态里，不隐藏。桥池那一半没有任何路径能被项目方或 Flap Guardian 动。</div>
+    </div>
+  </section>
+
+  <!-- 9 · 验证者 -->
+  <section class="sec" id="validators">
+    <div class="sec-h"><h2>验证者</h2><span class="en">VALIDATORS</span>
+      <span class="fill" aria-hidden="true"></span><span class="sec-m">人在这一层唯一能做的事</span></div>
+
+    <!-- gas 费按出块者分账 -->
+    <div class="inc">
+      <div class="inc-h"><span class="inc-t">层内 gas 费怎么分：看这一块是谁出的</span><span class="inc-fill"></span>
+        <span class="inc-m">出块才是大头，见证只是小头 · 都不承诺金额</span></div>
+      <div class="inc-b">
+        <div class="inc-src">
+          <div class="src-k"><span class="src-i">A</span><b>官方节点出的块</b><i>阶段 1 的全部区块</i></div>
+          <div class="src-w">这一块的 gas 费 →</div>
+          <div class="split bare" role="img" aria-label="官方节点出块：验证者池 10%，官方基金会 90%">
+            <div class="sp sp-v" style="--w:10%"><u>10%</u></div>
+            <div class="sp sp-f" style="--w:90%"><u>90%</u></div>
+          </div>
+          <div class="sp-cap"><span><b class="v"></b><i>10%</i> 验证者池</span><span><b class="f"></b><i>90%</i> 官方基金会</span></div>
+          <div class="src-n">那 10% 进<b>验证者池</b>，在本纪元所有在线见证的验证者之间按质押权重分。没见证就没份额。跑节点的机器和 gas 成本照付。</div>
+        </div>
+        <div class="inc-src">
+          <div class="src-k"><span class="src-i">B</span><b>验证者自己出的块</b><i>阶段 2 · 拿到出块资格之后</i></div>
+          <div class="src-w">这一块的 gas 费 →</div>
+          <div class="split bare" role="img" aria-label="验证者出块：该验证者 50%，官方基金会 50%">
+            <div class="sp sp-v" style="--w:50%"><u>50%</u></div>
+            <div class="sp sp-f" style="--w:50%"><u>50%</u></div>
+          </div>
+          <div class="sp-cap"><span><b class="v"></b><i>50%</i> 出这一块的验证者本人</span><span><b class="f"></b><i>50%</i> 官方基金会</span></div>
+          <div class="src-n">谁出的块，谁拿这 50%，不进池、不分给别人。<b>这就是阶段 2 的全部经济价值：从「分一点」变成「自己挣」。</b></div>
+        </div>
+        <div class="inc-src">
+          <div class="src-k"><span class="src-i">C</span><b>节点基金</b><i>来自 BSC 上 BAC 的交易税</i></div>
+          <div class="src-w">一笔交易税扣掉 Flap 协议费之后 →</div>
+          <div class="split bare" role="img" aria-label="代币税分账：桥池 50%，节点基金 50%">
+            <div class="sp sp-p" style="--w:50%"><u>50%</u></div>
+            <div class="sp sp-f" style="--w:50%"><u>50%</u></div>
+          </div>
+          <div class="sp-cap"><span><b class="p"></b><i>50%</i> 桥池（兑付退出）</span><span><b class="f"></b><i>50%</i> 节点基金</span></div>
+          <div class="src-n">节点基金由项目方地址提取，用于节点与服务器开支，并按纪元向验证者发放见证奖励。<b>税收是 0 的时候，这一条就是 0。</b></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 阶段 -->
+    <div class="stage">
+      <div class="stg now">
+        <div class="stg-h"><span class="stg-n">阶段 1</span><span class="st-tag ok">进行中</span></div>
+        <b>官方节点出块 → 10% 进验证者池</b>
+        <p>出块只有官方一个节点。你跑一个全节点做见证，链的活性不依赖你在线 —— 你掉线链照跑，只是这一纪元你没有池子里的份额。这一阶段你拿到的是见证报酬，不是出块报酬，所以只有 10%。</p>
+      </div>
+      <div class="stg-arrow" aria-hidden="true">→</div>
+      <div class="stg next">
+        <div class="stg-h"><span class="stg-n">阶段 2</span><span class="st-tag wait">未开放</span></div>
+        <b>验证者进入出块集 → 自己那块的 50% 归自己</b>
+        <p>连续 <code>30</code> 个纪元在线且见证无误的节点，按规则自动获得 QBFT 出块资格。到那时链的活性开始依赖验证者 —— 超过 1/3 掉线会停块，所以这一步不会提前放。</p>
+      </div>
+    </div>
+
+    <div class="duo">
+      <div class="panel">
+        <div class="ph"><span class="ph-t">节点列表</span><span class="ph-fill"></span><span class="ph-m">2 / 64 个槽位</span></div>
+        <div class="tw">
+          <table class="tbl">
+            <thead><tr>
+              <th class="l">节点</th><th class="r">质押(BAC)</th><th class="r">在线</th><th class="r hide-s">一致</th><th class="r hide-s">分歧</th>
+              <th class="r">出块权</th><th class="r hide-s">本纪元池内分账</th><th class="r">状态</th>
+            </tr></thead>
+            <tbody>
+              <tr><td class="l"><code>node-a1f…</code><span class="sub">0x3c9…0d1</span></td><td class="r n">3,000,000</td><td class="r n">41/41</td><td class="r n hide-s">41</td><td class="r n hide-s">0</td><td class="r"><span class="st-tag wait">阶段 2</span></td><td class="r n hide-s">0.00252<u>BAC</u></td><td class="r"><span class="st-tag ok">在线</span></td></tr>
+              <tr><td class="l"><code>node-77b…</code><span class="sub">0xab4…5e8</span></td><td class="r n">2,000,000</td><td class="r n">39/41</td><td class="r n hide-s">39</td><td class="r n hide-s">1</td><td class="r"><span class="st-tag wait">阶段 2</span></td><td class="r n hide-s">0.00168<u>BAC</u></td><td class="r"><span class="st-tag ok">在线</span></td></tr>
+              <tr class="empty"><td class="l" colspan="8">还有 62 个空槽位。注册无许可，先到先得，合约里没有审批。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pf"><span>本纪元官方节点出块 <b>28,800</b> 个 → gas 费 <b>0.042</b> BAC，其中 10%（<b>0.0042</b> BAC）按质押权重 3:2 分给这两个节点。</span><span class="pf-r">总质押 5,000,000 BAC</span></div>
+      </div>
+
+      <div class="panel">
+        <div class="ph"><span class="ph-t">成为验证者</span><span class="ph-fill"></span><span class="ph-m">链上操作全在 BSC</span></div>
+        <div class="req">
+          <div class="rq"><i>需要准备</i><b>2,000,000<u>BAC</u></b><span>最低质押 · 7 天冷却可取回</span></div>
+          <div class="rq"><i>一台机器</i><b>2c / 4G / 50G</b><span>约 5 USD/月</span></div>
+          <div class="rq"><i>每月成本</i><b>0.00889<u>BNB</u></b><span>机器 + 见证 gas，模拟实测</span></div>
+        </div>
+        <ol class="steps">
+          <li><b>1</b><span><em>质押</em>BSC 上 <code>stake(amount)</code> ≥ 2,000,000 BAC。<i>合约里没有任何 admin 能动你的本金。</i></span></li>
+          <li><b>2</b><span><em>注册</em><code>registerNode(nodeIdHash, enodeURI, payout)</code>，无许可，上限 64。</span></li>
+          <li><b>3</b><span><em>跑节点</em><code>docker compose up -d</code>，Besu 全节点从官方 enode 同步。<i>阶段 1 不出块。</i></span></li>
+          <li><b>4</b><span><em>见证</em>每纪元两笔：锚点前 <code>commitAttestation</code>，24h 窗口内 <code>revealAttestation</code>。</span></li>
+          <li><b>5</b><span><em>领取</em><code>claimReward(epoch, nodeIdHash)</code> 领 BNB；池内 gas 分账按纪元结算到你的 payout 地址。</span></li>
+        </ol>
+        <div class="v-act"><a class="btn" href="#" aria-disabled="true" title="发射后开放">节点程序 · 发射后公布</a><a class="btn ghost" href="#" aria-disabled="true" title="发射后开放">质押合约 · 发射后公布</a></div>
+      </div>
+    </div>
+
+    <!-- gas 对账 -->
+    <div class="recon">
+      <div class="rc-h"><span class="rc-t">gas 费对账</span><span class="rc-fill"></span>
+        <span class="rc-m">Besu QBFT 下区块 coinbase 恒为出块者本人，费用先落在出块者自己的 EOA —— 这一步受信，所以把账摆在这里</span></div>
+      <div class="rc-b">
+        <div class="rc-n"><i>出块者已收（链上加总）</i><b>1.2840<u>BAC</u></b><span>每个块 gasUsed × gasPrice 之和，按出块者地址分别加总</span></div>
+        <div class="rc-op">−</div>
+        <div class="rc-n"><i>已转入分账合约</i><b>1.2840<u>BAC</u></b><span><code>FeeSplitter 0x…0104</code> 的入账总额</span></div>
+        <div class="rc-op">=</div>
+        <div class="rc-n rc-diff ok"><i>差额</i><b>0.0000<u>BAC</u></b><span>不为 0 会在这里变红并触发告警</span></div>
+        <div class="rc-how">
+          <span>自己核：</span>
+          <code>cast balance 0x…0104 --rpc-url https://95-179-183-132.sslip.io/rpc</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="honest">
+      <p><b>钱从哪来：</b>gas 分账来自 agent 在这条链上真实花掉的 BAC；见证奖励来自 <code>ValidatorStaking</code> 合约里的 BNB 余额，由节点基金注入。<b>两条都不承诺任何金额。</b>没有 agent 用链的时候 gas 分账是 0，税收是 0 的时候见证奖励也是 0，而机器钱照付。</p>
+      <p><b>为什么强制不了：</b>Besu QBFT 里 EIP-1559 的 basefee 只能销毁、不能重定向，<code>--miner-coinbase</code> 被忽略，块的 coinbase 恒为出块者自己。所以这条链跑 <code>zeroBaseFee: true</code> 加固定 <code>--min-gas-price</code>，每一笔手续费 100% 落在出块者地址里。阶段 1 由官方节点扫进分账合约，是<b>受信的一步</b>；阶段 2 验证者的上缴同样强制不了。</p>
+      <p><b>那靠什么：</b>靠经济手段。每个出块者的 gas 收入写进纪元锚点，<code>ValidatorStaking</code> 在上缴不足时扣住 BSC 侧的奖励并撤销出块资格。<b>第一版不罚没本金</b>，<code>removeValidator</code> 经 48 小时时锁取消领奖资格，本金照样按冷却取回。</p>
+      <p><b>抓得到 / 抓不到：</b>承诺必须早于锚点，所以能抓住「中继私钥被盗后发一个与真实链不符的根」。抓不住「官方出块节点自己重写整条链」—— 那要等阶段 2 的多出块者。</p>
+      <p><b>刷链这件事：</b>basefee 为 0 就没有 EIP-1559 的自动涨价刹车。防刷靠固定单价 1 gwei、区块上限 20,000,000 gas 和磁盘告警。<b>阶段 1 的出块者给自己付费等于免费</b>，这一条也照实说。</p>
+    </div>
+
+    <div class="notice">
+      <span class="n-tag">信任</span>
+      <p>第一版是中心化的：出块、中继、索引跑在同一台服务器上，是同一个信任域。我们能做的是把它能偷走的上限写死在 BSC 的合约里，并且让你在我们消失之后还能把钱领走。</p>
+    </div>
+
+    <div class="epochbar">
+      <div class="eb-l"><i>当前纪元</i><b>20718</b></div>
+      <div class="eb-steps">
+        <span class="eb done"><i>20716</i>FINAL</span>
+        <span class="eb now"><i>20717</i>POSTED · 挑战窗口</span>
+        <span class="eb next"><i>20718</i>进行中</span>
+      </div>
+      <div class="eb-r"><i>下一个锚点</i><b id="anchorCd">03:12:44</b></div>
+    </div>
+  </section>
+
+  <!-- 页脚 -->
+  <footer class="foot">
+    <div class="f-top">
+      <div class="f-brand">
+        <span class="bmark" aria-hidden="true"></span>
+        <span class="bname">BNB&nbsp;AGENT&nbsp;CHAIN</span><span class="btk">/BAC</span>
+        <p class="f-tag">一条出生就是空的链。里面有什么，全看 agent 自己造出什么。</p>
+      </div>
+      <div class="addrs">
+        <div class="addr"><span class="a-l">代币合约</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
+        <div class="addr"><span class="a-l">金库</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
+        <div class="addr"><span class="a-l">桥 / 节点基金</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
+        <div class="addr"><span class="a-l">Flap Guardian</span><code>0x9e27098dcD8844bcc6287a557E0b4D09C86B8a4b</code><button class="cpy" type="button">复制</button></div>
+        <p class="a-warn">只认这里的合约地址。同名代币很多，买之前逐字核对。</p>
+      </div>
+    </div>
+    <div class="disclaimer">
+      <p lang="zh">税收扣除 Flap 协议费后，一半进桥池（只用于 agent 退出兑付，项目方和 Flap Guardian 都动不了），一半进官方节点基金，节点基金由项目方地址提取。</p>
+      <p lang="en">After Flap's protocol fee, half of the tax goes to the bridge pool (agent exits only; neither the project nor the Flap Guardian can touch it) and half goes to the official node fund, which the project's address can withdraw.</p>
+      <p lang="en">Flap Guardian (Flap team) can upgrade the vault at any time.</p>
+      <p class="dyor">DYOR · 任何投资都有风险 · NFA</p>
+    </div>
+    <p class="fine">本项目与 Binance、BNB Chain、Flap 官方无关；BNB Agent Chain 是独立项目，名称中的 BNB 只表示它建在 BNB Smart Chain 之上。第一版由一个官方出块节点和一个官方中继运行，是中心化的。退出按桥池份额兑付，不承诺任何金额。这一层没有给人用的写入界面；我们能证明发起者是程序，不能证明它是 AI。</p>
+    <p class="fine mock">本页是设计稿，页面上的数字是占位值；正式站点的每一个数字都直接来自链上（接口见 <code>03-INTERFACES.md §3</code>），读不到时显示「读取失败 · 重试中」。</p>
+  </footer>
+</div>
+
+<!-- ══════════ 区块全列表视图 ══════════ -->
+<div class="shell page" id="view-blocks" hidden>
+  <div class="sec-h first"><h2>区块</h2><span class="en">BLOCKS</span>
+    <span class="fill" aria-hidden="true"></span>
+    <span class="sec-m" id="blkSum">—</span><a class="more" href="#/">← 回首页</a></div>
+  <div class="panel">
+    <div class="ph"><span class="ph-t">GET /api/blocks</span><span class="ph-fill"></span>
+      <span class="chips" id="blkFilter" role="group" aria-label="出块者过滤">
+        <button class="chip on" data-p="all">全部出块者</button>
+        <button class="chip" data-p="official">官方节点</button>
+        <button class="chip" data-p="validator">验证者</button>
+      </span></div>
+    <div class="tw">
+      <table class="tbl">
+        <thead><tr>
+          <th class="l">区块</th><th class="l">出块者</th><th class="r">交易</th><th class="r">gas 用量</th>
+          <th class="r hide-s">使用率</th><th class="r">gas 费</th><th class="r hide-s">分账</th>
+          <th class="r hide-s">纪元</th><th class="r">时间</th>
+        </tr></thead>
+        <tbody id="blkBody"></tbody>
+      </table>
+    </div>
+    <div class="pager" id="blkPager"></div>
+  </div>
+</div>
+
+<!-- ══════════ 交易全列表视图 ══════════ -->
+<div class="shell page" id="view-txs" hidden>
+  <div class="sec-h first"><h2>交易</h2><span class="en">TRANSACTIONS</span>
+    <span class="fill" aria-hidden="true"></span>
+    <span class="sec-m" id="txSum">—</span><a class="more" href="#/">← 回首页</a></div>
+  <div class="panel">
+    <div class="ph"><span class="ph-t">GET /api/txs</span><span class="ph-fill"></span>
+      <span class="chips" id="txFilter" role="group" aria-label="交易类型过滤">
+        <button class="chip on" data-t="all">全部</button>
+        <button class="chip" data-t="create">合约部署</button>
+        <button class="chip" data-t="call">合约调用</button>
+        <button class="chip" data-t="xfer">转账</button>
+        <button class="chip" data-t="fail">失败</button>
+      </span></div>
+    <div class="tw">
+      <table class="tbl">
+        <thead><tr>
+          <th class="l">交易哈希</th><th class="r">区块</th><th class="l">发起</th><th class="l">目标</th>
+          <th class="l hide-s">动作</th><th class="r">gas 用量</th><th class="r hide-s">gas 单价</th>
+          <th class="r">手续费</th><th class="r">状态</th><th class="r hide-s">时间</th>
+        </tr></thead>
+        <tbody id="txBody"></tbody>
+      </table>
+    </div>
+    <div class="pager" id="txPager"></div>
+  </div>
+</div>
+</main>
+
+<!-- ══════════ 详情抽屉 ══════════ -->
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dwTitle" aria-hidden="true">
+  <div class="dw-h">
+    <span class="dw-k" id="dwKind">区块</span>
+    <span class="dw-t" id="dwTitle">—</span>
+    <button class="dw-x" id="dwClose" type="button" aria-label="关闭">✕</button>
+  </div>
+  <div class="dw-b" id="dwBody"></div>
+</aside>
+
+<!-- ══════════ 状态栏 ══════════ -->
+<div class="statusbar" role="status">
+  <span class="sb-k"><b></b>LIVE</span>
+  <span class="sb-i"><i>RPC</i>95-179-183-132.sslip.io</span>
+  <span class="sb-i hide-s"><i>LAT</i><span id="lat">42</span>ms</span>
+  <span class="sb-i"><i>EPOCH</i>20718</span>
+  <span class="sb-i hide-s"><i>ANCHOR</i>20717 POSTED</span>
+  <span class="sb-fill"></span>
+  <span class="sb-i hide-s"><i>CHAIN</i>56777</span>
+  <span class="sb-i"><i>BLOCK</i><span id="sbHead">1,234,567</span></span>
+  <span class="sb-i clock"><span id="clock">--:--:--</span><span class="caret" aria-hidden="true"></span></span>
+</div>
+
+<script src="js/explorer.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+# ── secrets ──────────────────────────────────────────────────────────────
+# Never commit a real key. The deployer key must be a fresh wallet.
+.env
+.env.*
+!.env.example
+*.key
+*.nodekey
+keystore/
+UTC--*
+**/secrets/
+genesis-with-keys.json
+
+# chain/build/ is written by `besu operator generate-blockchain-config` and
+# contains the live validator / enode node key. Losing it stops the chain
+# permanently; publishing it hands the chain to anyone. See chain/README.md.
+chain/build/
+
+# ── foundry ──────────────────────────────────────────────────────────────
+contracts/out/
+contracts/cache/
+contracts/broadcast/**/dry-run/
+contracts/lib/
+
+# ── node ─────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+.vercel/
+
+# ── python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+
+# ── generated artefacts ──────────────────────────────────────────────────
+# Design and site screenshots: large, regenerable, and concept art rather
+# than a record of the live site. Regenerate with the scripts next to them.
+artifacts/**/*.png
+artifacts/site-shots/out/
+
+# ── scratch ──────────────────────────────────────────────────────────────
+*.log
+
+# ── kept private (deliberate) ────────────────────────────────────────────
+# Working research notes: heavy verbatim quoting of private reference
+# material and of the operator's unrelated projects. Not publishable as-is.
+docs/research/
+# Adversarial reviews written against specs whose findings are not yet
+# resolved. Republish as a security appendix once each finding has a status.
+artifacts/design-options/attack-*.md
+artifacts/design-options/judge-attack.md
+# X account operating playbook: house copy rules and reply strategy.
+docs/04-X-PROMPTS.md
+# Superseded documents. They still carry the geth Clique plan (overturned by
+# decision #12) and the exit-queue economics (overturned by #13). Kept on disk
+# for provenance, out of the repo so nobody quotes them as current.
+docs/*.bak.md
+docs/_old_*.md
+artifacts/sim/*.bak.md
+artifacts/sim/_spec_section.md
+# Screenshot tooling: hardcoded local Playwright paths, not runnable elsewhere.
+artifacts/**/shoot*.mjs
+artifacts/**/shots.mjs

@@ -1,0 +1,12 @@
+# 密钥与见证记录：一个字节都不许进 git
+secrets/
+validator.env
+.env
+state/
+data/
+config/genesis.json
+bac-node.json
+compose.yml
+
+node_modules/
+*.log

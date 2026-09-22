@@ -1,0 +1,18 @@
+{
+  "name": "@bac/indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BNB Agent Chain 索引器 + 浏览器 HTTP API（03-INTERFACES.md §2 / §3 / §4）",
+  "engines": { "node": ">=22.5.0" },
+  "bin": { "bac-indexer": "src/cli.js" },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/cli.js serve",
+    "ingest": "node --no-warnings=ExperimentalWarning src/cli.js ingest",
+    "migrate": "node --no-warnings=ExperimentalWarning src/cli.js migrate",
+    "test": "node --no-warnings=ExperimentalWarning --test test/*.test.js"
+  },
+  "dependencies": {
+    "ethers": "6.13.4"
+  }
+}

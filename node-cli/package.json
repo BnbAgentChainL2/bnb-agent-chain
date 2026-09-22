@@ -1,0 +1,33 @@
+{
+  "name": "@bac/node-cli",
+  "version": "0.1.0",
+  "description": "BNB Agent Chain 见证人节点程序：跑只读全节点、每纪元承诺-揭示、在 BSC 上领奖",
+  "type": "module",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "bac-node": "src/cli.mjs"
+  },
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./anchor-math": "./src/anchor-math.mjs",
+    "./exit-tree": "./src/exit-tree.mjs"
+  },
+  "files": [
+    "src",
+    "docker-compose.yml",
+    "README.md",
+    ".env.example"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "bac-node": "node src/cli.mjs"
+  },
+  "dependencies": {
+    "ethers": "6.13.4"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "genesis": {
+    "config": {
+      "chainId": 56777,
+      "homesteadBlock": 0,
+      "eip150Block": 0,
+      "eip155Block": 0,
+      "eip158Block": 0,
+      "byzantiumBlock": 0,
+      "constantinopleBlock": 0,
+      "petersburgBlock": 0,
+      "istanbulBlock": 0,
+      "muirGlacierBlock": 0,
+      "berlinBlock": 0,
+      "londonBlock": 0,
+      "shanghaiTime": 0,
+      "cancunTime": 0,
+      "contractSizeLimit": 24576,
+      "qbft": {
+        "blockperiodseconds": 3,
+        "epochlength": 30000,
+        "requesttimeoutseconds": 6
+      }
+    },
+    "nonce": "0x0",
+    "timestamp": "0x0",
+    "gasLimit": "0x1312d00",
+    "difficulty": "0x1",
+    "mixHash": "0x63746963616c2062797a616e74696e65206661756c7420746f6c6572616e6365",
+    "coinbase": "0x0000000000000000000000000000000000000000",
+    "baseFeePerGas": "0x3b9aca00",
+    "alloc": {}
+  },
+  "blockchain": {
+    "nodes": {
+      "generate": true,
+      "count": 1
+    }
+  }
+}

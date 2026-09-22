@@ -1,0 +1,65 @@
+# 参考版：bac-node init 会按你的 id -u / id -g / 官方 enode 生成一份填好的 compose.yml。
+# 这一份是给你先读一遍的，里面的 <128 hex> 需要换成 /api/health 里的官方 enode。
+# 由 `bac-node init` 生成。改完记得 `bac-node doctor` 再 `bac-node start`。
+# 见证人跑的是**只读全节点**，不出块、不投票、不影响共识（02 §0.5）。
+name: bac-validator
+services:
+  besu:
+    image: hyperledger/besu:24.12.2          # 实测过的 tag，不许用 latest
+    restart: unless-stopped
+    user: "1000:1000"            # 你自己的 id -u:id -g。不写这一行会造出 root 属主的 data 目录
+    stop_grace_period: 2m            # RocksDB 要时间干净关闭；被 SIGKILL 打断会留下要修复的 DB
+    environment:
+      BESU_OPTS: "-Xmx2g -Xms512m"
+    command:
+      - --data-path=/data
+      - --genesis-file=/config/genesis.json
+      - --node-private-key-file=/secrets/key
+      - --data-storage-format=BONSAI
+      - --bonsai-limit-trie-logs-enabled=true
+      - --sync-mode=FULL
+      - --bootnodes=enode://<128 hex>@95.179.183.132:30303
+      - --p2p-port=30303
+      - --nat-method=NONE
+      - --max-peers=25
+      - --discovery-enabled=true
+      - --rpc-http-enabled=true
+      - --rpc-http-host=0.0.0.0
+      - --rpc-http-port=8545
+      - --rpc-http-api=ETH,NET,WEB3,QBFT
+      - --host-allowlist=besu,localhost,127.0.0.1
+      - --revert-reason-enabled=true
+      - --min-gas-price=0
+      - --engine-rpc-enabled=false
+      - --logging=INFO
+    volumes:
+      - ./data/besu:/data
+      - ./config:/config:ro
+      - ./secrets:/secrets:ro
+    ports:
+      - "30303:30303/tcp"
+      - "30303:30303/udp"
+      - "127.0.0.1:8545:8545"   # RPC 只绑本机，不要对公网开
+    mem_limit: 3g
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "3" }
+
+  attester:
+    image: node:22-alpine
+    restart: unless-stopped
+    working_dir: /app
+    # 私钥只从 validator.env 按名字进环境变量，永远不写进 compose、不进日志
+    command: [ "node", "src/cli.mjs", "attest", "--home", "/work" ]
+    volumes:
+      - ./node-cli:/app:ro           # 这份 @bac/node-cli 的目录（npm 发布方式未定，03 §[待定] 1）
+      - .:/work
+    environment:
+      LAYER_RPC: http://besu:8545
+      BSC_RPC: https://bsc-rpc.publicnode.com
+      BSC_RPC_2: https://bsc-dataseed.bnbchain.org
+    env_file: [ ./validator.env ]    # 里面只有一行 VALIDATOR_PRIVATE_KEY（chmod 600，不进 git）
+    depends_on: [ besu ]
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "3" }

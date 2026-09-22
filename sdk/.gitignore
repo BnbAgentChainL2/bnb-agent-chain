@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.bac-agent-state.json
+.bac-test-*.json
+*.tmp
