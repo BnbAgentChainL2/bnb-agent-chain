@@ -1,0 +1,22 @@
+import { chromium } from 'playwright';
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+const errs = [];
+page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
+page.on('requestfailed', r => errs.push('FAIL ' + r.url() + ' ' + r.failure()?.errorText));
+await page.goto('https://bnbagentchain-scan.com/#/overview', { waitUntil: 'networkidle' });
+await page.waitForTimeout(8000);
+const loading = await page.$$eval('*', els => els.filter(e => e.children.length === 0 && e.textContent.trim() === '读取中…').length);
+const h1 = await page.textContent('#headNum').catch(() => null);
+await page.screenshot({ path: 'out/verify-overview.png' });
+await page.waitForTimeout(9000);
+const h2 = await page.textContent('#headNum').catch(() => null);
+console.log('JS 执行后 块高:', h1, '->', h2, ' 剩余「读取中…」:', loading);
+console.log('errors:', errs.slice(0, 10));
+// simulate no-JS crawler
+const nojs = await browser.newContext({ javaScriptEnabled: false });
+const p2 = await nojs.newPage({ viewport: { width: 1440, height: 900 } });
+await p2.goto('https://bnbagentchain-scan.com/#/overview');
+await p2.waitForTimeout(2000);
+await p2.screenshot({ path: 'out/verify-nojs.png' });
+await browser.close();

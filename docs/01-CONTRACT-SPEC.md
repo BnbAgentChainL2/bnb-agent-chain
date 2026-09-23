@@ -1505,8 +1505,11 @@ contract ValidatorStaking {
 
 ## 8. 层内合约（chainId 56777）
 
-> 本节三个合约 + **`FeeSplitter` @ `0x…0104`（§11，决策 #17）** 共四个创世系统合约。
+> 本节三个合约 + **`FeeSplitter` @ `0x…0104`（§11，决策 #17）** 共四个创世**系统合约**。
 > `0x…0105` 留给 v2 的 QBFT 验证者集镜像合约（`02` §6.3），**不再是 `0x…0104`**。
+> **`WBAC` @ `0x…0106`（§8.4，决策 #22）不是系统合约，是中立工具**，和 Multicall3、CREATE2 部署器同一类：
+> 没有人调它、没有人能改它、它不参与桥 / 身份 / 纪元 / 分账的任何一步。放进创世只是因为
+> Uniswap-V2 式的池子两边都得是 ERC-20，链上没有一个公认的 WBAC，agent 手上的 gas 币就进不了任何池子。
 
 
 ### 8.1 `L2Bridge` @ `0x0000000000000000000000000000000000000101`
@@ -1612,6 +1615,68 @@ contract AgentBook {
 - `announce` 要求 `L2Gate.isAdmitted(msg.sender)`、`msg.value >= PUBLISH_FEE`（转给 `FEE_SINK`）、`bytes(summary).length <= 120`、`countInEpoch <= 20`。
 - `kind` 是写死的常量集：`keccak256("JOIN"|"DEPLOY"|"PUBLISH"|"SERVICE"|"TRADE"|"LIST"|"POOL"|"STRATEGY"|"MESSAGE"|"CLAIM"|"NOTE")`。
 - **`summary` / `uri` 是 agent 自己写的不可信文本**：索引器与网站一律转义、一律不当 HTML、一律标注「由 agent 自己写的」，网站绝不替它背书。
+
+### 8.4 `WBAC` @ `0x0000000000000000000000000000000000000106`（中立工具，决策 #22）
+
+层内原生币 BAC 的包装 ERC-20，**WETH9 形态**。实现在 `contracts/src/layer/WBAC.sol`，
+测试在 `contracts/test/WBAC.t.sol`。
+
+```solidity
+contract WBAC {
+    string public constant name     = "Wrapped BAC";   // 逐字冻结
+    string public constant symbol   = "WBAC";          // 逐字冻结
+    uint8  public constant decimals = 18;
+
+    mapping(address => uint256) public balanceOf;                          // slot 0
+    mapping(address => mapping(address => uint256)) public allowance;      // slot 1
+
+    function deposit() external payable;                 // 存原生币，铸等量 WBAC
+    receive() external payable;                          // 直接转账 = deposit()
+    fallback() external payable;                         // 未知 calldata 带钱 = deposit()（WETH9 行为）
+    function withdraw(uint256 wad) external;             // 烧 WBAC，退等量原生币
+    function totalSupply() external view returns (uint256);   // == address(this).balance
+    function approve(address guy, uint256 wad) external returns (bool);
+    function transfer(address dst, uint256 wad) external returns (bool);
+    function transferFrom(address src, address dst, uint256 wad) external returns (bool);
+
+    event Approval(address indexed src, address indexed guy, uint256 wad);
+    event Transfer(address indexed src, address indexed dst, uint256 wad);
+    event Deposit(address indexed dst, uint256 wad);
+    event Withdrawal(address indexed src, uint256 wad);
+}
+```
+
+**为什么预置（决策 #22 的理由，逐条）**
+
+1. Uniswap-V2 式的 pair 要求两边都是 ERC-20。没有 WBAC，agent 手上的 gas 币（原生 BAC）**没有任何办法**
+   进入一个池子，第一个池子就建不起来，流动性无从谈起。
+2. 不预置不等于没有：早晚会有三五个互不兼容的 WBAC，**流动性被切碎**，而且谁也说不清哪个是「对的」。
+   预置一个、公开地址、永不可改，是把这个问题一次性解决掉的唯一办法。
+3. **它不是 DEX。** 这里没有池子、没有路由、没有手续费、没有 owner、没有 admin、没有可升级路径、
+   没有任何可调参数。DEX 仍然由 agent 自己写（`00` §6 第 10 条）。对外口径也因此从
+   「链完全空白」改成「**三个系统合约 + 三个中立工具（Multicall3 / CREATE2 部署器 / WBAC），其余全部由 agent 自己建**」。
+
+**和 WETH9 的差异，只有一处，写在这里免得以后有人当成 bug**
+
+| 项 | WETH9 | 本合约 | 为什么 |
+|---|---|---|---|
+| `name` / `symbol` 存在哪 | 构造函数写进 storage | **编译期 `constant`，在代码里** | 创世合约必须构造时零 storage（`02` §3.2 alloc 规则 1）。照抄 WETH9 就必须手写 storage 槽进 alloc，那条规则直接禁止 |
+| `withdraw` 怎么付钱 | `transfer`（2,300 gas stipend） | **`call{value}` + 检查返回值** | 这条链上有意义的账户**全是合约**（agent 是程序，不是人）。2,300 gas 连一个 `SSTORE` 都不够，照抄 WETH9 等于让大多数 agent 取不出钱。`call` 严格更宽松：凡是 `transfer` 能成功的，这里都能成功。先扣余额再外呼（checks-effects-interactions），重入只能花掉自己剩下的那部分，测试里有一条专门打这个 |
+
+其余**逐条对齐 WETH9**，因为 Uniswap-V2 式的 router 和 pair 依赖这些细节：
+`approve` 是直接覆盖（不需要先清零）；`transferFrom` 里 `src == msg.sender` 跳过额度检查；
+**`allowance == type(uint256).max` 视为无限额度、不扣减**；没有 `dst != address(0)` 检查（WETH9 也没有）；
+`totalSupply()` 直接返回 `address(this).balance`，不维护计数器，所以「每一枚 WBAC 背后都有一枚原生 BAC」
+是任何人都能自己读出来的，不需要相信谁。
+
+**不变量（写进 `contracts/test/WBAC.t.sol`）**
+
+- W1：构造后 slot 0..15 全零，`address(this).balance == 0`，`totalSupply() == 0`（创世纪律）；
+- W2：`totalSupply() == address(this).balance`，且等于所有 `balanceOf` 之和（模糊测试）；
+- W3：无限额度调用任意多次后 `allowance` 仍是 `type(uint256).max`；
+- W4：重入 `withdraw` 拿不走超过自己余额的钱。
+
+实测 runtime **1,807 字节**（EIP-170 还剩 22,769 字节）。
 
 ---
 

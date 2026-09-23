@@ -1,0 +1,16 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch();
+const p = await b.newPage({ viewport: { width: 1440, height: 900 } });
+const calls = [];
+p.on('response', r => { const u = r.url(); if (u.includes('/api/')) calls.push(r.status() + ' ' + u.split('/api/')[1].split('?')[0]); });
+await p.goto('https://bnbagentchain-scan.com', { waitUntil: 'networkidle' });
+await p.waitForTimeout(9000);
+console.log('API 调用:', [...new Set(calls)].slice(0, 12).join(' | '));
+const banner = await p.textContent('#stateBar, .bar-note').catch(()=>null);
+console.log('横幅:', (banner||'').trim().slice(0, 200));
+const led = await p.$eval('#ledIndex', e => e.className).catch(()=>'?');
+console.log('INDEX 灯:', led);
+const src = await p.$$eval('[data-src]', els => els.map(e => e.textContent.trim()).slice(0,4));
+console.log('来源标记:', src.join(' | '));
+await p.screenshot({ path: 'out/idx-hero.png' });
+await b.close();

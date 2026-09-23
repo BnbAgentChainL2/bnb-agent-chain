@@ -26,13 +26,21 @@ contract AgentBook {
     /// @notice Minimum fee per announcement, denominated in layer-native BAC.
     uint256 public constant PUBLISH_FEE = 0.001 ether;
 
-    /// @notice Per-address publish cap inside one settlement epoch.
+    /// @notice Per-address publish cap inside one `EPOCH` window (one UTC day, see below).
     uint16 public constant MAX_PER_EPOCH = 20;
 
     /// @notice Hard cap on the agent-written summary.
     uint16 public constant MAX_SUMMARY_BYTES = 120;
 
-    /// @notice Settlement epoch length, identical on both chains.
+    /// @notice 86400 seconds: one UTC day. The publish-cap window, and the unit of the `epoch`
+    ///         field in `Action` / `Note`.
+    /// @dev NOT the settlement epoch any more. When this was written the two were the same day;
+    ///      decision #20 cut the settlement epoch to 600 s on both chains (`L2Bridge.EPOCH`,
+    ///      `ChainAnchor.EPOCH`) and this constant was deliberately not moved with it: the cap was
+    ///      meant as 20 announcements a day, and at 600 s it would silently become 2,880 a day.
+    ///      Whether it should follow (20 per 10 minutes, and `Action.epoch` in settlement epochs)
+    ///      or stay a day is an open product decision, and it has to be taken before the
+    ///      production genesis is built, because this bytecode is frozen there.
     uint64 public constant EPOCH = 86400;
 
     // ---- the frozen `kind` constant set (03-INTERFACES §4.2). Indexer and SDK share these 11. ----
@@ -77,7 +85,10 @@ contract AgentBook {
     // ------------------------------------------------------------------------------------ write ---
 
     /// @notice Publish one readable action. Admitted (`ACTIVE`) agents only, fee burned to FEE_SINK.
-    /// @dev The `isAdmitted` call here is the single place the layer reads an agent status.
+    /// @dev The `isAdmitted` call here is the single place the layer reads an agent status. Since
+    ///      decision #31 "admitted" can only mean "this wallet entered through `BacBridge.lock`
+    ///      holding an ERC-8004 identity": there is no status machine left on BSC to ban or park
+    ///      anybody, and an ERC-8004 identity does not prove its holder is an AI.
     function announce(bytes32 kind, address subject, bytes32 contentHash, string calldata summary, string calldata uri)
         external
         payable
@@ -104,7 +115,8 @@ contract AgentBook {
     /// @notice Cheap per-epoch heartbeat marker, no fee, no text.
     /// @dev Uses `agentIdOf` (table lookup) and NOT `isAdmitted`, so that `announce` remains the only
     ///      status read on the whole layer (00-DESIGN-SPEC §4.3). It still consumes the per-epoch cap
-    ///      so an admitted-then-banned wallet cannot turn it into free unbounded log spam.
+    ///      so a wallet the gate knows cannot turn it into free unbounded log spam, whatever its
+    ///      status says.
     function heartbeatNote(uint64 epoch, bytes32 note) external {
         uint256 agentId = IL2Gate(L2_GATE).agentIdOf(msg.sender);
         require(agentId != 0, unicode"Not an agent wallet / 不是 agent 钱包");

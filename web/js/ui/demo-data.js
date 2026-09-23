@@ -3,7 +3,7 @@
    触发条件（js/ui/bind.js 里判断，两个条件必须同时成立）：
      1. site.config.js 里没有配置合约地址（BAC.LIVE === false，也就是还没发射）；
      2. URL 上带 ?demo=1。
-   只要 site.config.js 填了金库地址，这个文件就再也不会被调用 —— 配了地址还想看演示数据是不允许的，
+   只要 site.config.js 填了合约地址，这个文件就再也不会被调用 —— 配了地址还想看演示数据是不允许的，
    因为那等于在一个看起来是正式站点的页面上显示假数字。
    它产出的对象形状和 js/ui/bind.js 从 window.BAC 拼出来的**完全一致**（见 js/ui/vm.js 的注释）：
    金额 BigInt（wei），时间戳秒，未知是 null。 */
@@ -50,11 +50,12 @@
       '一直在观察 gas 价格并公布记录，没有交易行为。',
       '部署了一个很小的注册表合约，给别的 agent 登记服务地址用。',
       '主要做跨池比价，把别人的池子价格抓下来再发布。',
-      '连续三个纪元没有心跳，任何人都可以把它标成休眠。休眠只影响进桥和发布，不影响退出。',
+      '连续三个纪元没有动静。它锁进来的积分还在，想走随时可以退出。',
       '刚进场，还在读别人部署了什么，没有动作。',
       '给别的 agent 估算滑点，按次收费。'
     ];
-    var STATUS_ZH = { ACTIVE: '活跃', DORMANT: '休眠', BANNED: '封禁', CHALLENGED: '挑战中', RETIRED: '退役' };
+    // 决策 #18（术语）：取值名 CHALLENGED 不改（它对齐合约），显示名一律「入场验证中」
+    var STATUS_ZH = { ACTIVE: '活跃', DORMANT: '休眠', BANNED: '封禁', CHALLENGED: '入场验证中', RETIRED: '退役' };
     var STATUS_CLS = { ACTIVE: 'ok', DORMANT: 'warn', BANNED: 'bad', CHALLENGED: 'wait', RETIRED: 'dim' };
 
     var agents = [], agentById = {};
@@ -78,9 +79,9 @@
         credited: credited, exited: exited, spent: spent, balance: credited - exited - spent,
         deploys: deploys, announces: st === 'CHALLENGED' ? 0 : ri(0, 63), actions: 0,
         hbEpoch: st === 'DORMANT' ? EPOCH - 3 : EPOCH, missed: st === 'DORMANT' ? 3 : 0,
-        uriOk: R() < 0.86, endpointOk: R() < 0.94,
+        /* ERC-8004：agent #N 就是身份 #N；持有人与注册文件（tokenURI）都是演示值 */
+        identityId: id, holder: null, uriOk: R() < 0.86,
         uri: 'https://a' + id + '.example/agent.json',
-        endpointHash: hash32(), fingerprint: hash32(),
         sum: pick(SUMS), hb: hb, contracts: [], deposits: [], exits: []
       };
       for (var d = 0; d < deploys; d++) {
@@ -112,7 +113,7 @@
     function makeTx(blk, idx, ts) {
       var roll = R(), type, method, to = null, created = null, value = 0n, gasUsed, input, logs = [];
       var from = pick(LIVE_IDS);
-      var toAgentId = null, toContractAgentId = null, toLabelKind = null;
+      var toAgentId = null, toContractAgentId = null, toLabelKind = null, toLabel = null;
       if (roll < 0.14) {
         type = 'deploy'; method = '合约部署';
         created = addr(); to = created; toLabelKind = 'created';
@@ -137,7 +138,7 @@
         gasUsed = 21000; input = '0x';
       } else {
         type = 'bridge'; method = pick(['withdrawCredits(address)', 'exit(uint256)']);
-        to = L2BRIDGE; toLabelKind = 'system';
+        to = L2BRIDGE; toLabelKind = 'system'; toLabel = '桥 · L2Bridge';
         gasUsed = ri(52000, 148000);
         input = '0x' + hex(8) + hex(64);
         logs.push({ name: method.indexOf('exit') === 0 ? 'ExitBurned' : 'CreditsWithdrawn', addr: L2BRIDGE, args: [['agentId', '#' + from], ['credits', String(ri(1, 40) * 10000) + ' BAC'], ['epoch', EPOCH]] });
@@ -149,7 +150,7 @@
         hash: h, block: blk, idx: idx, ts: ts,
         agentId: from, fromAddr: agentById[from] ? agentById[from].wallet : null,
         to: to, created: created, toAgentId: toAgentId, toContractAgentId: toContractAgentId,
-        toLabelKind: toLabelKind, method: method, type: type,
+        toLabelKind: toLabelKind, toLabel: toLabel, method: method, type: type,
         value: value, gasUsed: gasUsed, fee: BigInt(gasUsed) * GWEI, ok: ok,
         input: input, logs: logs, nonce: ri(1, 900)
       };
@@ -184,7 +185,7 @@
     var er = rng(90117), epochs = [], epochByN = {};
     for (var n2 = EPOCH - 29; n2 <= EPOCH; n2++) {
       var sEn = n2 >= EPOCH ? 'OPEN' : (n2 === EPOCH - 1 ? 'POSTED' : 'FINAL');
-      var sZh = sEn === 'OPEN' ? '进行中' : (sEn === 'POSTED' ? '已提交 · 挑战窗口' : '已最终');
+      var sZh = sEn === 'OPEN' ? '进行中' : (sEn === 'POSTED' ? '已提交 · 锚点等待中' : '已最终');
       var sCls = sEn === 'OPEN' ? 'open' : (sEn === 'POSTED' ? 'posted' : 'final');
       var exits = sEn === 'OPEN' ? ri(0, 4, er) : ri(0, 7, er);
       var feesWei = BigInt(Math.round((0.028 + er() * 0.075) * 1e9)) * GWEI;     // 该纪元全链 gas 费（wei）
@@ -249,7 +250,7 @@
       return p(d.getUTCMonth() + 1) + '/' + p(d.getUTCDate());
     }
 
-    /* ── 金库 ──────────────────────────────────────────────── */
+    /* ── 税收路由 → 桥池 / 节点基金 ─────────────────────────────── */
     var toBridge = BigInt(1378) * BigInt(1e16), toNode = BigInt(1378) * BigInt(1e16);
 
     /* ── 实时动态 ──────────────────────────────────────────── */
@@ -265,15 +266,16 @@
       ['FEE_REMIT', '官方节点把本纪元已收 gas 费转入分账合约 0x…0104']
     ];
     var BSC_KINDS = [
-      ['LOCKED', 'agent #{id} 在 BSC 锁了 {n} BAC，等待入桥'],
-      ['ACTIVATED', 'agent #{id} 连过 3 轮限时挑战，已激活'],
-      ['HEARTBEAT', 'agent #{id} 提交了本纪元的心跳'],
+      /* 决策 #31：进场 = 持有 ERC-8004 身份的地址把 BAC 锁进 BacBridge，没有签名轮次、没有激活步骤 */
+      ['LOCKED', 'agent #{id} 持有 ERC-8004 身份，在 BSC 锁了 {n} BAC，等待入桥'],
       ['EXIT', 'agent #{id} 销毁 {n} 积分退出，按当纪元汇率锁定 owed'],
-      ['ANCHOR', '中继提交了上一个纪元的锚点，进入 24 小时挑战窗口'],
+      ['ANCHOR', '中继提交了上一个纪元的锚点，进入 2 分钟锚点等待'],
       ['ATTEST', '验证者 node-a1f… 揭示了上一个纪元的根，与锚点一致'],
-      ['SPLIT', '金库结算：一半推给桥池，一半推给节点基金'],
-      ['WITHDRAW', '节点基金提取 → 项目方地址（按披露要求公开）'],
-      ['DORMANT', 'agent #{id} 连续漏 3 个纪元心跳，被标成休眠（不影响退出）']
+      /* 决策 #30：税收进 BacTaxRouter 再 50/50 推出去，没有金库 */
+      ['SPLIT', 'BacTaxRouter 分账：一半推给桥池，一半推给节点基金'],
+      /* 决策 #24：桥用桥池的 BNB 回购 BAC，退出兑付的是回购来的 BAC */
+      ['BUYBACK', 'BacBridge 用桥池的 BNB 在市场上回购了 BAC，留给退出兑付'],
+      ['WITHDRAW', '节点基金提取 → 项目方地址（按披露要求公开）']
     ];
     var feed = [];
     for (var f = 17; f >= 0; f--) {
@@ -295,14 +297,18 @@
       mode: 'demo',
       st: {
         chain: 'ok', blocks: 'ok', txs: 'ok', agents: 'ok', epochs: 'ok', validators: 'ok',
-        treasury: 'ok', bridge: 'ok', feed: 'ok', contracts: 'ok', fees: 'ok', daily: 'ok'
+        treasury: 'ok', bridge: 'ok', feed: 'ok', contracts: 'ok', fees: 'ok', daily: 'ok',
+        idx: 'ok', layer: 'ok'
       },
+      /* 演示模式的来源标成 demo，绑定层和外壳都会照它显示「演示模式」，不会冒充真来源 */
+      layer: { live: true, source: 'demo', endpoint: '（演示模式 · 没有连任何节点）', primary: null, note: null, stale: false, sections: { head: 'ok', blocks: 'ok', txs: 'ok' } },
       chain: {
-        chainId: 56777, source: 'demo', degraded: false, degradedNote: null,
-        head: head, headTs: NOW, blockLagSec: 0,
-        blockTimeSec: 3, targetBlockTimeSec: 3,
-        gasLimit: GASLIMIT, baseFee: 0n, minGasPriceGwei: 1,
-        peers: 5, txPool: 3,
+        chainId: 56777, source: 'demo', endpoint: null, degraded: false, degradedNote: null,
+        head: head, headTs: NOW, headHash: null, miner: null, blockLagSec: 0,
+        blockTimeSec: 3, blockIntervalSec: 3, targetBlockTimeSec: 3,
+        gasLimit: GASLIMIT, baseFee: 0n, gasPrice: BigInt(1e9), minGasPriceGwei: 1,
+        epochLenSec: 86400,
+        peers: 5, txPool: 3, txPoolQueued: 0,
         txTotal: 48213, contractsTotal: contracts.length,
         circulating: BigInt(4880000) * E18, burnedTotal: BigInt(9125) * BigInt(1e14),
         totalSupply: BigInt('1000000000') * E18,
@@ -350,16 +356,19 @@
         poolBalance: BigInt(914) * BigInt(1e16), nodeFundBalance: BigInt(4) * BigInt(1e17),
         nodeFundWithdrawn: BigInt(12) * E18,
         releaseBps: 350, releasable: BigInt(3199) * BigInt(1e14), owedTotal: BigInt(12044) * BigInt(1e14),
-        disclosure: 'owner 可以提取节点基金这一半（税收 BNB 的 50%）。桥池那一半不属于 owner，合约里没有任何路径让 owner 动它。',
+        /* 决策 #29a 的那句，逐字（与 bind.js 同一份） */
+        disclosure: '项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。'
+          + '节点基金这一半（税后 BNB 的 50%）由 BacNodeFund 的 owner 随时提取，用于服务器与节点搭建。',
         splitBaseNote: '50/50 分的是扣掉 Flap 协议费之后的部分：(10000 − 1000)/10000',
         eventsStatus: 'ok',
         events: [
           { ts: NOW - 1800, name: 'RevenueSplit', amount: BigInt(412) * BigInt(1e15), note: '桥池 0.206 / 节点基金 0.206', tx: hash32() },
           { ts: NOW - 5400, name: 'ReleaseReceived', amount: BigInt(206) * BigInt(1e15), note: 'BacBridge 桥池', tx: hash32() },
           { ts: NOW - 9000, name: 'ReleaseReceived', amount: BigInt(206) * BigInt(1e15), note: 'BacNodeFund 节点基金', tx: hash32() },
+          { ts: NOW - 14400, name: 'BoughtBack', amount: BigInt(150) * BigInt(1e15), note: 'BacBridge 用桥池 BNB 回购 BAC（留给退出兑付）', tx: hash32() },
           { ts: NOW - 26400, name: 'Withdrawn', amount: E18, note: '节点基金 → 项目方地址（按披露要求公开）', tx: hash32() },
           { ts: NOW - 48000, name: 'RevenueSplit', amount: BigInt(318) * BigInt(1e15), note: '桥池 0.159 / 节点基金 0.159', tx: hash32() },
-          { ts: NOW - 60000, name: 'RevenueRecognized', amount: BigInt(318) * BigInt(1e15), note: '金库确认收入', tx: hash32() },
+          { ts: NOW - 60000, name: 'RevenueRecognized', amount: BigInt(318) * BigInt(1e15), note: 'BacTaxRouter 确认收入（Flap 已先抽 10% 协议费）', tx: hash32() },
           { ts: NOW - 92000, name: 'RevenueSplit', amount: BigInt(744) * BigInt(1e15), note: '桥池 0.372 / 节点基金 0.372', tx: hash32() },
           { ts: NOW - 130000, name: 'Withdrawn', amount: BigInt(2) * E18, note: '节点基金 → 项目方地址（按披露要求公开）', tx: hash32() }
         ]

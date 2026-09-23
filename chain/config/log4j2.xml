@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  chain/config/log4j2.xml - mounted at /config/log4j2.xml in the besu container.
+
+  One line per event, straight to stdout, no file appender.  Besu can write its own rolling log
+  into the data-path; we deliberately do not let it, for two reasons: it competes with the disk
+  budget that is this chain's only real constraint (02-CHAIN-SPEC 4.3/4.4), and it would duplicate
+  what `docker logs` already keeps with rotation (json-file, 50m x 3, set in docker-compose.yml).
+
+  QBFT's per-round consensus chatter carries no information on a single-validator chain, so it is
+  raised to WARN.  When the validator set grows (02-CHAIN-SPEC 6.1/6.4) put it back to INFO first -
+  round changes are exactly what you want to see then.
+-->
+<Configuration status="WARN">
+  <Appenders>
+    <Console name="Console" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSSZZZ} | %t | %-5level | %c{1} | %msg%n"/>
+    </Console>
+  </Appenders>
+  <Loggers>
+    <Root level="INFO">
+      <AppenderRef ref="Console"/>
+    </Root>
+    <Logger name="org.hyperledger.besu.consensus.qbft" level="WARN" additivity="false">
+      <AppenderRef ref="Console"/>
+    </Logger>
+  </Loggers>
+</Configuration>

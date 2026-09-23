@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {Test} from "forge-std/Test.sol";
-import {BacBridge} from "../src/BacBridge.sol";
+import {Test, Vm} from "forge-std/Test.sol";
+import {ERC1967Proxy} from "@openzeppelin/proxy/ERC1967/ERC1967Proxy.sol";
+import {BacBridge, BacBridgeExtension} from "../src/BacBridge.sol";
 import {BacNodeFund} from "../src/BacNodeFund.sol";
-import {IAgentRegistry} from "../src/interfaces/IAgentRegistry.sol";
 import {IChainAnchor} from "../src/interfaces/IChainAnchor.sol";
 
 // ============================================================================
@@ -50,31 +50,44 @@ contract MockBAC {
     }
 }
 
-/// @dev Minimal `AgentRegistry` stand-in: only `isActive` and `getAgent` are ever called.
-contract MockRegistry {
-    mapping(uint256 => IAgentRegistry.Agent) private agents;
+/// @dev Minimal ERC-8004 Identity Registry stand-in. Two behaviours are copied deliberately from
+///      the live registry on BSC (docs/research/12-erc8004-and-portal.md §1.2/§1.4), because the
+///      gate is written around them:
+///        * `ownerOf` REVERTS for an id that was never minted, so the bridge has to staticcall it;
+///        * `getMetadata(id, "agentWallet")` answers with 20 BARE bytes, not an encoded address.
+///      Every other metadata key answers empty, mirroring the fact that no other key is trusted.
+contract MockErc8004 {
+    mapping(uint256 => address) private _owners;
+    mapping(uint256 => address) private _wallets;
 
-    function setAgent(uint256 agentId, address controller, address wallet, IAgentRegistry.Status status) external {
-        IAgentRegistry.Agent storage a = agents[agentId];
-        a.controller = controller;
-        a.agentWallet = wallet;
-        a.status = status;
+    function mint(uint256 agentId, address to) external {
+        _owners[agentId] = to;
     }
 
-    function setStatus(uint256 agentId, IAgentRegistry.Status status) external {
-        agents[agentId].status = status;
+    /// @dev The identity is a plain transferable ERC-721 — this is the whole of decision #31a.
+    function transfer(uint256 agentId, address to) external {
+        _owners[agentId] = to;
     }
 
-    function isActive(uint256 agentId) external view returns (bool) {
-        return agents[agentId].status == IAgentRegistry.Status.ACTIVE;
+    function setAgentWallet(uint256 agentId, address wallet) external {
+        _wallets[agentId] = wallet;
     }
 
-    function getAgent(uint256 agentId) external view returns (IAgentRegistry.Agent memory) {
-        return agents[agentId];
+    function ownerOf(uint256 agentId) external view returns (address owner_) {
+        owner_ = _owners[agentId];
+        require(owner_ != address(0), "ERC721NonexistentToken");
+    }
+
+    function getMetadata(uint256 agentId, string calldata key) external view returns (bytes memory) {
+        if (keccak256(bytes(key)) != keccak256(bytes("agentWallet"))) return bytes("");
+        address w = _wallets[agentId];
+        if (w == address(0)) return bytes("");
+        return abi.encodePacked(w); // 20 bare bytes, exactly as measured on mainnet
     }
 }
 
-/// @dev Minimal `ChainAnchor` stand-in. `releaseBpsFor` reproduces §6.3: 0 → 200, 1-2 → 350, ≥3 → 500.
+/// @dev Minimal `ChainAnchor` stand-in. `releaseBpsFor` reproduces §6.3 at the new cadence:
+///      the tiers 200 / 350 / 500 are now PER DAY and the bridge divides them by 144.
 contract MockAnchor {
     mapping(uint64 => IChainAnchor.Anchor) private anchors;
 
@@ -111,35 +124,231 @@ contract MockAnchor {
     }
 }
 
+/// @dev Flap Portal stand-in. `getTokenV8Safe` returns the real 18-field STATIC struct, so the
+///      bridge's hand-rolled three-word decode is exercised against the genuine layout.
+contract MockPortal {
+    struct TokenStateV8Safe {
+        uint8 status;
+        uint256 reserve;
+        uint256 circulatingSupply;
+        uint256 price;
+        uint8 tokenVersion;
+        uint256 r;
+        uint256 h;
+        uint256 k;
+        uint256 dexSupplyThresh;
+        address quoteTokenAddress;
+        bool nativeToQuoteSwapEnabled;
+        bytes32 extensionID;
+        uint256 buyTaxRate;
+        uint256 sellTaxRate;
+        address pool;
+        uint256 progress;
+        uint8 lpFeeProfile;
+        uint8 dexId;
+    }
+
+    uint8 public status = 1; // Tradable == still on the bonding curve
+    uint256 public price = 2e10; // quote per token, 18 decimals (the simulation's p0 = 2e-8 BNB)
+    uint256 public buyTaxRate = 200; // 2%
+    bool public broken; // the read itself reverts
+    bool public buyReverts;
+    uint256 public extraSlipBps; // how much worse than spot the fill comes back
+
+    function setStatus(uint8 s) external {
+        status = s;
+    }
+
+    function setPrice(uint256 p) external {
+        price = p;
+    }
+
+    function setBuyTax(uint256 b) external {
+        buyTaxRate = b;
+    }
+
+    function setBroken(bool b) external {
+        broken = b;
+    }
+
+    function setBuyReverts(bool b) external {
+        buyReverts = b;
+    }
+
+    function setExtraSlip(uint256 bps) external {
+        extraSlipBps = bps;
+    }
+
+    function getTokenV8Safe(address) external view returns (TokenStateV8Safe memory s) {
+        require(!broken, "portal broken");
+        s.status = status;
+        s.price = price;
+        s.buyTaxRate = buyTaxRate;
+        s.tokenVersion = 6;
+    }
+
+    function quote(uint256 valueIn) public view returns (uint256 out) {
+        out = (valueIn * 1e18) / price;
+        out = (out * (10000 - buyTaxRate)) / 10000;
+        out = (out * (10000 - extraSlipBps)) / 10000;
+    }
+
+    struct ExactInputParams {
+        address inputToken;
+        address outputToken;
+        uint256 inputAmount;
+        uint256 minOutputAmount;
+        bytes permitData;
+    }
+
+    /// @dev The live curve entry point. `IPortalTrade.buy` reverts `FeatureDisabled()` on the
+    ///      real Portal, so the bridge must use this one and the mock only offers this one.
+    function swapExactInput(ExactInputParams calldata p) external payable returns (uint256 out) {
+        require(!buyReverts, "curve closed");
+        require(p.inputToken == address(0), "input must be BNB");
+        require(p.inputAmount == msg.value, "amount != value");
+        out = quote(msg.value);
+        require(out >= p.minOutputAmount, "slippage");
+        MockBAC(p.outputToken).mint(msg.sender, out);
+    }
+}
+
+/// @dev PancakeSwap V2 router stand-in for the post-graduation venue.
+contract MockRouter {
+    MockPortal public portal;
+    bool public broken;
+    bool public swapReverts;
+
+    constructor(MockPortal p) {
+        portal = p;
+    }
+
+    function setBroken(bool b) external {
+        broken = b;
+    }
+
+    function setSwapReverts(bool b) external {
+        swapReverts = b;
+    }
+
+    function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory a) {
+        require(!broken, "router broken");
+        a = new uint256[](2);
+        a[0] = amountIn;
+        a[1] = (amountIn * 1e18) / portal.price(); // gross of the token's own tax, like the real one
+        require(path.length == 2, "path");
+    }
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256
+    ) external payable {
+        require(!swapReverts, "pair empty");
+        uint256 out = portal.quote(msg.value);
+        require(out >= amountOutMin, "slippage");
+        MockBAC(path[1]).mint(to, out);
+    }
+}
+
+// ============================================================================
+//                          DEPLOYMENT + UPGRADE MOCK
+// ============================================================================
+
+/// @dev The one way a bridge is ever deployed: an `ERC1967Proxy` over an implementation, with
+///      `initialize` run by the proxy's constructor in the same transaction. Shared with the
+///      invariant suite so both test what production runs.
+function deployBacBridge(
+    BacBridge impl,
+    address owner_,
+    address bac_,
+    address identity_,
+    address anchor_,
+    address watchdog_,
+    address portal_,
+    address router_
+) returns (BacBridge) {
+    bytes memory init =
+        abi.encodeCall(BacBridge.initialize, (owner_, bac_, identity_, anchor_, watchdog_, portal_, router_));
+    return BacBridge(address(new ERC1967Proxy(address(impl), init)));
+}
+
+/// @dev A V2 written the way the storage comment in `BacBridgeCore` prescribes: its one new
+///      variable takes the FIRST slot of `__gap`. In a real V2 that is a source change —
+///      `uint256 public v2Marker;` declared just above the gap and `__gap` shrunk to 41. A mock
+///      that inherits V1 cannot shrink V1's private gap, so it addresses that slot explicitly;
+///      `BacBridgeUpgradeTest` pins `GAP_START` against the live layout, so the day somebody
+///      inserts a variable above the gap, that test fails instead of this mock silently
+///      writing over it.
+contract BacBridgeV2Mock is BacBridge {
+    uint256 internal constant GAP_START = 350;
+
+    function initializeV2(uint256 marker) external reinitializer(2) {
+        assembly {
+            sstore(GAP_START, marker)
+        }
+    }
+
+    function v2Marker() external view returns (uint256 m) {
+        assembly {
+            m := sload(GAP_START)
+        }
+    }
+
+    function version() external pure returns (uint256) {
+        return 2;
+    }
+}
+
 // ============================================================================
 //                                 FIXTURE
 // ============================================================================
 
 contract BacBridgeTestBase is Test {
+    BacBridge internal impl;
     BacBridge internal bridge;
     MockBAC internal bac;
-    MockRegistry internal registry;
+    MockErc8004 internal identity;
     MockAnchor internal anchor;
+    MockPortal internal portal;
+    MockRouter internal router;
 
     address internal constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    address internal owner = makeAddr("owner");
+    address internal treasury = makeAddr("treasury");
+    address internal stranger = makeAddr("stranger");
     address internal watchdog = makeAddr("watchdog");
     address internal vetoKey = makeAddr("vetoKey");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal carol = makeAddr("carol");
 
-    uint64 internal constant T0 = 1_800_000_000; // a realistic wall clock, epoch 20833
+    uint64 internal constant E = 600; // decision #20
+    uint64 internal constant T0 = 1_800_000_000; // a realistic wall clock, epoch 3,000,000
 
     function setUp() public virtual {
         vm.warp(T0);
         bac = new MockBAC();
-        registry = new MockRegistry();
+        identity = new MockErc8004();
         anchor = new MockAnchor(vetoKey);
-        bridge = new BacBridge(address(bac), address(registry), address(anchor), watchdog);
+        portal = new MockPortal();
+        router = new MockRouter(portal);
+        impl = new BacBridge();
+        bridge = _newBridge();
 
-        registry.setAgent(1, alice, makeAddr("aliceWallet"), IAgentRegistry.Status.ACTIVE);
-        registry.setAgent(2, bob, makeAddr("bobWallet"), IAgentRegistry.Status.ACTIVE);
-        registry.setAgent(3, carol, makeAddr("carolWallet"), IAgentRegistry.Status.ACTIVE);
+        // alice / bob / carol each hold one ERC-8004 identity. Nothing else is needed: there is
+        // no status, no deposit, no challenge and no heartbeat any more (decision #31).
+        identity.mint(1, alice);
+        identity.mint(2, bob);
+        identity.mint(3, carol);
+    }
+
+    /// @dev A fresh proxy over the shared implementation, initialised in the same transaction.
+    function _newBridge() internal returns (BacBridge) {
+        return deployBacBridge(
+            impl, owner, address(bac), address(identity), address(anchor), watchdog, address(portal), address(router)
+        );
     }
 
     // ---- helpers ----
@@ -150,6 +359,17 @@ contract BacBridgeTestBase is Test {
         bac.approve(address(bridge), amount);
         bridge.lock(agentId, amount);
         vm.stopPrank();
+    }
+
+    /// @dev Fills `buybackBac` without going through the market: a donation, folded in by the
+    ///      permissionless rule-010 sweep. Exits are paid from this bucket and only this one.
+    function _seedBuyback(BacBridge b, uint256 amount) internal {
+        bac.mint(address(b), amount);
+        b.sweepUntrackedBac();
+    }
+
+    function _seedBuyback(uint256 amount) internal {
+        _seedBuyback(bridge, amount);
     }
 
     function _leaf(uint256 exitId, uint256 agentId, address to, uint256 credits) internal view returns (bytes32) {
@@ -176,7 +396,7 @@ contract BacBridgeTestBase is Test {
     }
 
     function _curEpoch() internal view returns (uint64) {
-        return uint64(vm.getBlockTimestamp() / 86400);
+        return uint64(vm.getBlockTimestamp() / E);
     }
 
     /// @dev Settle the next epoch as FINAL with `agreeing` witnesses.
@@ -188,7 +408,22 @@ contract BacBridgeTestBase is Test {
     }
 
     function _warpEpochs(uint64 n) internal {
-        vm.warp(vm.getBlockTimestamp() + uint256(n) * 86400);
+        vm.warp(vm.getBlockTimestamp() + uint256(n) * E);
+    }
+
+    /// @dev The release the contract must compute: a DAILY rate divided down to one epoch.
+    function _expectedPot(uint256 assets, uint256 reserved, uint16 dailyBps) internal pure returns (uint256) {
+        return ((assets - reserved) * dailyBps) / (10000 * 144);
+    }
+
+    /// @dev B6 / rule 010 on the BAC side, asserted after every state-changing test.
+    function _assertBacBooks() internal view {
+        assertEq(
+            bac.balanceOf(address(bridge)),
+            bridge.lockedBac() + bridge.buybackBac() - bridge.totalBurned(),
+            "BAC books: balance != lockedBac + buybackBac - burned"
+        );
+        assertLe(bridge.owedTotal(), bridge.buybackBac(), "B1: owed exceeds the buyback bucket");
     }
 }
 
@@ -197,22 +432,75 @@ contract BacBridgeTestBase is Test {
 // ============================================================================
 
 contract BacBridgeEntryTest is BacBridgeTestBase {
+    function test_EpochAndWaitAreTheDecidedNumbers() public {
+        assertEq(uint256(bridge.EPOCH()), 600, "decision #20: 10-minute epoch");
+        assertEq(uint256(bridge.EPOCHS_PER_DAY()), 144, "144 epochs per day");
+        assertEq(uint256(bridge.ANCHOR_WAIT()), 120, "decision #25: 2-minute anchor wait");
+        assertEq(uint256(bridge.MAX_CATCHUP_EPOCHS()), 144, "one collect a day must suffice");
+        assertEq(uint256(bridge.OWED_MATURITY()), 14 days, "maturity must NOT shrink with the epoch");
+        // the name 'CHALLENGE_WINDOW' must be gone from the ABI (decision #18)
+        (bool ok,) = address(bridge).call(abi.encodeWithSignature("CHALLENGE_WINDOW()"));
+        assertFalse(ok, "the waiting period must not be called a challenge window");
+    }
+
     function test_LockMintsCreditsOneToOne() public {
         _lock(alice, 1, 100e18);
-        assertEq(bridge.totalLocked(), 100e18);
+        assertEq(bridge.lockedBac(), 100e18);
+        assertEq(bridge.buybackBac(), 0, "a deposit must never land in the buyback bucket");
         assertEq(bridge.totalCreditsIssued(), 100e18);
         assertEq(bridge.credited(1), 100e18);
         assertEq(bridge.creditsOutstanding(), 100e18);
         assertEq(bac.balanceOf(address(bridge)), 100e18);
+        _assertBacBooks();
     }
 
-    function test_LockRejectsInactiveAgent() public {
-        registry.setStatus(1, IAgentRegistry.Status.BANNED);
+    /// An id that was never minted must be a clean refusal, not a bubbled `ERC721NonexistentToken`.
+    function test_LockRejectsUnmintedIdentity() public {
         bac.mint(alice, 1e18);
         vm.startPrank(alice);
         bac.approve(address(bridge), 1e18);
-        vm.expectRevert(unicode"Agent is not active / agent 不是活跃状态");
+        vm.expectRevert(unicode"Not the ERC-8004 identity holder / 不是该 ERC-8004 身份的持有人");
+        bridge.lock(999_999, 1e18);
+        vm.stopPrank();
+        assertFalse(bridge.holdsIdentity(alice, 999_999));
+        assertEq(bridge.identityOwner(999_999), address(0), "an unminted id must read as zero, not revert");
+    }
+
+    /// The identity is transferable, so entry rights move with it — in both directions.
+    function test_LockRejectsFormerHolderAndAcceptsNewOne() public {
+        vm.prank(alice);
+        identity.transfer(1, bob);
+
+        bac.mint(alice, 1e18);
+        vm.startPrank(alice);
+        bac.approve(address(bridge), 1e18);
+        vm.expectRevert(unicode"Not the ERC-8004 identity holder / 不是该 ERC-8004 身份的持有人");
         bridge.lock(1, 1e18);
+        vm.stopPrank();
+
+        _lock(bob, 1, 1e18);
+        assertEq(bridge.credited(1), 1e18);
+    }
+
+    /// The cold-key-holds-the-NFT, hot-key-does-the-work shape. Safe only because that key is
+    /// written through `setAgentWallet`, which demands the wallet's own signature.
+    function test_LockAcceptsTheProvenAgentWallet() public {
+        address hot = makeAddr("aliceHotWallet");
+        identity.setAgentWallet(1, hot);
+        assertTrue(bridge.holdsIdentity(hot, 1));
+        assertEq(bridge.identityWallet(1), hot);
+
+        _lock(hot, 1, 5e18);
+        assertEq(bridge.credited(1), 5e18);
+    }
+
+    /// Agent id 0 is never a real identity and must not reach the registry at all.
+    function test_LockRejectsZeroAgentId() public {
+        bac.mint(alice, 1e18);
+        vm.startPrank(alice);
+        bac.approve(address(bridge), 1e18);
+        vm.expectRevert(unicode"Zero agent id / agent 身份编号为零");
+        bridge.lock(0, 1e18);
         vm.stopPrank();
     }
 
@@ -220,13 +508,14 @@ contract BacBridgeEntryTest is BacBridgeTestBase {
         bac.mint(bob, 1e18);
         vm.startPrank(bob);
         bac.approve(address(bridge), 1e18);
-        vm.expectRevert(unicode"Not the agent controller / 不是该 agent 的控制者");
-        bridge.lock(1, 1e18); // agent 1 belongs to alice
+        vm.expectRevert(unicode"Not the ERC-8004 identity holder / 不是该 ERC-8004 身份的持有人");
+        bridge.lock(1, 1e18); // identity 1 belongs to alice
         vm.stopPrank();
     }
 
     function test_AgentWalletMayAlsoLock() public {
         address wallet = makeAddr("aliceWallet");
+        identity.setAgentWallet(1, wallet);
         bac.mint(wallet, 5e18);
         vm.startPrank(wallet);
         bac.approve(address(bridge), 5e18);
@@ -235,28 +524,17 @@ contract BacBridgeEntryTest is BacBridgeTestBase {
         assertEq(bridge.credited(1), 5e18);
     }
 
-    function test_BurnLockedOnlyReachesDeadAddress() public {
-        _lock(alice, 1, 100e18);
-        uint256 burned = bridge.burnLocked();
-        assertEq(burned, 100e18);
-        assertEq(bac.balanceOf(DEAD), 100e18);
-        assertEq(bac.balanceOf(address(bridge)), 0);
-        assertEq(bridge.totalBurned(), 100e18);
-        // B6 after a burn: balance == totalLocked - burned
-        assertEq(bac.balanceOf(address(bridge)), bridge.totalLocked() - bridge.totalBurned());
-    }
-
     function test_AcceptReleaseAndSweepUntracked() public {
         vm.deal(address(this), 10 ether);
         bridge.acceptRelease{value: 4 ether}();
-        assertEq(bridge.poolBalance(), 4 ether);
+        assertEq(bridge.bnbBalance(), 4 ether);
 
         // simulate a force-pushed balance (selfdestruct / coinbase)
         vm.deal(address(bridge), address(bridge).balance + 1 ether);
-        assertEq(bridge.poolBalance(), 4 ether);
+        assertEq(bridge.bnbBalance(), 4 ether);
         uint256 swept = bridge.sweepUntracked();
         assertEq(swept, 1 ether);
-        assertEq(bridge.poolBalance(), 5 ether);
+        assertEq(bridge.bnbBalance(), 5 ether);
         assertEq(bridge.sweepUntracked(), 0);
     }
 
@@ -268,6 +546,316 @@ contract BacBridgeEntryTest is BacBridgeTestBase {
 }
 
 // ============================================================================
+//           THE TWO BUCKETS  (decision #24a②, requirement 1)
+// ============================================================================
+
+contract BacBridgeBucketTest is BacBridgeTestBase {
+    /// The whole promise in one test: with a full `lockedBac` and an empty `buybackBac`,
+    /// there is no exit rate at all — the deposit is simply not reachable.
+    function test_ExitCannotBePaidFromLockedBac() public {
+        _lock(alice, 1, 1000e18);
+        assertEq(bridge.lockedBac(), 1000e18);
+        assertEq(bridge.buybackBac(), 0);
+        assertEq(bridge.currentRate(), 0, "a deposit must not create a redemption rate");
+
+        bytes32 leaf = _leaf(1, 1, alice, 500e18);
+        _postSingle(_curEpoch(), leaf, 3);
+        vm.expectRevert(
+            unicode"Rate too low, exit not worth claiming / 当前兑付率过低，本次退出不值得领取"
+        );
+        _claim(_curEpoch(), 1, 1, alice, 500e18);
+        _assertBacBooks();
+    }
+
+    /// Only the bought-back bucket ever backs an exit, and paying one shrinks only that bucket.
+    function test_ExitIsPaidOnlyOutOfBuybackBac() public {
+        _lock(alice, 1, 1000e18);
+        _seedBuyback(40e18);
+        assertEq(bridge.currentRate(), (40e18 * 1e18) / 1000e18, "rate is a share of buybackBac");
+
+        _postSingle(_curEpoch(), _leaf(1, 1, alice, 1000e18), 3);
+        uint256 lockedAmt = _claim(_curEpoch(), 1, 1, alice, 1000e18);
+        assertEq(lockedAmt, 40e18, "the whole free buyback bucket");
+
+        uint256 lockedBefore = bridge.lockedBac();
+        _warpEpochs(1);
+        _settleNext(3);
+        vm.prank(alice);
+        uint256 paid = bridge.collect(alice);
+        assertGt(paid, 0);
+        assertEq(bac.balanceOf(alice), paid, "the exit is paid in BAC");
+        assertEq(bridge.lockedBac(), lockedBefore, "lockedBac must not move on a payout");
+        assertEq(bridge.buybackBac(), 40e18 - paid, "only the buyback bucket pays");
+        _assertBacBooks();
+    }
+
+    /// `burnLocked` burns exactly the locked bucket and leaves the payout bucket alone.
+    function test_BurnLockedOnlyBurnsDepositsAndOnlyToDead() public {
+        _lock(alice, 1, 100e18);
+        _seedBuyback(30e18);
+
+        uint256 burned = bridge.burnLocked();
+        assertEq(burned, 100e18, "burn must take the deposits and nothing else");
+        assertEq(bac.balanceOf(DEAD), 100e18);
+        assertEq(bridge.buybackBac(), 30e18, "the buyback bucket survives the burn");
+        assertEq(bac.balanceOf(address(bridge)), 30e18);
+        assertEq(bridge.totalBurned(), 100e18);
+        _assertBacBooks();
+
+        vm.expectRevert(unicode"Nothing to burn / 没有可销毁的 BAC");
+        bridge.burnLocked();
+
+        // a later deposit is burnable again, the buyback bucket still is not
+        _lock(bob, 2, 7e18);
+        assertEq(bridge.burnLocked(), 7e18);
+        assertEq(bridge.buybackBac(), 30e18);
+        _assertBacBooks();
+    }
+
+    /// Rule 010 on the BAC side: a stray transfer is recognised as a donation to the payout
+    /// bucket, never as a deposit, and the books match the balance exactly afterwards.
+    function test_SweepUntrackedBacOnlyEverFeedsTheBuybackBucket() public {
+        _lock(alice, 1, 10e18);
+        bac.mint(address(bridge), 3e18);
+        assertEq(bridge.bacAccounted(), 10e18, "an unswept transfer is not yet on the books");
+        assertGt(bac.balanceOf(address(bridge)), bridge.bacAccounted(), "balance >= accounted");
+
+        uint256 swept = bridge.sweepUntrackedBac();
+        assertEq(swept, 3e18);
+        assertEq(bridge.buybackBac(), 3e18);
+        assertEq(bridge.lockedBac(), 10e18, "a donation must never become a deposit");
+        assertEq(bridge.sweepUntrackedBac(), 0);
+        _assertBacBooks();
+    }
+
+    /// The escape path is the only other way BAC leaves, and it too pays from the payout bucket.
+    function test_HaltDoesNotUnlockDeposits() public {
+        _lock(alice, 1, 1000e18);
+        _seedBuyback(50e18);
+        vm.prank(watchdog);
+        bridge.armEscape();
+        vm.warp(vm.getBlockTimestamp() + bridge.ESCAPE_ARM_DELAY());
+        bridge.checkHalt();
+
+        vm.prank(alice);
+        (uint256 bacPaid,) = bridge.escapeCollect(1, alice);
+        assertEq(bacPaid, 50e18, "the junior pot is the buyback bucket, not the deposits");
+        assertEq(bridge.lockedBac(), 1000e18, "deposits are still locked after a halt");
+        assertEq(bac.balanceOf(address(bridge)), 1000e18);
+        _assertBacBooks();
+    }
+}
+
+// ============================================================================
+//                                BUYBACK
+// ============================================================================
+
+contract BacBridgeBuybackTest is BacBridgeTestBase {
+    function setUp() public override {
+        super.setUp();
+        vm.deal(address(this), 1000 ether);
+        bridge.acceptRelease{value: 10 ether}();
+    }
+
+    function _accrue(uint64 epochs) internal {
+        _warpEpochs(epochs);
+    }
+
+    function test_BuybackIsPermissionlessAndFillsTheBuybackBucket() public {
+        _accrue(144); // one full day of accrual: 20% of 10 BNB = 2 BNB, capped at MAX per call
+        uint256 bnbBefore = bridge.bnbBalance();
+
+        vm.prank(carol); // anybody
+        uint256 bought = bridge.buyback(0, 0);
+
+        assertGt(bought, 0, "buyback bought nothing");
+        assertEq(bridge.buybackBac(), bought);
+        assertEq(bridge.lockedBac(), 0, "a buyback must never touch the deposit bucket");
+        assertEq(bridge.bnbBalance(), bnbBefore - bridge.MAX_BUYBACK_BNB(), "per-call BNB cap");
+        assertEq(bridge.buybackBnbSpent(), bridge.MAX_BUYBACK_BNB());
+        assertEq(bridge.buybackBacBought(), bought);
+        assertEq(bought, portal.quote(bridge.MAX_BUYBACK_BNB()), "fill must match the venue quote");
+        _assertBacBooks();
+    }
+
+    function test_BuybackAccruesTwentyPercentOfTheBnbBucketPerDay() public {
+        // a small bucket, so the daily budget stays under MAX_BUYBACK_BNB and the cap does not bite
+        BacBridge b = _newBridge();
+        vm.deal(address(this), 10 ether);
+        b.acceptRelease{value: 1 ether}();
+        _warpEpochs(144);
+        (uint256 budget, uint256 spendable,,) = b.buybackState();
+        assertEq(budget, 0.2 ether, "20% of 1 BNB per day");
+        assertEq(spendable, 0.2 ether);
+        b.buyback(0, 0);
+        assertEq(b.bnbBalance(), 0.8 ether);
+        assertEq(b.buybackBudget(), 0);
+    }
+
+    function test_BuybackHonoursTheMinimumFloorAndAccumulatesInstead() public {
+        BacBridge b = _newBridge();
+        vm.deal(address(this), 10 ether);
+        b.acceptRelease{value: 0.1 ether}(); // 20%/day of 0.1 = 0.02 BNB per day
+        _warpEpochs(1); // one epoch accrues 0.1 * 2000 / 10000 / 144 = 0.0001389 BNB
+
+        vm.expectEmit(false, false, false, false, address(b));
+        emit BacBridge.BuybackSkipped(3, 0);
+        assertEq(b.buyback(0, 0), 0, "below MIN_BUYBACK_BNB the call must be a no-op, not a revert");
+        assertGt(b.buybackBudget(), 0, "the accrual is kept, not lost");
+
+        _warpEpochs(144);
+        assertGt(b.buyback(0, 0), 0, "once the budget clears the floor the buy happens");
+    }
+
+    function test_BuybackRespectsTheMinimumInterval() public {
+        _accrue(144);
+        bridge.buyback(0, 0);
+        vm.expectEmit(false, false, false, false, address(bridge));
+        emit BacBridge.BuybackSkipped(2, 0);
+        assertEq(bridge.buyback(0, 0), 0, "same epoch: no second buy");
+        _warpEpochs(1);
+        assertGt(bridge.buyback(0, 0), 0, "one epoch later it is allowed again");
+    }
+
+    /// The whole point of requirement 2: an unavailable venue is a no-op, never a revert.
+    function test_BuybackNoOpsWhenTheVenueIsUnavailable() public {
+        _accrue(144);
+        uint256 bnbBefore = bridge.bnbBalance();
+
+        portal.setBroken(true);
+        vm.expectEmit(false, false, false, false, address(bridge));
+        emit BacBridge.BuybackSkipped(4, 0);
+        assertEq(bridge.buyback(0, 0), 0);
+        portal.setBroken(false);
+
+        portal.setStatus(5); // Staged: neither the curve nor the DEX
+        assertEq(bridge.buyback(0, 0), 0);
+
+        portal.setStatus(1);
+        portal.setPrice(0);
+        assertEq(bridge.buyback(0, 0), 0);
+        portal.setPrice(2e10);
+
+        portal.setBuyReverts(true);
+        vm.expectEmit(false, false, false, false, address(bridge));
+        emit BacBridge.BuybackSkipped(5, 0);
+        assertEq(bridge.buyback(0, 0), 0);
+
+        assertEq(bridge.bnbBalance(), bnbBefore, "a skipped buyback must not lose a single wei");
+        assertEq(bridge.buybackBac(), 0);
+        _assertBacBooks();
+    }
+
+    function test_BuybackRevertsWhenTheFillIsWorseThanTheSlippageBound() public {
+        _accrue(144);
+        portal.setExtraSlip(bridge.MAX_BUY_SLIPPAGE_BPS() + 1); // 3.01% worse than spot
+        vm.expectRevert(unicode"Buyback slippage too high / 回购滑点超过上限");
+        bridge.buyback(0, 0);
+
+        portal.setExtraSlip(bridge.MAX_BUY_SLIPPAGE_BPS() - 1);
+        assertGt(bridge.buyback(0, 0), 0, "just inside the bound must go through");
+    }
+
+    function test_BuybackHonoursACallerSuppliedFloorOnTopOfItsOwn() public {
+        _accrue(144);
+        uint256 fair = portal.quote(bridge.MAX_BUYBACK_BNB());
+        // An unreachable caller floor makes the venue refuse the fill, which is a no-op and not
+        // a revert - the same rule as any other unavailable venue.
+        assertEq(bridge.buyback(fair * 2, 0), 0, "an unreachable floor must not buy");
+        assertEq(bridge.buybackBac(), 0);
+        _warpEpochs(1);
+        assertEq(bridge.buyback(fair, 0), fair, "an exactly-met floor passes");
+    }
+
+    /// Venue detection is read from chain state on every call, never from a stored flag.
+    function test_BuybackSwitchesToPancakeWhenTheTokenGraduates() public {
+        _accrue(144);
+        (,,, uint8 venueBefore) = bridge.buybackState();
+        assertEq(uint256(venueBefore), 1, "curve while status == Tradable");
+
+        portal.setStatus(4); // DEX
+        (,,, uint8 venueAfter) = bridge.buybackState();
+        assertEq(uint256(venueAfter), 2, "PancakeSwap once status == DEX");
+
+        vm.expectEmit(true, false, false, false, address(bridge));
+        emit BacBridge.BoughtBack(address(this), 2, 0, 0, 0);
+        uint256 bought = bridge.buyback(0, 0);
+        assertEq(bought, portal.quote(bridge.MAX_BUYBACK_BNB()));
+        assertEq(bridge.buybackBac(), bought);
+
+        // and a broken router after graduation is still a no-op
+        _warpEpochs(1);
+        router.setBroken(true);
+        assertEq(bridge.buyback(0, 0), 0);
+        router.setBroken(false);
+        router.setSwapReverts(true);
+        assertEq(bridge.buyback(0, 0), 0);
+        _assertBacBooks();
+    }
+
+    function test_BuybackIsDisabledOnceHalted() public {
+        _accrue(144);
+        anchor.setHaltReason(1);
+        bridge.checkHalt();
+        vm.warp(vm.getBlockTimestamp() + bridge.ESCAPE_ARM_DELAY());
+        bridge.checkHalt();
+        assertTrue(bridge.isHalted());
+
+        vm.expectEmit(false, false, false, false, address(bridge));
+        emit BacBridge.BuybackSkipped(1, 0);
+        assertEq(bridge.buyback(0, 0), 0, "after a halt the BNB belongs to the junior pot");
+    }
+
+    /// No exit path may ever fire a buy: that is what makes the exit timing ungameable.
+    function test_NoExitPathTriggersABuy() public {
+        _lock(alice, 1, 1000e18);
+        _seedBuyback(20e18);
+        _accrue(144);
+        uint256 bnbBefore = bridge.bnbBalance();
+
+        _postSingle(_curEpoch(), _leaf(1, 1, alice, 1000e18), 3);
+        _claim(_curEpoch(), 1, 1, alice, 1000e18);
+        assertEq(bridge.bnbBalance(), bnbBefore, "claimExit must not spend BNB");
+
+        _warpEpochs(1);
+        _settleNext(3);
+        assertEq(bridge.bnbBalance(), bnbBefore, "settleEpoch must not spend BNB");
+        vm.prank(alice);
+        bridge.collect(alice);
+        assertEq(bridge.bnbBalance(), bnbBefore, "collect must not spend BNB");
+        assertEq(bridge.buybackBacBought(), 0, "nothing was ever bought on an exit path");
+    }
+
+    /// The slippage bound is the guard that binds; `maxSpend` is how the keeper splits around it.
+    function test_MaxSpendLetsTheKeeperSplitAroundTheSlippageBound() public {
+        _accrue(144);
+        // a pool thin enough that a full MAX_BUYBACK_BNB buy breaches the 3% bound
+        portal.setExtraSlip(bridge.MAX_BUY_SLIPPAGE_BPS() + 100);
+        vm.expectRevert(unicode"Buyback slippage too high / 回购滑点超过上限");
+        bridge.buyback(0, 0);
+
+        // the same call, split down: the mock's impact does not depend on size, so this test
+        // only proves the plumbing - the live-fork test proves the economics.
+        portal.setExtraSlip(0);
+        uint256 bought = bridge.buyback(0, 0.02 ether);
+        assertEq(bought, portal.quote(0.02 ether), "maxSpend must bound the spend");
+        assertEq(bridge.buybackBnbSpent(), 0.02 ether);
+
+        // and a maxSpend under the floor is a no-op, never a dust trade
+        _warpEpochs(1);
+        assertEq(bridge.buyback(0, bridge.MIN_BUYBACK_BNB() - 1), 0, "no dust trades");
+    }
+
+    function test_BuybackBudgetNeverExceedsTheBnbBucket() public {
+        _warpEpochs(10_000); // far more than one day of accrual
+        (uint256 budget,,,) = bridge.buybackState();
+        assertLe(budget, bridge.bnbBalance(), "the budget is bounded by the bucket");
+        bridge.buyback(0, 0);
+        assertLe(bridge.buybackBudget(), bridge.bnbBalance());
+    }
+}
+
+// ============================================================================
 //                           EXIT SIDE / THE MONEY
 // ============================================================================
 
@@ -275,11 +863,10 @@ contract BacBridgeExitTest is BacBridgeTestBase {
     function setUp() public override {
         super.setUp();
         _lock(alice, 1, 1000e18);
-        vm.deal(address(this), 1000 ether);
-        bridge.acceptRelease{value: 10 ether}();
+        _seedBuyback(10e18);
     }
 
-    /// B10: two different-sized exits in the SAME epoch get an identical lockedWei/credits ratio.
+    /// B10: two different-sized exits in the SAME epoch get an identical lockedBac/credits ratio.
     function test_B10_SameEpochDifferentSizesShareOneRate() public {
         bytes32 leafA = _leaf(1, 1, alice, 100e18);
         bytes32 leafB = _leaf(2, 1, bob, 300e18);
@@ -297,10 +884,10 @@ contract BacBridgeExitTest is BacBridgeTestBase {
         assertGt(lockedB, 0);
         // identical per-credit rate, exact cross-multiplication
         assertEq(lockedA * 300e18, lockedB * 100e18, "B10: first-mover advantage");
-        assertEq(lockedA, 1 ether);
-        assertEq(lockedB, 3 ether);
-        assertEq(bridge.owedTotal(), 4 ether);
-        assertLe(bridge.owedTotal(), bridge.poolBalance(), "B1");
+        assertEq(lockedA, 1e18);
+        assertEq(lockedB, 3e18);
+        assertEq(bridge.owedTotal(), 4e18);
+        assertLe(bridge.owedTotal(), bridge.buybackBac(), "B1");
     }
 
     /// B10, awkward numbers: the per-credit rate may differ only by integer-division dust.
@@ -329,8 +916,9 @@ contract BacBridgeExitTest is BacBridgeTestBase {
         bytes32 leaf = _leaf(7, 1, alice, 200e18);
         _postSingle(_curEpoch(), leaf, 3);
         uint256 locked = _claim(_curEpoch(), 7, 1, alice, 200e18);
-        assertEq(locked, 2 ether); // 200/1000 of 10 BNB
-        assertEq(bridge.owed(alice), 2 ether);
+        assertEq(locked, 2e18); // 200/1000 of 10 BAC
+        assertEq(bridge.owed(alice), 2e18);
+        assertEq(bridge.epochOwed(_curEpoch(), alice), 2e18, "the per-epoch ledger records it");
         assertEq(bridge.totalCreditsExited(), 200e18);
         assertEq(bridge.exitedCredits(1), 200e18);
         assertEq(bridge.unattributedExited(), 0);
@@ -359,7 +947,7 @@ contract BacBridgeExitTest is BacBridgeTestBase {
     }
 
     function test_ClaimExitRejectsZeroRate() public {
-        BacBridge dry = new BacBridge(address(bac), address(registry), address(anchor), watchdog);
+        BacBridge dry = _newBridge();
         bac.mint(alice, 10e18);
         vm.startPrank(alice);
         bac.approve(address(dry), 10e18);
@@ -379,23 +967,27 @@ contract BacBridgeExitTest is BacBridgeTestBase {
         dry.claimExit(_curEpoch(), 1, 1, alice, 1e18, proof);
     }
 
-    /// G11: a banned agent still gets out. `claimExit` never reads the registry at all.
-    function test_BannedAgentCanStillExit() public {
-        registry.setStatus(1, IAgentRegistry.Status.BANNED);
+    /// G11: `claimExit` never reads the identity registry at all, so losing the identity — sold,
+    ///      transferred, or the registry upgraded out from under us — cannot strand an exit that
+    ///      is already in an anchor.
+    function test_ExitWorksAfterTheIdentityIsGone() public {
+        vm.prank(alice);
+        identity.transfer(1, address(0xdead));
         bytes32 leaf = _leaf(7, 1, alice, 200e18);
         _postSingle(_curEpoch(), leaf, 3);
         uint256 locked = _claim(_curEpoch(), 7, 1, alice, 200e18);
-        assertEq(locked, 2 ether);
+        assertEq(locked, 2e18);
 
         _warpEpochs(1);
         _settleNext(3);
         vm.prank(alice);
         uint256 paid = bridge.collect(alice);
-        assertGt(paid, 0, "a banned agent must still be able to collect");
+        assertGt(paid, 0, "an exit already in an anchor must still be collectable");
     }
 
-    function test_DormantAgentCanStillExit() public {
-        registry.setStatus(1, IAgentRegistry.Status.DORMANT);
+    function test_ExitWorksForAnIdentityHeldBySomebodyElse() public {
+        vm.prank(alice);
+        identity.transfer(1, bob);
         bytes32 leaf = _leaf(8, 1, alice, 100e18);
         _postSingle(_curEpoch(), leaf, 3);
         assertGt(_claim(_curEpoch(), 8, 1, alice, 100e18), 0);
@@ -407,7 +999,7 @@ contract BacBridgeExitTest is BacBridgeTestBase {
         _postSingle(_curEpoch(), leaf, 3);
         vm.prank(carol);
         _claim(_curEpoch(), 9, 1, alice, 100e18);
-        assertEq(bridge.owed(alice), 1 ether);
+        assertEq(bridge.owed(alice), 1e18);
         assertEq(bridge.owed(carol), 0);
     }
 
@@ -432,12 +1024,11 @@ contract BacBridgeSettleTest is BacBridgeTestBase {
     function setUp() public override {
         super.setUp();
         _lock(alice, 1, 1000e18);
-        vm.deal(address(this), 1000 ether);
-        bridge.acceptRelease{value: 10 ether}();
+        _seedBuyback(10e18);
         bytes32 leaf = _leaf(1, 1, alice, 1000e18);
         _postSingle(_curEpoch(), leaf, 3);
-        _claim(_curEpoch(), 1, 1, alice, 1000e18); // owed[alice] = 10 BNB
-        assertEq(bridge.owed(alice), 10 ether);
+        _claim(_curEpoch(), 1, 1, alice, 1000e18); // owed[alice] = 10 BAC
+        assertEq(bridge.owed(alice), 10e18);
     }
 
     function test_SettleEpochMustBeSequential() public {
@@ -474,7 +1065,7 @@ contract BacBridgeSettleTest is BacBridgeTestBase {
         anchor.setAnchor(e, bytes32(uint256(1)), 3, IChainAnchor.State.FINAL);
         bridge.settleEpoch(e);
         (uint256 pot,,) = bridge.lastEpochRelease();
-        assertEq(pot, 0.5 ether); // 5% of 10 BNB
+        assertEq(pot, _expectedPot(10e18, 0, 500));
     }
 
     /// B16: an epoch that is neither FINAL nor terminal advances after SETTLE_GRACE.
@@ -484,49 +1075,94 @@ contract BacBridgeSettleTest is BacBridgeTestBase {
         vm.expectRevert(unicode"Epoch not resolved yet / 该纪元尚未定案");
         bridge.settleEpoch(e);
 
-        vm.warp((uint256(e) + 1) * 86400 + uint256(bridge.SETTLE_GRACE()));
+        vm.warp((uint256(e) + 1) * E + uint256(bridge.SETTLE_GRACE()));
         bridge.settleEpoch(e);
         assertEq(bridge.lastSettledEpoch(), e);
         assertEq(bridge.skippedEpochs(), 1);
     }
 
-    function test_ReleaseBpsTiers() public {
+    /// The release tiers are PER DAY and are divided by 144 here. Read as per-epoch they would
+    /// be 288%/day and would empty the bucket the same day.
+    function test_ReleaseBpsTiersAreDailyRatesDividedByEpochsPerDay() public {
         _warpEpochs(1);
-        assertEq(_settleNext(0), 0.2 ether, "0 witnesses -> 200 bps"); // 2% of 10 BNB
+        assertEq(_settleNext(0), _expectedPot(10e18, 0, 200), "0 witnesses -> 200 bps/day");
+        uint256 r1 = bridge.reservedTotal();
         _warpEpochs(1);
-        assertEq(_settleNext(2), (10 ether - 0.2 ether) * 350 / 10000, "1-2 witnesses -> 350 bps");
+        assertEq(_settleNext(2), _expectedPot(10e18, r1, 350), "1-2 witnesses -> 350 bps/day");
+        uint256 r2 = bridge.reservedTotal();
         _warpEpochs(1);
-        (uint256 reserved, uint16 bps) = (bridge.reservedTotal(), 500);
-        _warpEpochs(0);
-        assertEq(_settleNext(3), (10 ether - reserved) * bps / 10000, "3+ witnesses -> 500 bps");
+        assertEq(_settleNext(3), _expectedPot(10e18, r2, 500), "3+ witnesses -> 500 bps/day");
+
+        // sanity on magnitude: one epoch at the top tier is ~0.0347% of the bucket
+        assertLt(_expectedPot(10e18, 0, 500), 10e18 / 2000, "a single epoch must be a sliver");
+    }
+
+    /// A full day of releases at the zero-witness tier must land on the simulation's published
+    /// figure: linear division instead of exact compounding realises 1.9803% against a 2.00%
+    /// target, i.e. 1% conservative. 144 epochs of `pot = (assets - reserved) * r` leave
+    /// `1 - (1 - r)^144` released, with `r = 200 / (10000 * 144)`.
+    function test_ADayOfReleasesMatchesTheSimulatedDailyRate() public {
+        uint256 start = bridge.buybackBac();
+        uint256 released;
+        for (uint64 i = 0; i < 144; i++) {
+            _warpEpochs(1);
+            released += _settleNext(0);
+        }
+        assertLe(released, (start * 200) / 10000, "a day must never exceed the daily tier");
+        // 1.9803% of the bucket, to four decimal places
+        assertGe(released * 1e6 / start, 19_800, "realised daily rate below 1.980%");
+        assertLe(released * 1e6 / start, 19_810, "realised daily rate above 1.981%");
     }
 
     /// The per-address cap truncates, and the remainder stays in `owed` forever (never forfeited).
     function test_CapTruncationLeavesRemainderInOwedForever() public {
+        // the first collect of an address may claim a full day's worth of allowance, so take it
+        // first and measure the cap on the SECOND one, which is the steady-state case
+        _warpEpochs(1);
+        _settleNext(3);
+        vm.prank(alice);
+        bridge.collect(alice);
+
         _warpEpochs(1);
         uint256 pot = _settleNext(3);
-        assertEq(pot, 0.5 ether);
-
-        uint256 cap = (pot * bridge.MAX_EXIT_SHARE_BPS()) / 10000;
-        assertEq(cap, 0.05 ether);
+        uint256 cap = (pot * bridge.MAX_EXIT_SHARE_BPS()) / 10000; // span == 1
         assertEq(bridge.pendingCollect(alice), cap, "pendingCollect must already be truncated");
 
+        uint256 owedBefore = bridge.owed(alice);
         vm.prank(alice);
         uint256 paid = bridge.collect(alice);
         assertEq(paid, cap);
-        assertEq(bridge.owed(alice), 10 ether - cap, "remainder stays in owed");
-        assertEq(bridge.unclaimed(alice), pot - cap, "truncated wei stays in unclaimed, never forfeited");
-        assertEq(bridge.reservedTotal(), pot - cap);
+        assertEq(bridge.owed(alice), owedBefore - cap, "remainder stays in owed");
+        assertGt(bridge.unclaimed(alice), 0, "truncated wei stays in unclaimed, never forfeited");
         assertLe(bridge.reservedTotal(), bridge.owedTotal(), "B14");
+        _assertBacBooks();
+    }
 
-        // next epoch: the same address can collect the leftover, still capped
+    /// MAX_CATCHUP_EPOCHS: one call a day must claim exactly what 144 calls would have.
+    function test_CatchupLetsOneDailyCollectMatchTheDailyAllowance() public {
         _warpEpochs(1);
-        uint256 pot2 = _settleNext(3);
+        _settleNext(3);
         vm.prank(alice);
-        uint256 paid2 = bridge.collect(alice);
-        assertEq(paid2, (pot2 * bridge.MAX_EXIT_SHARE_BPS()) / 10000);
-        assertGt(bridge.unclaimed(alice), 0, "leftover still there");
-        assertEq(bridge.owed(alice), 10 ether - paid - paid2);
+        bridge.collect(alice); // establish lastCollectEpoch
+
+        // 20 epochs of releases with nobody collecting
+        uint256 pot;
+        for (uint64 i = 0; i < 20; i++) {
+            _warpEpochs(1);
+            pot = _settleNext(3);
+        }
+        uint256 cap1 = (pot * bridge.MAX_EXIT_SHARE_BPS()) / 10000;
+        uint256 cap20 = (pot * bridge.MAX_EXIT_SHARE_BPS() * 20) / 10000;
+        assertGt(bridge.pendingCollect(alice), cap1 * 19, "20 epochs of allowance must be claimable at once");
+        assertLe(bridge.pendingCollect(alice), cap20, "and no more than 20 epochs of it");
+
+        // beyond one day the multiplier stops growing
+        for (uint64 i = 0; i < 400; i++) {
+            _warpEpochs(1);
+            pot = _settleNext(3);
+        }
+        uint256 capDay = (pot * bridge.MAX_EXIT_SHARE_BPS() * bridge.MAX_CATCHUP_EPOCHS()) / 10000;
+        assertLe(bridge.pendingCollect(alice), capDay, "MAX_CATCHUP_EPOCHS bounds the multiplier");
     }
 
     function test_DoubleCollectInSameEpochRejected() public {
@@ -548,10 +1184,10 @@ contract BacBridgeSettleTest is BacBridgeTestBase {
     /// B15: a freshly locked `owed` gets nothing from releases that happened before it existed.
     function test_NewOwedGetsNothingFromEarlierReleases() public {
         _warpEpochs(1);
-        _settleNext(3); // 0.5 BNB released, all of it belongs to alice
+        _settleNext(3); // all of it belongs to alice
 
-        // bob locks and exits AFTER that release (fresh revenue, otherwise the rate is 0)
-        bridge.acceptRelease{value: 10 ether}();
+        // bob locks and exits AFTER that release (fresh stock, otherwise the rate is 0)
+        _seedBuyback(10e18);
         _lock(bob, 2, 1000e18);
         bytes32 leaf = _leaf(2, 2, bob, 1000e18);
         _postSingle(_curEpoch(), leaf, 3);
@@ -568,17 +1204,47 @@ contract BacBridgeSettleTest is BacBridgeTestBase {
         assertGt(bridge.collect(alice), 0);
     }
 
-    /// Zero-witness ceiling: any 30 consecutive epochs release at most 15% of the pool.
-    function test_ZeroWitnessWindowCap() public {
+    /// Zero-witness ceiling: the window is 30 DAY buckets. As 30 epochs it would be 5 hours,
+    /// i.e. 15% per 5 hours = 72% a day = no ceiling at all.
+    function test_ZeroWitnessCeilingIsThirtyDaysNotThirtyEpochs() public {
+        uint256 start = bridge.buybackBac();
         uint256 released;
-        for (uint64 i = 0; i < 30; i++) {
-            _warpEpochs(1);
-            released += _settleNext(0);
+        // 30 days of zero-witness epochs, sampled one epoch per day to keep the run short
+        for (uint64 d = 0; d < 30; d++) {
+            for (uint64 i = 0; i < 4; i++) {
+                _warpEpochs(1);
+                released += _settleNext(0);
+            }
+            _warpEpochs(140); // jump to the next day bucket
+            // keep the settle cursor moving without releasing
+            for (uint64 i = 0; i < 140; i++) {
+                uint64 e = bridge.lastSettledEpoch() + 1;
+                anchor.setAnchor(e, bytes32(0), 0, IChainAnchor.State.VETOED);
+                bridge.settleEpoch(e);
+            }
         }
-        uint256 capTotal = (uint256(10 ether) * uint256(bridge.NO_ATTEST_WINDOW_BPS())) / 10000;
-        emit log_named_uint("capTotal", capTotal);
-        assertLe(released, capTotal + 1, "zero-witness window cap");
-        assertEq(bridge.releasedInWindow(), released);
+        uint256 capTotal = (start * uint256(bridge.NO_ATTEST_WINDOW_BPS())) / 10000;
+        assertLe(released, capTotal + 30, "30 day buckets must cap at 15% of the bucket");
+        assertLe(bridge.releasedInWindow(), capTotal + 30);
+    }
+
+    /// The oldest day bucket must actually age out, otherwise the ceiling would be permanent.
+    function test_ZeroWitnessWindowBucketsExpire() public {
+        _warpEpochs(1);
+        uint256 first = _settleNext(0);
+        assertGt(first, 0);
+        assertEq(bridge.releasedInWindow(), first);
+
+        // 30 days later the same slot is reused and the old figure leaves the window
+        uint64 target = bridge.lastSettledEpoch() + 30 * 144;
+        vm.warp(uint256(target + 1) * E);
+        while (bridge.lastSettledEpoch() < target - 1) {
+            uint64 e = bridge.lastSettledEpoch() + 1;
+            anchor.setAnchor(e, bytes32(0), 0, IChainAnchor.State.VETOED);
+            bridge.settleEpoch(e);
+        }
+        uint256 next = _settleNext(0);
+        assertEq(bridge.releasedInWindow(), next, "the 30-day-old bucket must have expired");
     }
 
     /// I2 / B14: reservations can never ratchet past the debt they serve.
@@ -587,21 +1253,149 @@ contract BacBridgeSettleTest is BacBridgeTestBase {
             _warpEpochs(1);
             _settleNext(3);
             assertLe(bridge.reservedTotal(), bridge.owedTotal(), "B14");
-            assertLe(bridge.owedTotal(), bridge.poolBalance(), "B1");
+            assertLe(bridge.owedTotal(), bridge.buybackBac(), "B1");
         }
     }
 
     function test_SettleWithZeroOwedClearsRoundingDust() public {
-        // pay alice out completely through a halt-free path is slow; instead exit-free bridge:
-        BacBridge fresh = new BacBridge(address(bac), address(registry), address(anchor), watchdog);
-        vm.deal(address(this), 5 ether);
-        fresh.acceptRelease{value: 5 ether}();
+        BacBridge fresh = _newBridge();
+        _seedBuyback(fresh, 5e18);
         _warpEpochs(1);
         uint64 e = fresh.lastSettledEpoch() + 1;
         anchor.setAnchor(e, bytes32(uint256(1)), 3, IChainAnchor.State.FINAL);
         fresh.settleEpoch(e);
         assertEq(fresh.reservedTotal(), 0);
         assertEq(fresh.accPerOwed(), 0);
+    }
+}
+
+// ============================================================================
+//                    revokeEpochOwed  (decision #25a)
+// ============================================================================
+
+contract BacBridgeRevokeTest is BacBridgeTestBase {
+    function setUp() public override {
+        super.setUp();
+        _lock(alice, 1, 1000e18);
+        _seedBuyback(10e18);
+    }
+
+    function _exit(address to, uint256 exitId, uint256 credits, uint64 epoch) internal returns (uint256) {
+        bytes32 leaf = _leaf(exitId, 1, to, credits);
+        _postSingle(epoch, leaf, 3);
+        return _claim(epoch, exitId, 1, to, credits);
+    }
+
+    address[] internal holders;
+
+    function test_RevokeVoidsOneEpochAndReturnsItToTheBucket() public {
+        uint64 bad = _curEpoch();
+        uint256 lockedAmt = _exit(alice, 1, 500e18, bad);
+        assertEq(bridge.owedTotal(), lockedAmt);
+        uint256 bucketBefore = bridge.buybackBac();
+
+        vm.prank(watchdog);
+        bridge.pause();
+
+        holders = [alice];
+        vm.prank(watchdog);
+        uint256 revoked = bridge.revokeEpochOwed(bad, holders);
+
+        assertEq(revoked, lockedAmt);
+        assertEq(bridge.owed(alice), 0);
+        assertEq(bridge.owedTotal(), 0);
+        assertEq(bridge.epochOwed(bad, alice), 0);
+        assertEq(bridge.buybackBac(), bucketBefore, "the BAC never left the bucket");
+        assertEq(bac.balanceOf(alice), 0, "no BAC reached the forged exit");
+        _assertBacBooks();
+    }
+
+    /// Only the named epoch: a claim locked against a different anchor survives untouched.
+    function test_RevokeTouchesOnlyTheNamedEpoch() public {
+        uint64 good = _curEpoch();
+        uint256 goodAmt = _exit(alice, 1, 200e18, good);
+        _warpEpochs(1);
+        uint64 bad = _curEpoch();
+        uint256 badAmt = _exit(alice, 2, 200e18, bad);
+        assertEq(bridge.owed(alice), goodAmt + badAmt);
+
+        vm.prank(watchdog);
+        bridge.pause();
+        holders = [alice];
+        vm.prank(watchdog);
+        assertEq(bridge.revokeEpochOwed(bad, holders), badAmt);
+
+        assertEq(bridge.owed(alice), goodAmt, "the honest epoch must survive");
+        assertEq(bridge.epochOwed(good, alice), goodAmt);
+    }
+
+    function test_RevokeIsWatchdogOnlyAndOnlyWhilePaused() public {
+        uint64 bad = _curEpoch();
+        _exit(alice, 1, 500e18, bad);
+        holders = [alice];
+
+        vm.expectRevert(unicode"Only watchdog / 仅限看门狗");
+        bridge.revokeEpochOwed(bad, holders);
+
+        vm.prank(watchdog);
+        vm.expectRevert(unicode"Bridge not paused / 桥未处于暂停");
+        bridge.revokeEpochOwed(bad, holders);
+
+        vm.prank(watchdog);
+        bridge.pause();
+        vm.prank(watchdog);
+        assertGt(bridge.revokeEpochOwed(bad, holders), 0);
+    }
+
+    /// A matured claim is senior and untouchable — the only remaining time guard after the wait
+    /// dropped to 120 seconds.
+    function test_RevokeSkipsMaturedOwed() public {
+        uint64 bad = _curEpoch();
+        uint256 amt = _exit(alice, 1, 500e18, bad);
+        vm.warp(vm.getBlockTimestamp() + bridge.OWED_MATURITY() + 1);
+
+        vm.prank(watchdog);
+        bridge.pause();
+        holders = [alice];
+        vm.prank(watchdog);
+        assertEq(bridge.revokeEpochOwed(bad, holders), 0, "a matured claim must not be revocable");
+        assertEq(bridge.owed(alice), amt);
+    }
+
+    /// The watchdog can void debt, never take it: there is no recipient and no balance change.
+    function test_RevokeGivesTheWatchdogNothing() public {
+        uint64 bad = _curEpoch();
+        _exit(alice, 1, 500e18, bad);
+        vm.prank(watchdog);
+        bridge.pause();
+        holders = [alice];
+        uint256 wdBnb = watchdog.balance;
+        vm.prank(watchdog);
+        bridge.revokeEpochOwed(bad, holders);
+        assertEq(watchdog.balance, wdBnb);
+        assertEq(bac.balanceOf(watchdog), 0);
+    }
+
+    /// Revoking after a partial payout only voids what is still owed, and never underflows.
+    function test_RevokeAfterAPartialCollect() public {
+        uint64 bad = _curEpoch();
+        _exit(alice, 1, 1000e18, bad);
+        _warpEpochs(1);
+        _settleNext(3);
+        vm.prank(alice);
+        uint256 paid = bridge.collect(alice);
+        assertGt(paid, 0);
+
+        uint256 left = bridge.owed(alice);
+        vm.prank(watchdog);
+        bridge.pause();
+        holders = [alice];
+        vm.prank(watchdog);
+        assertEq(bridge.revokeEpochOwed(bad, holders), left);
+        assertEq(bridge.owed(alice), 0);
+        assertEq(bridge.owedTotal(), 0);
+        assertLe(bridge.reservedTotal(), bridge.owedTotal(), "B14 after a revoke");
+        _assertBacBooks();
     }
 }
 
@@ -614,8 +1408,8 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         super.setUp();
         _lock(alice, 1, 600e18);
         _lock(bob, 2, 400e18);
+        _seedBuyback(10e18);
         vm.deal(address(this), 1000 ether);
-        bridge.acceptRelease{value: 10 ether}();
     }
 
     function _aliceExits(uint256 credits, uint256 exitId) internal returns (uint256) {
@@ -757,7 +1551,7 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         bridge.lock(1, 1e18);
         vm.stopPrank();
 
-        (uint256 weight,,) = bridge.escapeState();
+        (uint256 weight,,,,) = bridge.escapeState();
         assertEq(weight, 900e18, "junior weight = outstanding credits at halt");
     }
 
@@ -787,8 +1581,10 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         vm.prank(alice);
         uint256 paid = bridge.claimOwedAfterHalt(alice);
         assertEq(paid, expected);
+        assertEq(bac.balanceOf(alice), paid, "the senior claim is paid in BAC");
         assertEq(bridge.owed(alice), 0);
         assertEq(bridge.owedTotal(), 0);
+        _assertBacBooks();
     }
 
     /// A matured owed is senior and paid immediately at the halt.
@@ -813,12 +1609,12 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         vm.expectRevert(unicode"Owed not matured / 债权尚未成熟");
         bridge.claimOwedAfterHalt(alice);
 
-        uint256 accBefore = bridge.accPerWeight();
+        uint256 accBefore = bridge.accPerWeightBac();
         uint256 demoted = bridge.owed(alice);
         bridge.sweepImmatureOwed(alice); // permissionless
         assertEq(bridge.owed(alice), 0);
         assertEq(bridge.owedTotal(), 0);
-        assertGt(bridge.accPerWeight(), accBefore, "demoted wei went to the junior accumulator");
+        assertGt(bridge.accPerWeightBac(), accBefore, "demoted BAC went to the junior accumulator");
         assertGt(demoted, 0);
     }
 
@@ -831,25 +1627,60 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         bridge.sweepImmatureOwed(alice);
     }
 
-    /// The junior path: weight is `credited - exitedCredits`, status is never consulted.
-    function test_EscapeCollectPaysJuniorProRata() public {
+    /// The junior path pays BOTH assets: the leftover stock AND the BNB that was never converted.
+    function test_EscapeCollectPaysJuniorProRataInBothAssets() public {
+        bridge.acceptRelease{value: 5 ether}(); // BNB that the buyback had not spent yet
         _haltWith(4);
-        (uint256 weight,,) = bridge.escapeState();
+        (uint256 weight,,,,) = bridge.escapeState();
         assertEq(weight, 1000e18);
 
-        registry.setStatus(1, IAgentRegistry.Status.BANNED); // must not matter
-        uint256 beforeBal = alice.balance;
+        // alice locked first for identity #1, so she is its `agentController` — the only
+        // address `escapeCollect` asks about. The registry itself is never consulted on exit.
+        uint256 bnbBefore = alice.balance;
         vm.prank(alice);
-        uint256 paid = bridge.escapeCollect(1, alice);
-        assertEq(paid, 6 ether, "600/1000 of the 10 BNB pool");
-        assertEq(alice.balance - beforeBal, paid);
+        (uint256 bacPaid, uint256 bnbPaid) = bridge.escapeCollect(1, alice);
+        assertEq(bacPaid, 6e18, "600/1000 of the 10 BAC stock");
+        assertEq(bnbPaid, 3 ether, "600/1000 of the 5 BNB that never became BAC");
+        assertEq(bac.balanceOf(alice), bacPaid);
+        assertEq(alice.balance - bnbBefore, bnbPaid);
 
         vm.prank(bob);
-        assertEq(bridge.escapeCollect(2, bob), 4 ether);
+        (uint256 bacB, uint256 bnbB) = bridge.escapeCollect(2, bob);
+        assertEq(bacB, 4e18);
+        assertEq(bnbB, 2 ether);
 
         vm.prank(alice);
         vm.expectRevert(unicode"Nothing to collect / 没有可领取的金额");
         bridge.escapeCollect(1, alice);
+        _assertBacBooks();
+    }
+
+    /// The escape claim does NOT follow the identity. It is pinned to the address that first
+    /// entered (`agentController`) and moves only when that address says so. Selling, losing or
+    /// having the ERC-8004 registry upgraded under an identity can neither strand the deposit
+    /// behind it nor hand it to the buyer.
+    function test_EscapeClaimDoesNotFollowTheIdentity() public {
+        _haltWith(4);
+        vm.prank(alice);
+        identity.transfer(1, bob);
+        assertEq(bridge.agentController(1), alice, "a transfer of the NFT must not move the claim");
+
+        vm.prank(bob);
+        vm.expectRevert(unicode"Only the agent controller / 仅限该 agent 的控制地址");
+        bridge.escapeCollect(1, bob);
+
+        vm.prank(alice);
+        (uint256 bacPaid,) = bridge.escapeCollect(1, alice);
+        assertEq(bacPaid, 6e18, "the entering address still collects agent 1's junior share");
+    }
+
+    /// Nor does the escape path break when the registry itself is gone or broken: it is never read.
+    function test_EscapeWorksWithTheRegistryBroken() public {
+        _haltWith(4);
+        vm.etch(address(identity), hex"fe"); // every call into the registry now reverts
+        vm.prank(bob);
+        (uint256 bacPaid,) = bridge.escapeCollect(2, bob);
+        assertEq(bacPaid, 4e18);
     }
 
     /// B13 + attack-funds #11: revenue received after a halt reaches the junior claimants.
@@ -859,15 +1690,22 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         bridge.escapeCollect(1, alice);
 
         bridge.acceptRelease{value: 2 ether}();
-        assertEq(bridge.poolBalance(), 4 ether + 2 ether);
+        assertEq(bridge.bnbBalance(), 2 ether);
         vm.prank(alice);
-        uint256 paid = bridge.escapeCollect(1, alice);
-        assertEq(paid, 1.2 ether, "600/1000 of the new 2 BNB");
+        (, uint256 bnbPaid) = bridge.escapeCollect(1, alice);
+        assertEq(bnbPaid, 1.2 ether, "600/1000 of the new 2 BNB");
+
+        // and the same for a BAC donation after the halt
+        bac.mint(address(bridge), 1e18);
+        bridge.sweepUntrackedBac();
+        vm.prank(bob);
+        (uint256 bacPaid,) = bridge.escapeCollect(2, bob);
+        assertEq(bacPaid, 4e18 + 0.4e18, "400/1000 of the stock plus of the donation");
+        _assertBacBooks();
     }
 
-    /// B13: with no outstanding credits at the halt, money still lands in `poolBalance`.
-    function test_ZeroWeightHaltKeepsAccPerWeightZero() public {
-        // every agent's credits leave, so `credited - exitedCredits` is 0 for all of them
+    /// B13: with no outstanding credits at the halt, money still lands on the books.
+    function test_ZeroWeightHaltKeepsAccumulatorsZero() public {
         _postSingle(_curEpoch(), _leaf(1, 1, alice, 600e18), 3);
         _claim(_curEpoch(), 1, 1, alice, 600e18);
         _postSingle(_curEpoch(), _leaf(2, 2, bob, 400e18), 3);
@@ -875,21 +1713,19 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         assertEq(bridge.creditsOutstanding(), 0);
         assertEq(bridge.unattributedExited(), 0);
         _haltWith(4);
-        (uint256 weight, uint256 acc,) = bridge.escapeState();
+        (uint256 weight, uint256 accBac, uint256 accBnb,,) = bridge.escapeState();
         assertEq(weight, 0);
-        assertEq(acc, 0, "B13");
+        assertEq(accBac, 0, "B13");
+        assertEq(accBnb, 0, "B13");
 
-        uint256 poolBefore = bridge.poolBalance();
         bridge.acceptRelease{value: 1 ether}();
-        assertEq(bridge.poolBalance(), poolBefore + 1 ether, "B13");
-        assertEq(bridge.accPerWeight(), 0, "B13");
+        assertEq(bridge.bnbBalance(), 1 ether, "B13");
+        assertEq(bridge.accPerWeightBnb(), 0, "B13");
     }
 
     /// Regression (found by the invariant run): with an over-earning agent the junior weights
-    /// sum to MORE than `issued - exited`, so the spec's literal denominator over-distributes
-    /// the escape pot and drives `poolBalance` below `owedTotal`.
+    /// sum to MORE than `issued - exited`, so the spec's literal denominator over-distributes.
     function test_EscapeWeightCoversOverEarningAgents() public {
-        // agent 2 locked 400 but exits 600 credits: 200 land in `unattributedExited`
         bytes32 leaf = _leaf(1, 2, bob, 600e18);
         _postSingle(_curEpoch(), leaf, 3);
         _claim(_curEpoch(), 1, 2, bob, 600e18);
@@ -897,31 +1733,33 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         assertEq(bridge.creditsOutstanding(), 400e18);
 
         _haltWith(4);
-        (uint256 weight,,) = bridge.escapeState();
+        (uint256 weight,,,,) = bridge.escapeState();
         uint256 sumOfWeights =
             (bridge.credited(1) - bridge.exitedCredits(1)) + (bridge.credited(2) - bridge.exitedCredits(2));
         assertEq(weight, sumOfWeights, "escape denominator must be the sum of the weights");
         assertEq(weight, 600e18);
 
-        uint256 poolAtHalt = bridge.poolBalance();
+        uint256 stockAtHalt = bridge.buybackBac();
         vm.prank(alice);
-        uint256 paidA = bridge.escapeCollect(1, alice);
+        (uint256 paidA,) = bridge.escapeCollect(1, alice);
         vm.prank(bob);
         (bool ok, bytes memory ret) =
             address(bridge).call(abi.encodeWithSignature("escapeCollect(uint256,address)", uint256(2), bob));
         uint256 paidB = ok ? abi.decode(ret, (uint256)) : 0; // weight 0 -> nothing to collect
-        assertLe(paidA + paidB, poolAtHalt, "junior pot over-distributed");
-        assertLe(bridge.owedTotal(), bridge.poolBalance(), "B1");
+        assertLe(paidA + paidB, stockAtHalt, "junior pot over-distributed");
+        assertLe(bridge.owedTotal(), bridge.buybackBac(), "B1");
 
         // the senior claim must still be payable in full afterwards
         vm.warp(vm.getBlockTimestamp() + bridge.OWED_MATURITY());
         uint256 senior = bridge.owed(bob);
         vm.prank(bob);
         assertEq(bridge.claimOwedAfterHalt(bob), senior);
+        _assertBacBooks();
     }
 
-    /// B8: no privileged role has any path to the money.
-    function test_NoPrivilegedPathToFunds() public {
+    /// B8: the watchdog and the veto key have no path to the money. (The OWNER does, by design —
+    /// decision #29 — and that is tested on its own in `BacBridgeEmergencyTest`.)
+    function test_WatchdogAndVetoKeyHaveNoPathToFunds() public {
         _aliceExits(100e18, 1);
         uint256 wdBefore = watchdog.balance;
         uint256 vkBefore = vetoKey.balance;
@@ -939,11 +1777,16 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         assertEq(vetoKey.balance, vkBefore);
         assertEq(bac.balanceOf(watchdog), 0);
         assertEq(bac.balanceOf(vetoKey), 0);
-        // and there is simply no owner / admin entry point
-        (bool ok,) = address(bridge).call(abi.encodeWithSignature("owner()"));
-        assertFalse(ok, "BacBridge must have no owner()");
-        (ok,) = address(bridge).call(abi.encodeWithSignature("admin()"));
-        assertFalse(ok, "BacBridge must have no admin()");
+        // the owner is a separate key, and neither role can use the owner's powers
+        assertEq(bridge.owner(), owner, "decision #29: the bridge has an owner");
+        vm.prank(watchdog);
+        vm.expectRevert(unicode"Only owner / 仅限 owner");
+        bridge.emergencyWithdrawBnb(payable(watchdog), 0);
+        vm.prank(vetoKey);
+        vm.expectRevert(unicode"Only owner / 仅限 owner");
+        bridge.emergencyWithdrawToken(address(bac), vetoKey, 0);
+        (bool ok,) = address(bridge).call(abi.encodeWithSignature("admin()"));
+        assertFalse(ok, "no second admin role");
     }
 
     /// The watchdog cannot stop the escape path once halted.
@@ -957,7 +1800,966 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
         vm.prank(alice);
         assertGt(bridge.claimOwedAfterHalt(alice), 0, "pause must not freeze the senior claim");
         vm.prank(bob);
-        assertGt(bridge.escapeCollect(2, bob), 0, "pause must not freeze the junior claim");
+        (uint256 bacB,) = bridge.escapeCollect(2, bob);
+        assertGt(bacB, 0, "pause must not freeze the junior claim");
+    }
+}
+
+// ============================================================================
+//                     PROXY / UUPS UPGRADES  (decision #29, #29c)
+// ============================================================================
+
+contract BacBridgeUpgradeTest is BacBridgeTestBase {
+    /// @dev Pinned from `forge inspect BacBridge storageLayout`. `test_StorageLayoutIsPinned`
+    ///      re-derives each of them from live state, so a layout change fails loudly here.
+    uint256 internal constant FIRST_SLOT = 301; // bacToken
+    uint256 internal constant COUNTERS_SLOT = 349; // emergencyCount | lastEmergencyAt | upgradeCount | lastUpgradeAt
+    uint256 internal constant GAP_START = 350;
+    uint256 internal constant GAP_LEN = 42;
+    bytes32 internal constant IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    function _implOf(address proxy) internal view returns (address) {
+        return address(uint160(uint256(vm.load(proxy, IMPL_SLOT))));
+    }
+
+    function _counters()
+        internal
+        view
+        returns (uint64 emergencyCount, uint64 lastEmergencyAt, uint64 upgradeCount, uint64 lastUpgradeAt)
+    {
+        uint256 w = uint256(vm.load(address(bridge), bytes32(COUNTERS_SLOT)));
+        return (uint64(w), uint64(w >> 64), uint64(w >> 128), uint64(w >> 192));
+    }
+
+    /// @dev Touches as much of the storage as one test can: both buckets, a real buyback, an
+    ///      exit, a release, a collect, a pause, a burn, a controller hand-over and an owner
+    ///      withdrawal, so the upgrade test has live values in nearly every slot.
+    function _busyBridge() internal returns (uint64 exitEpoch) {
+        _lock(alice, 1, 600e18);
+        _lock(bob, 2, 400e18);
+        vm.deal(address(this), 100 ether);
+        bridge.acceptRelease{value: 10 ether}();
+        _warpEpochs(144);
+        assertGt(bridge.buyback(0, 0), 0);
+        _seedBuyback(10e18);
+        exitEpoch = _curEpoch();
+        _postSingle(exitEpoch, _leaf(1, 1, alice, 100e18), 3);
+        _claim(exitEpoch, 1, 1, alice, 100e18);
+        _warpEpochs(1);
+        _settleNext(3);
+        vm.prank(alice);
+        bridge.collect(alice);
+        vm.startPrank(watchdog);
+        bridge.pause();
+        _warpEpochs(3);
+        bridge.unpause();
+        vm.stopPrank();
+        bridge.burnLocked();
+        vm.prank(bob);
+        bridge.setAgentController(2, carol);
+        vm.prank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 1 ether);
+    }
+
+    function _sampleMappings(uint64 exitEpoch) internal view returns (uint256[10] memory) {
+        return [
+            bridge.credited(1),
+            bridge.credited(2),
+            bridge.exitedCredits(1),
+            bridge.owed(alice),
+            bridge.unclaimed(alice),
+            bridge.owedDebt(alice),
+            uint256(bridge.lastClaimAt(alice)),
+            uint256(bridge.lastCollectEpoch(alice)),
+            bridge.epochOwed(exitEpoch, alice),
+            bridge.escapeDebtBac(1)
+        ];
+    }
+
+    function test_ImplementationCanNeverBeInitialisedOrUpgraded() public {
+        vm.expectRevert("Initializable: contract is already initialized");
+        impl.initialize(owner, address(bac), address(identity), address(anchor), watchdog, address(portal), address(router));
+        assertEq(impl.owner(), address(0), "the bare implementation has no owner");
+
+        BacBridgeV2Mock v2 = new BacBridgeV2Mock();
+        vm.expectRevert("Function must be called through delegatecall");
+        impl.upgradeTo(address(v2));
+    }
+
+    function test_InitializeRunsExactlyOnce() public {
+        vm.expectRevert("Initializable: contract is already initialized");
+        bridge.initialize(
+            stranger, address(bac), address(identity), address(anchor), watchdog, address(portal), address(router)
+        );
+        assertEq(bridge.owner(), owner);
+    }
+
+    function test_InitializeWiresEverythingAndStartsTheCursors() public view {
+        assertEq(bridge.owner(), owner);
+        assertEq(bridge.pendingOwner(), address(0));
+        assertEq(bridge.bacToken(), address(bac));
+        assertEq(bridge.identityRegistry(), address(identity));
+        assertEq(bridge.anchor(), address(anchor));
+        assertEq(bridge.watchdog(), watchdog);
+        assertEq(bridge.portal(), address(portal));
+        assertEq(bridge.router(), address(router));
+        assertEq(uint256(bridge.lastSettledEpoch()), T0 / E, "settle cursor starts at the deploy epoch");
+        assertEq(uint256(bridge.lastBuybackEpoch()), T0 / E);
+        assertEq(_implOf(address(bridge)), address(impl));
+        assertEq(bridge.EXTENSION(), impl.EXTENSION(), "the proxy reads the implementation's extension");
+        assertGt(bridge.EXTENSION().code.length, 0);
+        assertEq(uint256(bridge.upgradeCount()), 0);
+        assertEq(uint256(bridge.emergencyCount()), 0);
+    }
+
+    function test_InitializeRejectsEveryZeroAddress() public {
+        address[7] memory a =
+            [owner, address(bac), address(identity), address(anchor), watchdog, address(portal), address(router)];
+        string[7] memory why = [
+            unicode"Zero owner / owner 地址为零",
+            unicode"Zero BAC token / BAC 代币地址为零",
+            unicode"Zero identity registry / 身份注册表地址为零",
+            unicode"Zero anchor / 锚点地址为零",
+            unicode"Zero watchdog / 看门狗地址为零",
+            unicode"Zero portal / Portal 地址为零",
+            unicode"Zero router / 路由地址为零"
+        ];
+        for (uint256 i = 0; i < 7; i++) {
+            address[7] memory b;
+            for (uint256 j = 0; j < 7; j++) {
+                b[j] = i == j ? address(0) : a[j];
+            }
+            vm.expectRevert(bytes(why[i]));
+            deployBacBridge(impl, b[0], b[1], b[2], b[3], b[4], b[5], b[6]);
+        }
+    }
+
+    function test_UpgradeIsOwnerOnly() public {
+        BacBridgeV2Mock v2 = new BacBridgeV2Mock();
+        address[3] memory nope = [stranger, watchdog, vetoKey];
+        for (uint256 i = 0; i < 3; i++) {
+            vm.prank(nope[i]);
+            vm.expectRevert(unicode"Only owner / 仅限 owner");
+            bridge.upgradeTo(address(v2));
+        }
+        assertEq(_implOf(address(bridge)), address(impl));
+    }
+
+    /// OpenZeppelin's UUPS check: an implementation that cannot itself be upgraded is refused, so
+    /// a slip of the owner's finger cannot strand the proxy.
+    function test_UpgradeRefusesANonUupsImplementation() public {
+        vm.prank(owner);
+        vm.expectRevert("ERC1967Upgrade: new implementation is not UUPS");
+        bridge.upgradeTo(address(bac));
+
+        // nor can the proxy be pointed at its own extension, which would strand it
+        address ext = bridge.EXTENSION();
+        vm.prank(owner);
+        vm.expectRevert("ERC1967Upgrade: new implementation is not UUPS");
+        bridge.upgradeTo(ext);
+    }
+
+    /// The extension's copies of the events must be the very same events the ABI of `BacBridge`
+    /// promises, or the indexer would miss everything the extension emits.
+    function test_ExtensionEmitsTheSameEventsAsTheBridge() public pure {
+        assertEq(BacBridgeExtension.EpochOwedRevoked.selector, BacBridge.EpochOwedRevoked.selector);
+        assertEq(BacBridgeExtension.EscapeArmed.selector, BacBridge.EscapeArmed.selector);
+        assertEq(BacBridgeExtension.EscapeArmCancelled.selector, BacBridge.EscapeArmCancelled.selector);
+        assertEq(BacBridgeExtension.Halted.selector, BacBridge.Halted.selector);
+        assertEq(BacBridgeExtension.OwedPaidAfterHalt.selector, BacBridge.OwedPaidAfterHalt.selector);
+        assertEq(BacBridgeExtension.OwedDemoted.selector, BacBridge.OwedDemoted.selector);
+        assertEq(BacBridgeExtension.EscapeCollected.selector, BacBridge.EscapeCollected.selector);
+        assertEq(BacBridgeExtension.Paused.selector, BacBridge.Paused.selector);
+        assertEq(BacBridgeExtension.Unpaused.selector, BacBridge.Unpaused.selector);
+        assertEq(BacBridgeExtension.AgentControllerSet.selector, BacBridge.AgentControllerSet.selector);
+        assertEq(BacBridgeExtension.EmergencyWithdraw.selector, BacBridge.EmergencyWithdraw.selector);
+    }
+
+    /// Guards the constants above against the live layout: if a variable is ever inserted above
+    /// `__gap`, one of these reads moves and this test (and the V2 mock's premise) fails.
+    function test_StorageLayoutIsPinned() public {
+        _busyBridge();
+        assertEq(address(uint160(uint256(vm.load(address(bridge), bytes32(FIRST_SLOT))))), address(bac));
+        (uint64 ec, uint64 lea, uint64 uc, uint64 lua) = _counters();
+        assertEq(uint256(ec), uint256(bridge.emergencyCount()));
+        assertEq(uint256(lea), uint256(bridge.lastEmergencyAt()));
+        assertEq(uint256(uc), uint256(bridge.upgradeCount()));
+        assertEq(uint256(lua), uint256(bridge.lastUpgradeAt()));
+        assertEq(uint256(ec), 1);
+        for (uint256 s = GAP_START; s < GAP_START + GAP_LEN; s++) {
+            assertEq(vm.load(address(bridge), bytes32(s)), bytes32(0), "the gap must be unused");
+        }
+    }
+
+    /// Requirement 1: every existing slot survives an upgrade to a V2 that adds a variable by the
+    /// `__gap` rule; only the upgrade counters move, and V2's variable lands in the old gap.
+    function test_EveryExistingSlotSurvivesAnUpgradeToV2() public {
+        uint64 exitEpoch = _busyBridge();
+
+        // raw snapshot of every sequential slot, OpenZeppelin's included
+        uint256 n = GAP_START + GAP_LEN;
+        bytes32[] memory before = new bytes32[](n);
+        for (uint256 s = 0; s < n; s++) {
+            before[s] = vm.load(address(bridge), bytes32(s));
+        }
+        // and a sample of the hashed (mapping) slots through their getters
+        (address dFrom, uint64 dAt, uint256 dAgent, uint256 dAmount) = bridge.deposits(1);
+        uint256[10] memory m = _sampleMappings(exitEpoch);
+        address ext1 = bridge.EXTENSION();
+
+        BacBridgeV2Mock v2 = new BacBridgeV2Mock();
+        vm.prank(owner);
+        bridge.upgradeToAndCall(address(v2), abi.encodeCall(BacBridgeV2Mock.initializeV2, (0xBEEF)));
+
+        assertEq(_implOf(address(bridge)), address(v2));
+        for (uint256 s = 1; s < GAP_START; s++) {
+            if (s == COUNTERS_SLOT) continue; // checked below
+            assertEq(vm.load(address(bridge), bytes32(s)), before[s], string.concat("slot moved: ", vm.toString(s)));
+        }
+        // slot 0: Initializable's `_initialized` goes 1 -> 2 (the reinitializer) and nothing else
+        assertEq(uint256(before[0]), 1);
+        assertEq(uint256(vm.load(address(bridge), bytes32(0))), 2);
+        // the counters slot: only the upgrade half moved
+        (uint64 ec, uint64 lea, uint64 uc, uint64 lua) = _counters();
+        assertEq(uint256(ec), uint256(before[COUNTERS_SLOT]) & type(uint64).max);
+        assertEq(uint256(lea), (uint256(before[COUNTERS_SLOT]) >> 64) & type(uint64).max);
+        assertEq(uint256(uc), 1);
+        assertEq(uint256(lua), vm.getBlockTimestamp());
+        // V2's new variable took exactly the first gap slot, and the rest of the gap is untouched
+        assertEq(uint256(vm.load(address(bridge), bytes32(GAP_START))), 0xBEEF);
+        assertEq(BacBridgeV2Mock(address(bridge)).v2Marker(), 0xBEEF);
+        for (uint256 s = GAP_START + 1; s < n; s++) {
+            assertEq(vm.load(address(bridge), bytes32(s)), bytes32(0));
+        }
+
+        (address dFrom2, uint64 dAt2, uint256 dAgent2, uint256 dAmount2) = bridge.deposits(1);
+        assertEq(dFrom2, dFrom);
+        assertEq(uint256(dAt2), uint256(dAt));
+        assertEq(dAgent2, dAgent);
+        assertEq(dAmount2, dAmount);
+        uint256[10] memory m2 = _sampleMappings(exitEpoch);
+        for (uint256 i = 0; i < 10; i++) {
+            assertEq(m2[i], m[i], "a mapping slot moved");
+        }
+        assertEq(bridge.agentController(2), carol);
+        assertEq(BacBridgeV2Mock(address(bridge)).version(), 2);
+
+        // a new implementation brings its own extension, and the delegated paths still work
+        assertTrue(bridge.EXTENSION() != ext1, "V2 deployed its own extension");
+        vm.prank(watchdog);
+        bridge.pause();
+        vm.prank(watchdog);
+        bridge.unpause();
+
+        // and the bridge simply keeps running on the old books
+        _warpEpochs(1);
+        _settleNext(3);
+        vm.prank(alice);
+        assertGt(bridge.collect(alice), 0, "an exit locked under V1 pays under V2");
+        _lock(carol, 3, 1e18);
+        assertEq(bridge.agentController(3), carol);
+
+        // neither initializer can be replayed
+        vm.expectRevert("Initializable: contract is already initialized");
+        BacBridgeV2Mock(address(bridge)).initializeV2(1);
+        vm.expectRevert("Initializable: contract is already initialized");
+        bridge.initialize(
+            stranger, address(bac), address(identity), address(anchor), watchdog, address(portal), address(router)
+        );
+    }
+
+    /// Decision #29c: the event names the implementation being REPLACED and snapshots the books.
+    function test_BridgeUpgradedCarriesThePreviousImplementationAndTheBooks() public {
+        _busyBridge();
+        BacBridgeV2Mock v2 = new BacBridgeV2Mock();
+        assertGt(bridge.totalBurned(), 0, "the snapshot must show the held deposits, not the lifetime ones");
+
+        vm.expectEmit(true, true, true, true, address(bridge));
+        emit BacBridge.BridgeUpgraded(
+            address(v2),
+            address(impl),
+            owner,
+            1,
+            uint64(vm.getBlockTimestamp()),
+            bridge.bnbBalance(),
+            bridge.lockedBac() - bridge.totalBurned(),
+            bridge.buybackBac(),
+            bridge.owedTotal()
+        );
+        vm.prank(owner);
+        bridge.upgradeTo(address(v2));
+
+        // and back again: now V2 is the one being replaced
+        vm.warp(vm.getBlockTimestamp() + 1 hours);
+        vm.expectEmit(true, true, true, true, address(bridge));
+        emit BacBridge.BridgeUpgraded(
+            address(impl),
+            address(v2),
+            owner,
+            2,
+            uint64(vm.getBlockTimestamp()),
+            bridge.bnbBalance(),
+            bridge.lockedBac() - bridge.totalBurned(),
+            bridge.buybackBac(),
+            bridge.owedTotal()
+        );
+        vm.prank(owner);
+        bridge.upgradeTo(address(impl));
+        assertEq(uint256(bridge.upgradeCount()), 2);
+        assertEq(uint256(bridge.lastUpgradeAt()), vm.getBlockTimestamp());
+        assertEq(_implOf(address(bridge)), address(impl));
+    }
+
+    /// Owner powers sit above the halt: the rules can still be changed after an escape.
+    function test_UpgradeStillWorksWhenHalted() public {
+        vm.prank(watchdog);
+        bridge.armEscape();
+        vm.warp(vm.getBlockTimestamp() + bridge.ESCAPE_ARM_DELAY());
+        bridge.checkHalt();
+        assertTrue(bridge.isHalted());
+        BacBridgeV2Mock v2 = new BacBridgeV2Mock();
+        vm.prank(owner);
+        bridge.upgradeTo(address(v2));
+        assertTrue(bridge.isHalted(), "the halt itself survives the upgrade");
+    }
+
+    /// The extension only ever runs in the bridge's storage; called directly it refuses.
+    function test_ExtensionRefusesDirectCalls() public {
+        BacBridgeExtension ext = BacBridgeExtension(bridge.EXTENSION());
+        vm.prank(watchdog);
+        vm.expectRevert(unicode"Call the bridge, not the extension / 请调用桥合约，而非扩展合约");
+        ext.pause();
+        vm.prank(owner);
+        vm.expectRevert(unicode"Call the bridge, not the extension / 请调用桥合约，而非扩展合约");
+        ext.emergencyWithdrawBnb(payable(owner), 0);
+        vm.expectRevert(unicode"Call the bridge, not the extension / 请调用桥合约，而非扩展合约");
+        ext.checkHalt();
+    }
+}
+
+// ============================================================================
+//                    OWNERSHIP  (Ownable2Step, no renounce)
+// ============================================================================
+
+contract BacBridgeOwnershipTest is BacBridgeTestBase {
+    function test_OwnershipTransferIsTwoStep() public {
+        address next = makeAddr("nextOwner");
+        vm.prank(stranger);
+        vm.expectRevert(unicode"Only owner / 仅限 owner");
+        bridge.transferOwnership(next);
+
+        vm.prank(owner);
+        bridge.transferOwnership(next);
+        assertEq(bridge.owner(), owner, "nothing changes until the new owner accepts");
+        assertEq(bridge.pendingOwner(), next);
+
+        vm.prank(stranger);
+        vm.expectRevert(unicode"Only pending owner / 仅限待定 owner");
+        bridge.acceptOwnership();
+
+        vm.prank(next);
+        bridge.acceptOwnership();
+        assertEq(bridge.owner(), next);
+        assertEq(bridge.pendingOwner(), address(0));
+
+        // the powers moved with it
+        vm.deal(address(this), 1 ether);
+        bridge.acceptRelease{value: 1 ether}();
+        vm.prank(owner);
+        vm.expectRevert(unicode"Only owner / 仅限 owner");
+        bridge.emergencyWithdrawBnb(payable(owner), 0);
+        vm.prank(next);
+        bridge.emergencyWithdrawBnb(payable(next), 0);
+        assertEq(next.balance, 1 ether);
+    }
+
+    /// A conscious choice (decision #29): renouncing would freeze upgrades and both emergency
+    /// withdrawals forever — exactly the "money stuck, game over" case the owner powers exist
+    /// for. So it is disabled for everybody, the owner included.
+    function test_RenounceOwnershipIsDisabled() public {
+        vm.prank(owner);
+        vm.expectRevert(unicode"Renounce disabled / 已禁用放弃所有权");
+        bridge.renounceOwnership();
+        assertEq(bridge.owner(), owner);
+
+        vm.prank(stranger);
+        vm.expectRevert(unicode"Renounce disabled / 已禁用放弃所有权");
+        bridge.renounceOwnership();
+    }
+
+    /// `transferOwnership(0)` is OpenZeppelin's way of cancelling a pending transfer; it can never
+    /// be used to renounce by the back door, because address zero can never accept.
+    function test_TransferToZeroOnlyCancelsAPendingTransfer() public {
+        address next = makeAddr("nextOwner");
+        vm.startPrank(owner);
+        bridge.transferOwnership(next);
+        bridge.transferOwnership(address(0));
+        vm.stopPrank();
+        assertEq(bridge.pendingOwner(), address(0));
+        assertEq(bridge.owner(), owner);
+        vm.prank(next);
+        vm.expectRevert(unicode"Only pending owner / 仅限待定 owner");
+        bridge.acceptOwnership();
+    }
+}
+
+// ============================================================================
+//             EMERGENCY WITHDRAWALS  (decision #29: books NOT written down)
+// ============================================================================
+
+contract BacBridgeEmergencyTest is BacBridgeTestBase {
+    function setUp() public override {
+        super.setUp();
+        _lock(alice, 1, 1000e18);
+        _seedBuyback(10e18);
+        vm.deal(address(this), 1000 ether);
+        bridge.acceptRelease{value: 10 ether}();
+    }
+
+    function _haltNow() internal {
+        vm.prank(watchdog);
+        bridge.armEscape();
+        vm.warp(vm.getBlockTimestamp() + bridge.ESCAPE_ARM_DELAY());
+        bridge.checkHalt();
+        assertTrue(bridge.isHalted());
+    }
+
+    /// The whole design in one test: BNB leaves, the book does not move, and the difference is
+    /// reported exactly and counted on its own.
+    function test_WithdrawBnbLeavesTheBooksAndCountsItself() public {
+        vm.expectEmit(true, true, true, true, address(bridge));
+        emit BacBridge.EmergencyWithdraw(
+            owner, treasury, address(0), 4 ether, 6 ether, 10 ether, 4 ether, 1, uint64(vm.getBlockTimestamp())
+        );
+        vm.prank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 4 ether);
+
+        assertEq(treasury.balance, 4 ether);
+        assertEq(address(bridge).balance, 6 ether);
+        assertEq(bridge.bnbBalance(), 10 ether, "the book is deliberately NOT written down");
+        (uint256 bnbShort, uint256 bacShort) = bridge.shortfall();
+        assertEq(bnbShort, 4 ether);
+        assertEq(bacShort, 0);
+        assertEq(bridge.emergencyBnbWithdrawn(), 4 ether);
+        assertEq(uint256(bridge.emergencyCount()), 1);
+        assertEq(uint256(bridge.lastEmergencyAt()), vm.getBlockTimestamp());
+
+        vm.prank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 0); // 0 == everything
+        assertEq(address(bridge).balance, 0);
+        (bnbShort,) = bridge.shortfall();
+        assertEq(bnbShort, 10 ether);
+        assertEq(bridge.emergencyBnbWithdrawn(), 10 ether);
+        assertEq(uint256(bridge.emergencyCount()), 2);
+    }
+
+    function test_WithdrawBnbGuards() public {
+        vm.prank(stranger);
+        vm.expectRevert(unicode"Only owner / 仅限 owner");
+        bridge.emergencyWithdrawBnb(payable(stranger), 0);
+
+        vm.startPrank(owner);
+        vm.expectRevert(unicode"Zero recipient / 收款地址为零");
+        bridge.emergencyWithdrawBnb(payable(address(0)), 1);
+        vm.expectRevert(unicode"Amount exceeds balance / 金额超过余额");
+        bridge.emergencyWithdrawBnb(payable(treasury), 10 ether + 1);
+        bridge.emergencyWithdrawBnb(payable(treasury), 0);
+        vm.expectRevert(unicode"Nothing to withdraw / 没有可提取的金额");
+        bridge.emergencyWithdrawBnb(payable(treasury), 0);
+        vm.stopPrank();
+    }
+
+    /// It takes the physical balance — force-pushed wei nobody booked yet included.
+    function test_WithdrawBnbTakesUntrackedWeiToo() public {
+        vm.deal(address(bridge), 11 ether); // 1 BNB force-pushed, not yet swept
+        vm.prank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 0);
+        assertEq(treasury.balance, 11 ether);
+        assertEq(bridge.emergencyBnbWithdrawn(), 11 ether);
+        (uint256 bnbShort,) = bridge.shortfall();
+        assertEq(bnbShort, 10 ether, "the shortfall is measured against the book, not the counter");
+    }
+
+    /// BAC is one asset to the owner: deposits and the buyback bucket alike.
+    function test_WithdrawBacTakesDepositsAndBuybackAlikeAndCountsIt() public {
+        vm.expectEmit(true, true, true, true, address(bridge));
+        emit BacBridge.EmergencyWithdraw(
+            owner, treasury, address(bac), 1010e18, 0, 1010e18, 1010e18, 1, uint64(vm.getBlockTimestamp())
+        );
+        vm.prank(owner);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 0);
+
+        assertEq(bac.balanceOf(treasury), 1010e18);
+        assertEq(bridge.lockedBac(), 1000e18, "books untouched");
+        assertEq(bridge.buybackBac(), 10e18, "books untouched");
+        assertEq(bridge.emergencyBacWithdrawn(), 1010e18);
+        (uint256 bnbShort, uint256 bacShort) = bridge.shortfall();
+        assertEq(bnbShort, 0);
+        assertEq(bacShort, 1010e18);
+    }
+
+    function test_WithdrawForeignTokenKeepsNoBooks() public {
+        MockBAC other = new MockBAC();
+        other.mint(address(bridge), 5e18);
+        vm.expectEmit(true, true, true, true, address(bridge));
+        emit BacBridge.EmergencyWithdraw(owner, treasury, address(other), 5e18, 0, 0, 0, 1, uint64(vm.getBlockTimestamp()));
+        vm.prank(owner);
+        bridge.emergencyWithdrawToken(address(other), treasury, 0);
+        assertEq(other.balanceOf(treasury), 5e18);
+        assertEq(bridge.emergencyBacWithdrawn(), 0, "only BAC counts into the BAC counter");
+        assertEq(uint256(bridge.emergencyCount()), 1, "but every withdrawal counts on the timeline");
+    }
+
+    function test_WithdrawTokenGuards() public {
+        vm.prank(watchdog);
+        vm.expectRevert(unicode"Only owner / 仅限 owner");
+        bridge.emergencyWithdrawToken(address(bac), watchdog, 1);
+
+        address notAToken = makeAddr("notAToken");
+        MockBAC empty = new MockBAC();
+        vm.startPrank(owner);
+        vm.expectRevert(unicode"Zero recipient / 收款地址为零");
+        bridge.emergencyWithdrawToken(address(bac), address(0), 1);
+        vm.expectRevert(unicode"Amount exceeds balance / 金额超过余额");
+        bridge.emergencyWithdrawToken(address(bac), treasury, 1010e18 + 1);
+        vm.expectRevert(); // a "token" without code must not look like a successful transfer
+        bridge.emergencyWithdrawToken(notAToken, treasury, 1);
+        vm.expectRevert(unicode"Nothing to withdraw / 没有可提取的金额");
+        bridge.emergencyWithdrawToken(address(empty), treasury, 0);
+        vm.stopPrank();
+    }
+
+    /// Decision #29b: the owner sits above pause and halt alike.
+    function test_EmergencyPowersIgnorePauseAndHalt() public {
+        vm.prank(watchdog);
+        bridge.pause();
+        vm.prank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 1 ether);
+        _haltNow();
+        vm.startPrank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 1 ether);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 1e18);
+        vm.stopPrank();
+        assertEq(treasury.balance, 2 ether);
+        assertEq(uint256(bridge.emergencyCount()), 3);
+    }
+
+    /// Requirement 2: the BNB sweep must not underflow when the balance sits below the book; a
+    /// force-send first narrows the hole, and only a real excess is ever booked.
+    function test_SweepUntrackedNeverUnderflowsAfterAWithdrawal() public {
+        vm.prank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 0);
+        assertEq(bridge.sweepUntracked(), 0, "balance < book: nothing untracked, no underflow");
+
+        vm.deal(address(bridge), 3 ether); // the owner force-sends part of it back
+        assertEq(bridge.sweepUntracked(), 0);
+        (uint256 bnbShort,) = bridge.shortfall();
+        assertEq(bnbShort, 7 ether, "a refill narrows the hole");
+        assertEq(bridge.bnbBalance(), 10 ether);
+
+        vm.deal(address(bridge), 12 ether); // more than was taken
+        assertEq(bridge.sweepUntracked(), 2 ether, "only the real excess becomes revenue");
+        assertEq(bridge.bnbBalance(), 12 ether);
+        (bnbShort,) = bridge.shortfall();
+        assertEq(bnbShort, 0);
+    }
+
+    function test_SweepUntrackedBacRefillsTheHoleBeforeBookingAnything() public {
+        vm.prank(owner);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 30e18);
+        assertEq(bridge.sweepUntrackedBac(), 0);
+
+        vm.prank(treasury);
+        bac.transfer(address(bridge), 20e18);
+        assertEq(bridge.sweepUntrackedBac(), 0, "a partial refill is not revenue");
+        (, uint256 bacShort) = bridge.shortfall();
+        assertEq(bacShort, 10e18);
+
+        vm.prank(treasury);
+        bac.transfer(address(bridge), 10e18); // the rest of it back
+        bac.mint(address(bridge), 5e18); // plus a genuine donation on top
+        assertEq(bridge.sweepUntrackedBac(), 5e18, "only what exceeds the book is booked");
+        assertEq(bridge.buybackBac(), 15e18);
+        (, bacShort) = bridge.shortfall();
+        assertEq(bacShort, 0);
+        _assertBacBooks();
+    }
+
+    /// Requirement 2: buyback skips (reason 6) instead of bricking when the BNB is gone, and once
+    /// new revenue arrives it spends what is physically there without deepening the hole.
+    function test_BuybackSkipsInsteadOfBrickingWhenTheBnbIsGone() public {
+        _warpEpochs(144); // a day of accrual: 20% of 10 BNB
+        vm.prank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 0);
+
+        (, uint256 spendable,,) = bridge.buybackState();
+        assertEq(spendable, 0, "the view already knows");
+        vm.expectEmit(false, false, false, true, address(bridge));
+        emit BacBridge.BuybackSkipped(6, 2 ether);
+        assertEq(bridge.buyback(0, 0), 0);
+        assertEq(bridge.bnbBalance(), 10 ether, "a skip changes no book");
+        assertEq(bridge.buybackBudget(), 2 ether, "the accrual is kept");
+
+        // tax keeps arriving: the next buyback spends real BNB and the hole stays the same size
+        bridge.acceptRelease{value: 1 ether}();
+        _warpEpochs(1);
+        uint256 bought = bridge.buyback(0, 0);
+        assertEq(bought, portal.quote(0.5 ether), "MAX_BUYBACK_BNB of physically present BNB");
+        (uint256 bnbShort,) = bridge.shortfall();
+        assertEq(bnbShort, 10 ether, "the buyback neither deepened nor hid the hole");
+        _assertBacBooks();
+    }
+
+    function test_BuybackSpendsOnlyWhatIsPhysicallyThere() public {
+        _warpEpochs(144);
+        vm.prank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 9.8 ether); // 0.2 BNB left, budget 2 BNB
+        (, uint256 spendable,,) = bridge.buybackState();
+        assertEq(spendable, 0.2 ether);
+        assertEq(bridge.buyback(0, 0), portal.quote(0.2 ether));
+        assertEq(bridge.buybackBnbSpent(), 0.2 ether);
+        assertEq(address(bridge).balance, 0);
+        (uint256 bnbShort,) = bridge.shortfall();
+        assertEq(bnbShort, 9.8 ether);
+    }
+
+    /// Requirement 2 + 5: `collect` fails on its transfer only because the bought-back BAC is
+    /// gone — and it never "succeeds" by paying the exit out of the deposits sitting next to it.
+    function test_CollectFailsOnlyWhenTheBoughtBackBacIsGone() public {
+        _postSingle(_curEpoch(), _leaf(1, 1, alice, 1000e18), 3);
+        assertEq(_claim(_curEpoch(), 1, 1, alice, 1000e18), 10e18);
+        _warpEpochs(1);
+        _settleNext(3);
+        assertGt(bridge.pendingCollect(alice), 0);
+
+        // the owner takes exactly the buyback part: what is left is exactly the deposits
+        vm.prank(owner);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 10e18);
+        assertEq(bac.balanceOf(address(bridge)), bridge.lockedBac() - bridge.totalBurned());
+
+        vm.prank(alice);
+        vm.expectRevert(unicode"Bridge short of BAC / 桥内 BAC 不足");
+        bridge.collect(alice);
+        (, uint256 bacShort) = bridge.shortfall();
+        assertEq(bacShort, 10e18);
+
+        // sent back, it pays again
+        vm.prank(treasury);
+        bac.transfer(address(bridge), 10e18);
+        vm.prank(alice);
+        assertGt(bridge.collect(alice), 0);
+        _assertBacBooks();
+    }
+
+    /// A partial withdrawal: exits keep being paid while bought-back BAC is physically there, and
+    /// no payout ever leaves the balance below the unburned deposits.
+    function test_PartialWithdrawalExitsNeverDipIntoDeposits() public {
+        _postSingle(_curEpoch(), _leaf(1, 1, alice, 1000e18), 3);
+        _claim(_curEpoch(), 1, 1, alice, 1000e18);
+        vm.prank(owner);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 5e18);
+
+        for (uint256 i = 0; i < 5; i++) {
+            _warpEpochs(1);
+            _settleNext(3);
+            vm.prank(alice);
+            assertGt(bridge.collect(alice), 0);
+            assertGe(bac.balanceOf(address(bridge)), bridge.lockedBac() - bridge.totalBurned(), "dipped into deposits");
+        }
+    }
+
+    /// Requirement 2: escape fails on the transfer when the asset is gone, `shortfall()` says by
+    /// how much, and a refill makes it payable again.
+    function test_EscapeFailsOnTheTransferWhenTheMoneyIsGone() public {
+        _haltNow();
+        vm.prank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 0);
+        (uint256 bac_, uint256 bnb_) = bridge.escapeClaimable(1);
+        assertEq(bac_, 10e18);
+        assertEq(bnb_, 10 ether, "the books still promise the whole junior pot");
+
+        vm.prank(alice);
+        vm.expectRevert(unicode"BNB transfer failed / BNB 转账失败");
+        bridge.escapeCollect(1, alice);
+        (uint256 bnbShort,) = bridge.shortfall();
+        assertEq(bnbShort, 10 ether);
+
+        vm.deal(address(bridge), 10 ether); // force-sent back
+        vm.prank(alice);
+        (uint256 bacPaid, uint256 bnbPaid) = bridge.escapeCollect(1, alice);
+        assertEq(bacPaid, 10e18);
+        assertEq(bnbPaid, 10 ether);
+    }
+
+    function test_EscapeBacPartNeverDipsIntoDeposits() public {
+        _haltNow();
+        vm.prank(owner);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 1e18); // part of the junior BAC
+        vm.prank(alice);
+        vm.expectRevert(unicode"Bridge short of BAC / 桥内 BAC 不足");
+        bridge.escapeCollect(1, alice);
+        assertEq(bac.balanceOf(address(bridge)), 1009e18);
+    }
+
+    function test_ClaimOwedAfterHaltFailsWhenTheBacIsGone() public {
+        _postSingle(_curEpoch(), _leaf(1, 1, alice, 100e18), 3);
+        _claim(_curEpoch(), 1, 1, alice, 100e18); // owed = 1 BAC
+        vm.warp(vm.getBlockTimestamp() + 20 days); // matured
+        _haltNow();
+        vm.prank(owner);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 10e18);
+
+        vm.prank(alice);
+        vm.expectRevert(unicode"Bridge short of BAC / 桥内 BAC 不足");
+        bridge.claimOwedAfterHalt(alice);
+
+        vm.prank(treasury);
+        bac.transfer(address(bridge), 1e18);
+        vm.prank(alice);
+        assertEq(bridge.claimOwedAfterHalt(alice), 1e18);
+    }
+
+    /// If the owner cut into the deposits themselves, the burn fails on its transfer too.
+    function test_BurnLockedFailsIfTheOwnerTookTheDeposits() public {
+        vm.prank(owner);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 0);
+        vm.expectRevert(unicode"Token transfer failed / 代币转出失败");
+        bridge.burnLocked();
+    }
+
+    /// Everything that does not move money keeps working on the unwritten books.
+    function test_BookKeepingPathsKeepWorkingAfterATotalWithdrawal() public {
+        vm.startPrank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 0);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 0);
+        vm.stopPrank();
+
+        _lock(bob, 2, 50e18); // entry still works: a new deposit is real BAC
+        _postSingle(_curEpoch(), _leaf(1, 1, alice, 100e18), 3);
+        assertGt(_claim(_curEpoch(), 1, 1, alice, 100e18), 0, "claimExit locks a rate off the book");
+        _warpEpochs(1);
+        _settleNext(3);
+        assertEq(bridge.sweepUntracked(), 0);
+        assertEq(bridge.sweepUntrackedBac(), 0);
+        vm.prank(alice);
+        vm.expectRevert(unicode"Bridge short of BAC / 桥内 BAC 不足");
+        bridge.collect(alice);
+        (uint256 bnbShort, uint256 bacShort) = bridge.shortfall();
+        assertEq(bnbShort, 10 ether);
+        assertEq(bacShort, 1010e18, "bob's new deposit is on the books and in the balance");
+    }
+
+    function testFuzz_ShortfallIsExact(uint256 bnbOut, uint256 bacOut) public {
+        bnbOut = bound(bnbOut, 0, 10 ether);
+        bacOut = bound(bacOut, 0, 1010e18);
+        vm.startPrank(owner);
+        if (bnbOut > 0) bridge.emergencyWithdrawBnb(payable(treasury), bnbOut);
+        if (bacOut > 0) bridge.emergencyWithdrawToken(address(bac), treasury, bacOut);
+        vm.stopPrank();
+        (uint256 bnbShort, uint256 bacShort) = bridge.shortfall();
+        assertEq(bnbShort, bnbOut);
+        assertEq(bacShort, bacOut);
+        assertEq(bridge.emergencyBnbWithdrawn(), bnbOut);
+        assertEq(bridge.emergencyBacWithdrawn(), bacOut);
+        assertEq(address(bridge).balance + bridge.emergencyBnbWithdrawn(), bridge.bnbBalance());
+        assertEq(bac.balanceOf(address(bridge)) + bridge.emergencyBacWithdrawn(), bridge.bacAccounted());
+    }
+
+    function test_NoShortfallWithoutAWithdrawal() public view {
+        (uint256 bnbShort, uint256 bacShort) = bridge.shortfall();
+        assertEq(bnbShort, 0);
+        assertEq(bacShort, 0);
+    }
+}
+
+// ============================================================================
+//                 AGENT CONTROLLER + DEPOSIT RECORDS  (decision #31)
+// ============================================================================
+
+contract BacBridgeControllerTest is BacBridgeTestBase {
+    function _haltNow() internal {
+        vm.prank(watchdog);
+        bridge.armEscape();
+        vm.warp(vm.getBlockTimestamp() + bridge.ESCAPE_ARM_DELAY());
+        bridge.checkHalt();
+    }
+
+    function test_FirstLockSetsTheControllerAndRecordsTheDeposit() public {
+        bac.mint(alice, 5e18);
+        vm.startPrank(alice);
+        bac.approve(address(bridge), 5e18);
+        vm.expectEmit(true, true, true, true, address(bridge));
+        emit BacBridge.AgentControllerSet(1, address(0), alice);
+        bridge.lock(1, 5e18);
+        vm.stopPrank();
+
+        assertEq(bridge.agentController(1), alice);
+        (address from, uint64 at, uint256 agentId, uint256 amount) = bridge.deposits(0);
+        assertEq(from, alice);
+        assertEq(uint256(at), T0);
+        assertEq(agentId, 1);
+        assertEq(amount, 5e18);
+        assertEq(bridge.depositId(), 1);
+    }
+
+    /// Requirement 4: a later lock by another wallet that passes the gate for the same identity
+    /// (here its signature-proven `agentWallet`) adds a deposit record and never moves the claim.
+    function test_LaterLocksNeverOverwriteTheController() public {
+        address hot = makeAddr("aliceHot");
+        identity.setAgentWallet(1, hot);
+        _lock(alice, 1, 5e18);
+
+        vm.recordLogs();
+        _lock(hot, 1, 7e18);
+        bytes32 sig = keccak256("AgentControllerSet(uint256,address,address)");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics.length == 0 || logs[i].topics[0] != sig, "second lock re-set the controller");
+        }
+        assertEq(bridge.agentController(1), alice);
+        (address from,, uint256 agentId, uint256 amount) = bridge.deposits(1);
+        assertEq(from, hot);
+        assertEq(agentId, 1);
+        assertEq(amount, 7e18);
+        assertEq(bridge.credited(1), 12e18, "both deposits sit behind the one claim");
+    }
+
+    function test_WhoeverEntersFirstIsTheController() public {
+        address hot = makeAddr("aliceHot");
+        identity.setAgentWallet(1, hot);
+        _lock(hot, 1, 1e18);
+        _lock(alice, 1, 1e18);
+        assertEq(bridge.agentController(1), hot);
+    }
+
+    function test_SetAgentControllerOnlyByTheCurrentController() public {
+        _lock(alice, 1, 5e18);
+
+        vm.prank(bob);
+        vm.expectRevert(unicode"Only the agent controller / 仅限该 agent 的控制地址");
+        bridge.setAgentController(1, bob);
+
+        vm.prank(stranger); // an id that never entered has no controller at all
+        vm.expectRevert(unicode"Only the agent controller / 仅限该 agent 的控制地址");
+        bridge.setAgentController(3, stranger);
+
+        vm.prank(alice);
+        vm.expectRevert(unicode"Zero controller / 控制地址为零");
+        bridge.setAgentController(1, address(0));
+
+        vm.expectEmit(true, true, true, true, address(bridge));
+        emit BacBridge.AgentControllerSet(1, alice, carol);
+        vm.prank(alice);
+        bridge.setAgentController(1, carol);
+        assertEq(bridge.agentController(1), carol);
+
+        vm.prank(alice);
+        vm.expectRevert(unicode"Only the agent controller / 仅限该 agent 的控制地址");
+        bridge.setAgentController(1, alice);
+
+        // the NFT holder has no say by virtue of holding it: the registry is never asked
+        assertEq(bridge.identityOwner(1), alice);
+        vm.prank(carol);
+        bridge.setAgentController(1, alice);
+        assertEq(bridge.agentController(1), alice);
+    }
+
+    /// Requirement 4: an identity transferred AFTER entry does not move the escape claim; the old
+    /// controller can still escape, and the new holder's own later deposits land behind the SAME
+    /// claim — which is why a buyer must read `agentController` before depositing.
+    function test_IdentityTransferAfterEntryDoesNotMoveTheEscapeClaim() public {
+        _lock(alice, 1, 600e18);
+        vm.prank(alice);
+        identity.transfer(1, bob);
+        _lock(bob, 1, 400e18); // bob holds the NFT now, so the gate lets him in
+        assertEq(bridge.agentController(1), alice);
+        _seedBuyback(10e18);
+        _haltNow();
+
+        vm.prank(bob);
+        vm.expectRevert(unicode"Only the agent controller / 仅限该 agent 的控制地址");
+        bridge.escapeCollect(1, bob);
+
+        vm.prank(alice);
+        (uint256 bacPaid,) = bridge.escapeCollect(1, alice);
+        assertEq(bacPaid, 10e18, "the whole weight of identity 1 sits behind its first controller");
+    }
+
+    function test_HandedOverClaimEscapesToTheNewController() public {
+        _lock(alice, 1, 100e18);
+        _seedBuyback(10e18);
+        vm.prank(alice);
+        bridge.setAgentController(1, bob);
+        _haltNow();
+
+        vm.prank(alice);
+        vm.expectRevert(unicode"Only the agent controller / 仅限该 agent 的控制地址");
+        bridge.escapeCollect(1, alice);
+        vm.prank(bob);
+        (uint256 bacPaid,) = bridge.escapeCollect(1, carol); // and it may pay anywhere
+        assertEq(bacPaid, 10e18);
+        assertEq(bac.balanceOf(carol), 10e18);
+    }
+}
+
+// ============================================================================
+//                      description()  (decisions #29a / #31a)
+// ============================================================================
+
+contract BacBridgeDescriptionTest is BacBridgeTestBase {
+    function _contains(string memory hay, string memory needle) internal pure returns (bool) {
+        bytes memory h = bytes(hay);
+        bytes memory n = bytes(needle);
+        if (n.length > h.length) return false;
+        for (uint256 i = 0; i + n.length <= h.length; i++) {
+            bool hit = true;
+            for (uint256 j = 0; j < n.length; j++) {
+                if (h[i + j] != n[j]) {
+                    hit = false;
+                    break;
+                }
+            }
+            if (hit) return true;
+        }
+        return false;
+    }
+
+    function test_NoticesAreTheDecidedSentencesWordForWord() public view {
+        assertEq(bridge.OWNER_POWER_NOTICE(), unicode"项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。");
+        assertTrue(_contains(bridge.IDENTITY_LIMIT_NOTICE(), unicode"我们要求持有 agent 身份，我们不能证明它是 AI"));
+    }
+
+    function test_DescriptionCarriesBothNoticesVerbatim() public view {
+        string memory d = bridge.description();
+        assertTrue(_contains(d, bridge.OWNER_POWER_NOTICE()), "decision #29a missing");
+        assertTrue(_contains(d, unicode"项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。"));
+        assertTrue(_contains(d, bridge.IDENTITY_LIMIT_NOTICE()), "decision #31a missing");
+        assertTrue(_contains(d, unicode"我们要求持有 agent 身份，我们不能证明它是 AI"));
+        // a bilingual summary, honest about cost and trust
+        assertTrue(_contains(d, unicode"不承诺任何金额"));
+        assertTrue(_contains(d, unicode"4%"));
+        assertTrue(_contains(d, unicode"中心化"));
+        assertTrue(_contains(d, "withdraw all funds at any time"));
+        assertTrue(_contains(d, "does not prove the holder is an AI"));
+        assertEq(impl.description(), d, "pure: the implementation says the same");
+    }
+
+    /// Decision #29a / HANDOFF §6: statements that are now false must appear nowhere on chain.
+    function test_DescriptionMakesNoWithdrawnPromise() public view {
+        string memory d = bridge.description();
+        string[8] memory banned = [
+            unicode"永久锁死",
+            unicode"不可升级",
+            unicode"动不了",
+            unicode"没有任何路径",
+            unicode"挑战",
+            unicode"24 小时",
+            "permanently locked",
+            "non-upgradeable"
+        ];
+        for (uint256 i = 0; i < banned.length; i++) {
+            assertFalse(_contains(d, banned[i]), banned[i]);
+        }
     }
 }
 

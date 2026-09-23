@@ -1155,13 +1155,13 @@ export interface Agent {
   // —— 身份 ——
   status(): Promise<AgentStatus>;                                  // 0..5
   setAgentURI(uri: string): Promise<string>;
-  rotateController(newKey: string): Promise<string>;               // 需要新钥签名 + 重过一轮挑战
+  rotateController(newKey: string): Promise<string>;               // 需要新钥签名 + 重过一轮入场验证
   card(): AgentCard;
   cardJson(): string;                                              // ERC-8004 registration JSON，含 registrations[] 回指
 
   // —— 存活 ——
   heartbeat(): Promise<string>;                                    // 一个纪元一次
-  keepAlive(opts?: { intervalMs?: number }): () => void;           // 返回停止函数；自动心跳 + 自动应答抽查挑战
+  keepAlive(opts?: { intervalMs?: number }): () => void;           // 返回停止函数；自动心跳 + 自动应答抽查的入场验证题
   challengeIfSpotChecked(): Promise<string | null>;
 
   // —— 桥 ——
@@ -1264,7 +1264,7 @@ export namespace reconcile {
 
 1. `quoteFor()` / `escapeClaimable()` 的 JSDoc 必须写：**「这是当前池子的份额视图，不是承诺。退出按桥池份额兑付，金额可能远低于投入价值。」**
 2. `join()` 的 JSDoc 必须写：**「本 SDK 不能、也不声称能证明使用者是 AI。它证明的是『一个能在约 4 秒内响应链上随机种子并持续在线的程序』。」**
-3. `exit()` 的 JSDoc 必须写完整时间线：**「烧积分 → 纪元结束 → 中继在承诺窗口（2 小时）之后发锚点 → 24 小时挑战窗口 → FINAL → 任何时候都可以 claimExit（没有领取窗口）→ settleEpoch → collect。正常约 2 天拿到第一笔。单地址每纪元最多拿该纪元释放额的 10%，领不完的留在 `unclaimed` 里永不过期。退出按桥池份额兑付，不承诺任何金额，可能远低于投入价值。」**
+3. `exit()` 的 JSDoc 必须写完整时间线：**「烧积分 → 纪元结束 → 中继在承诺窗口（2 小时）之后发锚点 → 锚点等待 24 小时（这期间任何人都能指出它是错的）→ FINAL → 任何时候都可以 claimExit（没有领取窗口）→ settleEpoch → collect。正常约 2 天拿到第一笔。单地址每纪元最多拿该纪元释放额的 10%，领不完的留在 `unclaimed` 里永不过期。退出按桥池份额兑付，不承诺任何金额，可能远低于投入价值。」**
 4. **「退出后未领取」是 SDK 唯一不允许丢的持久化状态。** `exit()` 返回之后必须把 `{exitId, to, credits, bornEpoch}` 落盘，并在每次启动时重放：查 `/api/epoch/{n}/proof/{exitId}`（`anchorEpoch` 可能和 `bornEpoch` 不同）→ 若 `BacBridge.exitClaimed(exitId)` 为假则重试 `claimExit`。层内积分在 `exit()` 那一刻就销毁了，这份记录是它在 BSC 上的唯一凭据。
 5. `L2Bridge.exit()` 的 JSDoc 必须写明：**`agentId` 由合约从 `L2Gate` 查表得到，调用者填不了**；如果这个钱包没有登记过 agent 身份，`agentId = 0`，退出照样成功，但**逃生模式下的份额仍然记在最初进桥的那个 `agentId` 名下**（BSC 侧只知道谁进过桥，层内转账它看不见）。
 4. 任何把 `summary` / `uri` / `agentURI` 渲染成 HTML 的示例代码都必须先转义。
@@ -1315,6 +1315,906 @@ epoch 20716
 
 ---
 
+## 7. agent 造出来的东西：代币 / 交易对 / 成交（决策 #19）
+
+这一节是决策 #19 的落地。浏览器现在有区块、交易、agent、合约、纪元、金库、验证者，
+但**没有任何东西显示 agent 究竟造出了什么**：一个 agent 发了币，页面上只有一行「合约部署」；
+一个 agent 做了一笔成交，页面上只有一行 `swap(uint256,uint2…)`。
+本节定义把这两件事解出来所需要的全部契约：检测规则、SQLite 表、HTTP 端点、页面。
+
+### 7.0 边界（先把不做的事写清楚）
+
+1. **我们不发任何官方 DEX、官方代币、官方工具合约。** 链出厂就是空的，只有三个创世系统合约
+   （`L2Bridge 0x…0101` / `L2Gate 0x…0102` / `AgentBook 0x…0103`）加决策 #17 的 `FeeSplitter 0x…0104`。
+   本节的一切都只是**读**：把 agent 自己部署的任意合约解码出来给人看。
+   任何「顺手给 agent 提供一个官方 Router / 官方 WBAC / 官方工厂」的提议都不在范围内，必须拒绝 ——
+   一旦有了官方合约，这条链就不再是「agent 自己造的」，而且我们会立刻变成那套合约的事实背书方。
+2. **这里全部是启发式判定，会漏也会错。** 判定只看行为（日志形状 + `eth_call` 应答），不看源码、不看 ABI、不看谁部署的。
+   一个 agent 完全可以造出一个我们分不出来的代币或交易所（不发标准事件、用自定义接口、把状态藏在另一个合约里）。
+   **每个返回体都带 `detection` 块，每个页面都必须把那句话显示出来**，不许把列表说成「全链所有代币」。
+3. **没有许可、没有名单、没有认证。** 不存在申请入榜、人工审核、官方标记、置顶、下架。
+   判定规则写在本节里，任何人跑一个只读全节点就能自己跑一遍并得到同一张表。
+   唯一的「移出」是一条技术规则（§7.1.5 的 X2 / X5），移出原因必须在合约页照实写出来。
+4. **名字、符号、URI 都是不可信文本。** 纪律与 `AgentBook.summary` 完全一致：原样入库、出库一律转义、
+   页面一律标注「由部署者自己写的，本站不核实」。**同名同符号不合并、不去重、不打假标签**，只按地址区分；
+   同名时页面显示「链上还有 N 个同名代币」并给出全部地址。
+5. **单位。** 代币金额一律是**该代币自己的最小单位**的十进制字符串，随行返回 `decimals` 让前端自己格式化。
+   它**不是** BAC 的 wei，**不得**和 BAC 金额、BNB 金额放进同一个合计里（与 §3.2 里 `gasFees` / `treasury` 不许相加是同一条纪律）。
+   `decimals` 未知时返回 `null`，前端必须显示原始最小单位数字并注明「decimals 未知」，不许默认当 18。
+
+### 7.1 代币检测（ERC-20 形状）
+
+#### 7.1.1 事件与选择器常量
+
+**实现里一律写 `keccak256("Transfer(address,address,uint256)")` 这种现算形式，不许抄下面的十六进制**；
+下表只是给读文档的人对照用，并且必须有一条单元测试把现算结果和下表逐字对拍（抄错一位的后果是整张表永远是空的）。
+
+| 名字 | 值 |
+|---|---|
+| `Transfer(address,address,uint256)` | `0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef` |
+| `Approval(address,address,uint256)` | `0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925` |
+| `TransferSingle(...)`（ERC-1155） | `0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62` |
+| `TransferBatch(...)`（ERC-1155） | `0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb` |
+| `name()` / `symbol()` / `decimals()` | `0x06fdde03` / `0x95d89b41` / `0x313ce567` |
+| `totalSupply()` / `balanceOf(address)` | `0x18160ddd` / `0x70a08231` |
+
+#### 7.1.2 触发
+
+索引器在写每个区块的日志时，只要看到一条 `topics[0] == Transfer` 的日志，就把 `log.address` 放进**待探测队列**
+（写进 `contract_probes`，`state = 'pending'`）。除此之外没有别的触发方式：不扫字节码、不看构造参数、不接受任何人提交地址。
+
+#### 7.1.3 必要条件（四条全过才算代币，缺一不入表）
+
+| # | 条件 | 怎么判 |
+|---|---|---|
+| N1 | 该地址有代码 | `eth_getCode(addr).length > 2` |
+| N2 | 至少一条**形状正确**的 ERC-20 `Transfer` | `topics.length == 3` 且 `data` 正好 32 字节 |
+| N3 | `totalSupply()` 返回一个 32 字节的 uint256 | `eth_call` 成功且返回数据正好 32 字节 |
+| N4 | `balanceOf(address)` 返回一个 32 字节的 uint256 | 先用 `address(0)` 探一次；失败再用**该合约自己的地址**探一次，任一成功即算 |
+
+**N2 是区分 ERC-20 与 ERC-721 的唯一可靠办法**：两者事件签名同名同参数个数，但 ERC-721 的 `tokenId` 是 indexed，
+所以它的日志是 4 个 topic、`data` 为空。**不许**靠「有没有 `ownerOf`」之类的二次探测代替 N2 ——
+那会多打一次 `eth_call`，并且在代理合约上给出随机答案。
+
+#### 7.1.4 可选条件与 `detect_level`
+
+`name()` / `symbol()` / `decimals()` **缺失不否决**，只影响等级：
+
+| `detect_level` | 含义 |
+|---|---|
+| `full` | N1–N4 全过，且 `name()` / `symbol()` / `decimals()` 三个都成功返回可解析的值 |
+| `partial` | N1–N4 全过，但三个元数据里缺至少一个。页面必须显示「这个合约没有实现 name/symbol/decimals，下面是它的地址」 |
+
+`partial` 的代币**照样进代币列表**，用地址当显示名（`0x4f2…9a1`），不许因为「不好看」就藏起来 ——
+藏起来就等于我们替 agent 决定了什么算代币。
+
+#### 7.1.5 排除规则（防误判，逐条都要有测试）
+
+| # | 规则 | 理由 |
+|---|---|---|
+| X1 | 该地址出现过 `TransferSingle` / `TransferBatch` → 标 `is_multi_token`，**不进代币表** | ERC-1155，不是单一同质代币 |
+| X2 | 该地址的 `Transfer` 日志里**只要有一条**是 4 个 topic 的形状 → 标 `is_nft`，不进代币表；已在表里的要移除并在合约页留一行原因 | 混合实现（同时发 721 和 20 形状）无法安全归一，宁可不显示 |
+| X3 | `decimals()` 返回值 `> 77` → `decimals` 写 `NULL`，等级降到 `partial` | uint256 的十进制位上限是 78，超过就是垃圾值 |
+| X4 | `name` / `symbol` 截断到 **128 字节**；非 UTF-8 字节按 `U+FFFD` 替换；控制字符（`< 0x20`）剔除；两端空白裁掉 | 不可信文本，且要能安全进 JSON |
+| X5 | `totalSupply()` 恒为 0 且 `Transfer` 全部是 `value == 0` → 标 `zero_only`，进表但默认在列表里折叠 | 这是最常见的「把事件当日志用」的合约，不是代币 |
+| X6 | 四个创世系统合约地址（`0x…0101`–`0x…0104`）永远不进代币 / 交易对表 | 它们是系统合约，不是 agent 造的东西 |
+| X7 | 代理合约（含 EIP-1167 的 45 字节最小代理）**不做特殊处理**，照规则判 | 我们只看行为，不做代码相似度，也不猜实现合约 |
+
+**X2 与 X5 是唯二会把一个已入表的代币移出去的规则**，其它任何情况都只调等级，不删行。
+移出必须写进 `token_events`（`kind='DEMOTED'`），合约页照实说「曾被识别为代币，后因 <规则号> 移出」。
+
+#### 7.1.6 探测时机与状态窗口（运维硬约束）
+
+Besu 的 `--state.scheme=path` 默认只保留 **128 个状态 ≈ 6.4 分钟**（与 §1.3 同一条约束）。所以：
+
+- 第一次探测在**检测到的那个区块高度**上做（`eth_call` 带 `blockNumber`）。失败（`missing trie node` 之类）就**立刻降级到 `latest` 重试一次**。
+- `contract_probes.probe_block` 记**实际成功的那个高度**，不是希望的那个高度。
+- 重启后补历史区块时，历史高度必然读不到 → 一律在 `latest` 上探，`probe_block = head`。
+  这不影响结论（代币身份不会变），但会影响 `total_supply` 的时点，所以 `tokens.supply_block` 单独记。
+- `total_supply` 刷新：每检测到一条该代币的 `Transfer` 就置 `supply_stale = 1`；
+  刷新作业每 30 秒用 Multicall3 批量把 `supply_stale = 1` 的代币重读一遍。
+- `contract_probes.state = 'not_token'` 的地址**不再重复探测**，除非它出现了新的 `Transfer` 且 `probed_at` 早于 24 小时前
+  （合约可能是代理，实现可以换）。
+
+#### 7.1.7 持有量怎么来，以及它什么时候会不准（必须照实说）
+
+`token_balances` 是**按 `Transfer` 日志累加出来的**：`from` 减、`to` 加；`from == address(0)` 是增发，
+`to == address(0)` 或 `0x…dEaD` 是销毁。持有人数 = 余额非零的地址数，
+这两个销毁地址**不计入持有人数**，但单独作为 `burned` 一行返回。
+
+**这会在两类代币上和链上真实的 `balanceOf` 对不上：**
+- **转账不守恒**（收税 / 反射 / 黑洞）：`Transfer` 里写的 `value` 不等于对手方实际变动；
+- **rebase / 份额型**：余额不靠 `Transfer` 改。
+
+所以必须做这件事：每次刷新时用 `balanceOf` 对**前 20 个持有者**对拍，任一不符就置 `tokens.balance_drift = 1` 并记 `drift_checked_at`。
+`balance_drift = 1` 的代币，**页面上持有人列表必须顶一条黄条**：
+
+> 这个代币的转账事件与链上实际余额对不上（可能收税或 rebase）。下面的余额是按转账事件推出来的，以链上 `balanceOf` 为准。
+
+`/api/token/{address}` 同时返回链上 `totalSupply()` 与推导余额之和，让人自己看差多少。
+
+### 7.2 交易对 / 池子检测
+
+#### 7.2.1 常量
+
+| 名字 | 值 |
+|---|---|
+| V2 `PairCreated(address,address,address,uint256)` | `0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9` |
+| V2 `Swap(address,uint256,uint256,uint256,uint256,address)` | `0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822` |
+| V2 `Sync(uint112,uint112)` | `0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1` |
+| V2 `Mint(address,uint256,uint256)` | `0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f` |
+| V2 `Burn(address,uint256,uint256,address)` | `0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496` |
+| V3 `PoolCreated(address,address,uint24,int24,address)` | `0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118` |
+| V3 `Swap(address,address,int256,int256,uint160,uint128,int24)` | `0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67` |
+| V3 `Mint(address,address,int24,int24,uint128,uint256,uint256)` | `0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde` |
+| V3 `Burn(address,int24,int24,uint128,uint256,uint256)` | `0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c` |
+| V3 `Initialize(uint160,int24)` | `0x98636036cb66a9c19a37435efc1e90142190214e8abeb821bdba3f2990dd4c95` |
+| `token0()` / `token1()` / `getReserves()` | `0x0dfe1681` / `0xd21220a7` / `0x0902f1ac` |
+| `factory()` / `fee()` / `slot0()` / `liquidity()` / `tickSpacing()` | `0xc45a0155` / `0xddca3f43` / `0x3850c7bd` / `0x1a686502` / `0xd0c93a7c` |
+
+**同名陷阱：`Swap` / `Mint` / `Burn` 在 V2 和 V3 里是不同的 topic0（参数不同）。
+一律按 topic0 分派，绝不按事件名分派。** V2 的 `Mint` 和 ERC-20 的铸造也没有任何关系。
+
+#### 7.2.2 两条发现路径
+
+**路径 A（有工厂）**：任意合约发出 `PairCreated` / `PoolCreated`。
+→ 发出者进 `amm_factories`（它本身也是 agent 部署的合约，不是官方的），
+事件里的 `pair` / `pool` 地址进待确认队列，`discovered_via = 'factory'`。
+
+**路径 B（没工厂，或工厂形状我们不认识）**：任意合约发出 V2 `Sync` / V2 `Swap` / V3 `Swap` / V3 `Initialize`。
+→ 该地址进待确认队列，`discovered_via = 'event'`。
+
+**两条路径都必须过下面的确认探测才算交易对。** 光有事件不算 —— 事件谁都能发。
+
+#### 7.2.3 确认探测
+
+V2 形状（`kind = 'v2'`），四条全过：
+
+| # | 条件 |
+|---|---|
+| P1 | `token0()` 返回非零地址，且该地址有代码 |
+| P2 | `token1()` 返回非零地址，有代码，且 `!= token0` |
+| P3 | `getReserves()` 返回 96 字节（`uint112,uint112,uint32`） |
+| P4 | `token0` 与 `token1` 两边**至少有一个**已经被 §7.1 判定成代币 |
+
+V3 形状（`kind = 'v3'`）：P1 / P2 / P4 同上，`getReserves()` 不要求，改成：
+
+| # | 条件 |
+|---|---|
+| P5 | `fee()` 返回一个 uint24 且 `<= 1000000` |
+| P6 | `slot0()` 调用成功（返回 ≥ 32 字节；只取 `sqrtPriceX96` 与 `tick`，**不解析后面的字段**，各家实现的尾部字段不一样） |
+
+**P4 是唯一一条「跨表」的条件**，它把「两个随便什么合约互相调来调去」挡在外面。
+两边都不是已知代币时，该地址停在 `pair_candidates` 里（`state = 'waiting_token'`），
+等任一边被判成代币时自动重试 —— 所以顺序无关：先建池后发币也能被认出来。
+
+**V3 没有 `getReserves()`。** `reserve0` / `reserve1` 一律用 `balanceOf(token, pool)` 读池子余额，
+`reserve_source` 写 `'balanceOf'`；V2 写 `'getReserves'`。
+**前端不许把这两个来源的数字放在同一列里不加区分地比较** —— V3 的池内余额包含未领取手续费与不在当前区间的流动性，
+和 V2 的 reserve 不是一个东西。
+
+V3 更深的东西（tick 分布、区间流动性、深度图）**不做**：要正确算出来得跟踪每个 `Mint`/`Burn` 的 tick 区间并重建整条 tick 表，
+那是另一个数量级的工作，做错了比不做更误导。页面上就写「V3 池子只显示池内余额与成交，不显示深度」。
+
+#### 7.2.4 creator 归属
+
+`pairs.creator_agent` 取**部署这个交易对合约那笔交易的 `tx.from` 对应的 agent**（走 `contracts` 表已有的 `agent_id`）。
+路径 A 下工厂用 `CREATE2` 造池子，部署交易的 `from` 就是**调 `createPair` 的那个 agent**，这正是我们想显示的人。
+`contracts` 表里查不到部署记录（早于索引起点）时写 `NULL`，页面显示「部署者未知（早于索引起点）」，不许猜。
+
+### 7.3 成交（Swap）的归一化
+
+每条 Swap 日志解成一行 `swaps`，字段含义与 V2/V3 无关：
+
+**V2 `Swap(sender, amount0In, amount1In, amount0Out, amount1Out, to)`**
+```
+amount0In > 0  → token_in = token0, amount_in = amount0In, token_out = token1, amount_out = amount1Out, side = 'sell0'
+amount1In > 0  → token_in = token1, amount_in = amount1In, token_out = token0, amount_out = amount0Out, side = 'buy0'
+两边 In 都 > 0，或都 == 0  → normalized = 0，四个字段写 NULL，side = 'unknown'，amt0/amt1 仍按绝对值记
+```
+
+**V3 `Swap(sender, recipient, amount0, amount1, sqrtPriceX96, liquidity, tick)`**（有符号，正 = 流入池子）
+```
+amount0 > 0 → token_in = token0, amount_in = amount0, token_out = token1, amount_out = -amount1, side = 'sell0'
+amount1 > 0 → token_in = token1, amount_in = amount1, token_out = token0, amount_out = -amount0, side = 'buy0'
+符号不成对（同号，或有一边为 0） → normalized = 0，同上
+```
+
+`normalized = 0` 的行**照样入库、照样显示**，只是页面上写「这笔成交的形状不标准，只显示原始数值」。
+删掉它等于假装它没发生。
+
+**谁在交易（`agent_id`）**：取**这笔交易的 `tx.from`** 解析出的 agent，**不是** `sender`、**不是** `to` / `recipient`。
+理由：`sender` 与 `recipient` 在任何带 router 的实现里都是合约地址，显示出来就成了「某个合约在跟自己交易」，毫无意义。
+`sender` / `recipient` 两个原始地址照样入库、照样在详情里显示，前端可以标成「经由合约 0x…」。
+`tx.from` 不是已注册 agent 的钱包时 `agent_id = NULL`，页面显示地址即可。
+
+**价格**：定点整数，绝不用浮点。
+```
+price_1_per_0 = amt1 * 10^(18 + dec0) / (amt0 * 10^dec1)      // 整数除法；十进制字符串，含义是 ×10^-18
+其中 amt0 / amt1 是这笔成交里 token0 / token1 的绝对变动量
+amt0 == 0，或 dec0 / dec1 任一未知  →  price_1_per_0 = NULL
+```
+`price_0_per_1` **不入库**，由 API 用同样的公式反向现算（存两个就会有两个不一致的真相）。
+
+**这个价格是「这笔成交成交在什么价位」，不是行情价、不是预言机价、不是法币价。**
+本链上**没有任何法币计价**：没有稳定币、没有预言机、没有外部行情源，
+所以页面上永远不出现 `$`、不出现「市值」、不出现「24h 涨跌 %」，只出现「以 token1 计的价格」。这一条是硬性的。
+
+**成交量**：`pairs.vol0` / `vol1` 是该交易对上两个代币的累计绝对成交量（`normalized = 0` 的行不计入，另记 `vol_skipped` 条数）。
+代币维度的总量由 `SUM` 跨交易对算，**不做任何跨代币折算** —— 没有共同计价单位，折算就是编的。
+
+### 7.4 分不出来的合约（必须做，不是可选）
+
+`contract_probes.state = 'not_token'`、又没被判成交易对、但确实被调用过的合约，统计成 `unclassifiedContracts`，出现在：
+
+- `/api/summary` 的 `built.unclassifiedContracts`；
+- 每个带 `detection` 块的返回体里；
+- 代币页 / 交易对页的页脚：「另有 N 个被调用过但我们没能识别出类型的合约，它们同样是 agent 造的东西，只是我们的解码规则没覆盖到。」
+
+**没有这一行，前面所有列表都是在暗示「这就是全部」，而那是假的。**
+
+### 7.5 SQLite（迁移 `003_agent_built.sql`，风格与 §2 一致）
+
+```sql
+-- ============ 探测缓存：每个候选地址只探一次 ============
+CREATE TABLE contract_probes (
+  address          TEXT PRIMARY KEY,
+  state            TEXT NOT NULL,       -- 'pending'|'token'|'pair'|'factory'|'not_token'|'multi_token'|'nft'
+  probe_block      INTEGER,             -- 实际探测成功的高度（可能是 head，见 §7.1.6）
+  probed_at        INTEGER,
+  attempts         INTEGER NOT NULL DEFAULT 0,
+  last_error       TEXT,
+  first_seen_block INTEGER NOT NULL,
+  first_seen_ts    INTEGER NOT NULL
+);
+CREATE INDEX contract_probes_state ON contract_probes(state, address);
+
+-- ============ 代币 ============
+CREATE TABLE tokens (
+  address        TEXT PRIMARY KEY,
+  name           TEXT,                  -- agent 自己写的，不可信；出库一律转义
+  symbol         TEXT,
+  decimals       INTEGER,               -- NULL = 没实现或返回垃圾值（X3）
+  total_supply   TEXT NOT NULL DEFAULT '0',   -- 该代币最小单位的十进制字符串，**不是 BAC 的 wei**
+  supply_block   INTEGER,               -- total_supply 读自哪个高度
+  supply_stale   INTEGER NOT NULL DEFAULT 0,
+  creator        TEXT,                  -- 部署者地址，未知为 NULL
+  creator_agent  INTEGER,               -- agent_id，未注册/未知为 NULL
+  deploy_tx      TEXT,
+  deploy_block   INTEGER,
+  deploy_ts      INTEGER,
+  detect_level   TEXT NOT NULL,         -- 'full' | 'partial'
+  detected_block INTEGER NOT NULL,      -- 第一次被判成代币的高度
+  holders        INTEGER NOT NULL DEFAULT 0,
+  transfers      INTEGER NOT NULL DEFAULT 0,
+  mints          INTEGER NOT NULL DEFAULT 0,
+  burns          INTEGER NOT NULL DEFAULT 0,
+  burned_amount  TEXT NOT NULL DEFAULT '0',
+  pair_count     INTEGER NOT NULL DEFAULT 0,
+  swap_count     INTEGER NOT NULL DEFAULT 0,
+  first_block    INTEGER NOT NULL,      -- 第一条 Transfer
+  first_ts       INTEGER NOT NULL,
+  last_block     INTEGER NOT NULL,      -- 最后一条 Transfer 或 Swap
+  last_ts        INTEGER NOT NULL,
+  zero_only      INTEGER NOT NULL DEFAULT 0,   -- X5
+  is_nft         INTEGER NOT NULL DEFAULT 0,   -- X2（置 1 时该行同时被移出列表口径）
+  is_multi_token INTEGER NOT NULL DEFAULT 0,   -- X1
+  balance_drift  INTEGER NOT NULL DEFAULT 0,   -- §7.1.7：推导余额与 balanceOf 对不上
+  drift_checked_at INTEGER
+);
+CREATE INDEX tokens_creator  ON tokens(creator_agent, deploy_block DESC);
+CREATE INDEX tokens_new      ON tokens(deploy_block DESC);
+CREATE INDEX tokens_holders  ON tokens(holders DESC, address);
+CREATE INDEX tokens_activity ON tokens(last_block DESC);
+CREATE INDEX tokens_symbol   ON tokens(symbol);
+
+CREATE TABLE token_transfers (
+  tx         TEXT NOT NULL,
+  log_index  INTEGER NOT NULL,
+  token      TEXT NOT NULL,
+  block      INTEGER NOT NULL,
+  ts         INTEGER NOT NULL,
+  from_addr  TEXT NOT NULL,
+  to_addr    TEXT NOT NULL,
+  from_agent INTEGER,
+  to_agent   INTEGER,
+  value      TEXT NOT NULL,             -- 最小单位
+  kind       TEXT NOT NULL,             -- 'mint' | 'burn' | 'transfer'
+  PRIMARY KEY (tx, log_index)
+);
+CREATE INDEX token_transfers_token ON token_transfers(token, block DESC, log_index DESC);
+CREATE INDEX token_transfers_from  ON token_transfers(from_addr, block DESC);
+CREATE INDEX token_transfers_to    ON token_transfers(to_addr, block DESC);
+CREATE INDEX token_transfers_agent ON token_transfers(from_agent, block DESC);
+
+CREATE TABLE token_balances (
+  token        TEXT NOT NULL,
+  holder       TEXT NOT NULL,
+  balance      TEXT NOT NULL,           -- 最小单位；由 Transfer 推导，可能与 balanceOf 不符（§7.1.7）
+  balance_sort REAL NOT NULL DEFAULT 0, -- = Number(balance)，**只用于 ORDER BY**，绝不展示、绝不进 API
+  in_total     TEXT NOT NULL DEFAULT '0',
+  out_total    TEXT NOT NULL DEFAULT '0',
+  tx_count     INTEGER NOT NULL DEFAULT 0,
+  agent_id     INTEGER,
+  first_ts     INTEGER NOT NULL,
+  last_ts      INTEGER NOT NULL,
+  PRIMARY KEY (token, holder)
+);
+CREATE INDEX token_balances_holder ON token_balances(holder, token);
+CREATE INDEX token_balances_top    ON token_balances(token, balance_sort DESC, holder);
+
+CREATE TABLE token_events (             -- 降级 / 移出的审计线索，页面上要照实说
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  address TEXT NOT NULL,
+  kind    TEXT NOT NULL,                -- 'DETECTED' | 'DEMOTED' | 'RELEVEL'
+  rule    TEXT,                         -- 'X2' | 'X5' | …
+  detail  TEXT,
+  block   INTEGER NOT NULL,
+  ts      INTEGER NOT NULL
+);
+CREATE INDEX token_events_addr ON token_events(address, id DESC);
+
+-- ============ 工厂 / 交易对 ============
+CREATE TABLE amm_factories (
+  address       TEXT PRIMARY KEY,
+  kind          TEXT NOT NULL,          -- 'v2' | 'v3'
+  creator       TEXT,
+  creator_agent INTEGER,
+  deploy_tx     TEXT,
+  deploy_block  INTEGER,
+  deploy_ts     INTEGER,
+  pair_count    INTEGER NOT NULL DEFAULT 0,
+  first_ts      INTEGER NOT NULL,
+  last_ts       INTEGER NOT NULL
+);
+
+CREATE TABLE pair_candidates (          -- 等两边代币被认出来的池子（§7.2.3 P4）
+  address    TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,
+  token0     TEXT,
+  token1     TEXT,
+  factory    TEXT,
+  state      TEXT NOT NULL,             -- 'waiting_token' | 'rejected'
+  reason     TEXT,
+  seen_block INTEGER NOT NULL,
+  seen_ts    INTEGER NOT NULL,
+  retried_at INTEGER
+);
+
+CREATE TABLE pairs (
+  address          TEXT PRIMARY KEY,
+  kind             TEXT NOT NULL,       -- 'v2' | 'v3'
+  factory          TEXT,                -- agent 部署的工厂；路径 B 下为 NULL
+  discovered_via   TEXT NOT NULL,       -- 'factory' | 'event'
+  token0           TEXT NOT NULL,
+  token1           TEXT NOT NULL,
+  fee_ppm          INTEGER,             -- V3 的 fee()，百万分之一；V2 为 NULL（V2 费率写死在代码里，读不出来）
+  tick_spacing     INTEGER,
+  creator          TEXT,
+  creator_agent    INTEGER,
+  deploy_tx        TEXT,
+  deploy_block     INTEGER,
+  deploy_ts        INTEGER,
+  reserve0         TEXT NOT NULL DEFAULT '0',
+  reserve1         TEXT NOT NULL DEFAULT '0',
+  reserve_source   TEXT NOT NULL,       -- 'getReserves' | 'balanceOf'
+  reserve_block    INTEGER,
+  swap_count       INTEGER NOT NULL DEFAULT 0,
+  vol0             TEXT NOT NULL DEFAULT '0',
+  vol1             TEXT NOT NULL DEFAULT '0',
+  vol_skipped      INTEGER NOT NULL DEFAULT 0,   -- normalized = 0 的成交条数
+  mint_count       INTEGER NOT NULL DEFAULT 0,
+  burn_count       INTEGER NOT NULL DEFAULT 0,
+  last_price       TEXT,                -- price_1_per_0，×10^-18 定点
+  last_price_block INTEGER,
+  first_block      INTEGER NOT NULL,
+  first_ts         INTEGER NOT NULL,
+  last_block       INTEGER NOT NULL,
+  last_ts          INTEGER NOT NULL,
+  detect_level     TEXT NOT NULL        -- 'full'（两边都是已识别代币）| 'partial'（只有一边是）
+);
+CREATE INDEX pairs_token0  ON pairs(token0, swap_count DESC);
+CREATE INDEX pairs_token1  ON pairs(token1, swap_count DESC);
+CREATE INDEX pairs_creator ON pairs(creator_agent, deploy_block DESC);
+CREATE INDEX pairs_new     ON pairs(deploy_block DESC);
+CREATE INDEX pairs_swaps   ON pairs(swap_count DESC, address);
+
+CREATE TABLE swaps (
+  tx            TEXT NOT NULL,
+  log_index     INTEGER NOT NULL,
+  pair          TEXT NOT NULL,
+  kind          TEXT NOT NULL,          -- 'v2' | 'v3'
+  block         INTEGER NOT NULL,
+  ts            INTEGER NOT NULL,
+  epoch         INTEGER NOT NULL,
+  agent_id      INTEGER,                -- 来自 tx.from，不是 sender（§7.3）
+  tx_from       TEXT NOT NULL,
+  sender        TEXT NOT NULL,          -- 事件里的原始 sender（通常是 router 合约）
+  recipient     TEXT,                   -- V2 的 to / V3 的 recipient
+  token_in      TEXT,
+  amount_in     TEXT,
+  token_out     TEXT,
+  amount_out    TEXT,
+  side          TEXT NOT NULL,          -- 'sell0' | 'buy0' | 'unknown'
+  amt0          TEXT NOT NULL,          -- 绝对变动量，供量能统计
+  amt1          TEXT NOT NULL,
+  price_1_per_0 TEXT,                   -- ×10^-18 定点十进制字符串，算不出为 NULL
+  normalized    INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (tx, log_index)
+);
+CREATE INDEX swaps_pair  ON swaps(pair, block DESC, log_index DESC);
+CREATE INDEX swaps_block ON swaps(block DESC, log_index DESC);
+CREATE INDEX swaps_agent ON swaps(agent_id, block DESC);
+CREATE INDEX swaps_in    ON swaps(token_in, block DESC);
+CREATE INDEX swaps_out   ON swaps(token_out, block DESC);
+
+CREATE TABLE liquidity_events (         -- V2 / V3 的 Mint & Burn，统一成加 / 撤流动性
+  tx        TEXT NOT NULL,
+  log_index INTEGER NOT NULL,
+  pair      TEXT NOT NULL,
+  block     INTEGER NOT NULL,
+  ts        INTEGER NOT NULL,
+  agent_id  INTEGER,
+  tx_from   TEXT NOT NULL,
+  kind      TEXT NOT NULL,              -- 'add' | 'remove'
+  amount0   TEXT NOT NULL,
+  amount1   TEXT NOT NULL,
+  PRIMARY KEY (tx, log_index)
+);
+CREATE INDEX liquidity_events_pair ON liquidity_events(pair, block DESC, log_index DESC);
+```
+
+#### 7.5.1 幂等：重启后重放同一批区块不许把数字翻倍
+
+1. **检测与区块写入在同一个 SQLite 事务里完成**，用的是 §2 里已有的 `cursor('layer')`，**不新增第二个游标**。
+   游标推进与这几张表的写入要么一起成功、要么一起回滚。
+2. `token_transfers` / `swaps` / `liquidity_events` 的主键都是 `(tx, log_index)`，写入一律 `INSERT OR IGNORE`。
+3. **所有计数器与累计量**（`tokens.transfers` / `holders` / `mints` / `burns` / `pairs.swap_count` / `vol0` / `vol1` /
+   `token_balances.balance`）**只在「这条日志是第一次写入」时才更新** —— 实现上就是 `INSERT OR IGNORE` 之后检查
+   `changes() == 1`，为 0 就整条跳过。**这是重放安全的唯一保证**；没有它，一次重启就能让某个代币的持有量凭空翻倍。
+4. `tokens` / `pairs` / `amm_factories` 的身份行用 `INSERT … ON CONFLICT(address) DO UPDATE`，
+   只更新**幂等字段**（`name` / `symbol` / `decimals` / `total_supply` / `detect_level` / `reserve*` / `last_*` / `*_stale`），
+   **绝不**在这里改累计计数器。
+5. `token_balances.balance` 用「读-改-写」在同一事务里做，`balance_sort` 同步更新；
+   **任何展示与 API 返回都必须用 `balance` 这个字符串，绝不用 `balance_sort`**（它是 REAL，会丢精度）。
+   `holders` 的维护规则：余额从 `'0'` 变非零 `+1`，从非零变 `'0'` `-1`，销毁地址不计入。
+6. 层内是 QBFT 即时最终性，**不重组**（`02`），所以没有回滚路径。
+   万一将来出现层内重组：按区块号删掉 `token_transfers` / `swaps` / `liquidity_events` 的对应行后，
+   **整体重算**受影响代币 / 交易对的计数器，不做增量回退（增量回退在有 `INSERT OR IGNORE` 的前提下必然算错）。
+7. 迁移是纯加法：不改名、不删列、不回填。`003_agent_built.sql` 跑在 `002_fee_split.sql` 之后。
+8. 探测失败（RPC 超时、状态窗口过期）**不推进游标、不写 `not_token`**，只 `attempts += 1` 并留在 `pending`；
+   连续失败 10 次才写 `last_error` 并降频重试。**「探测失败」与「不是代币」是两件事，混为一谈会永久漏掉真代币。**
+
+### 7.6 HTTP API
+
+约定同 §3 开头：金额是十进制字符串（代币用它自己的最小单位）、地址 EIP-55、时间戳秒、
+统一错误形状 `{"error":{"code":…,"message":…}}`、`Access-Control-Allow-Origin: *`、`Cache-Control: public, max-age=3`、
+`Content-Type: application/json; charset=utf-8`、限速每 IP 每秒 20 次 / 每分钟 600 次。
+全部只读，无需认证。
+
+**本节每一个端点的返回体都必须带这个块，一字不改：**
+
+```json
+"detection": {
+  "method": "heuristic",
+  "note": "本链没有官方 DEX、官方代币或官方工具合约。这一页是把 agent 自己部署的合约按日志形状和 eth_call 应答解出来的结果，规则写在 docs/03-INTERFACES.md §7。它可能漏掉我们没认出来的东西，也可能认错。",
+  "rulesUrl": "https://bnbagentchain-scan.com/docs/detection",
+  "unclassifiedContracts": 3
+}
+```
+
+#### `GET /api/tokens`
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `page` | integer | 1 | |
+| `pageSize` | integer | 50 | 最大 200 |
+| `sort` | `newest\|holders\|transfers\|swaps\|activity` | `newest` | `activity` = 按 `last_block` 倒序 |
+| `agentId` | integer | — | 只看某个 agent 发的币 |
+| `q` | string | — | ≤ 64 字节，匹配 `symbol` / `name` 前缀或地址；**只做字面匹配，不做模糊、不做排名加权** |
+| `level` | `full\|partial\|all` | `all` | |
+| `includeZeroOnly` | `0\|1` | `0` | X5 折叠的那批 |
+
+```json
+{
+  "schema": "bac/tokens/1",
+  "total": 12,
+  "page": 1,
+  "pageSize": 50,
+  "detection": { "…见上…" },
+  "items": [
+    { "address": "0x4f2…9a1", "name": "Agent Fuel", "symbol": "FUEL", "decimals": 18,
+      "nameTrusted": false,
+      "totalSupply": "1000000000000000000000000", "supplyBlock": 1234560,
+      "creator": { "agentId": 17, "wallet": "0xAbC…" },
+      "deployTx": "0x…", "deployBlock": 1234501, "deployTs": 1789999950,
+      "holders": 4, "transfers": 19, "mints": 1, "burns": 0,
+      "pairCount": 1, "swapCount": 6,
+      "firstTs": 1789999950, "lastTs": 1790000400,
+      "detectLevel": "full", "balanceDrift": false, "zeroOnly": false,
+      "sameNameCount": 0 }
+  ],
+  "updatedAt": 1790000000
+}
+```
+
+`nameTrusted` 恒为 `false`，**它存在的唯一目的是让前端没法忘记这件事**。
+`sameNameCount > 0` 时前端必须显示「链上还有 N 个同名代币」。
+
+#### `GET /api/token/{address}`
+
+`address` 不是合法地址 → `400 bad_request`；地址合法但没被判成代币 → `404 not_found`，
+`message` 写「这个地址没有被识别为代币」，并在返回体里带一个 `contract` 对象指向 `/api/contract/{address}`
+（**不要只回一个空的 404** —— 前端要能把人接到合约页去）。
+
+```json
+{
+  "schema": "bac/token/1",
+  "detection": { "…" },
+  "token": { "…同 /api/tokens 的元素…" },
+  "supplyCheck": {
+    "onchainTotalSupply": "1000000000000000000000000",
+    "derivedHolderSum":   "1000000000000000000000000",
+    "drift": "0",
+    "driftCheckedAt": 1790000000,
+    "note": "onchain 是 totalSupply() 的返回值；derived 是按 Transfer 事件推出来的余额之和。两者不一致说明这个代币的转账不守恒（收税或 rebase），以链上为准。"
+  },
+  "topHolders": [
+    { "rank": 1, "address": "0x…", "agentId": 17, "balance": "620000000000000000000000",
+      "shareBps": 6200, "isContract": true, "role": "pair" }
+  ],
+  "pairs": [ { "address": "0x…", "kind": "v2",
+               "other": { "address": "0x…", "symbol": "BACX", "decimals": 18 },
+               "reserve0": "…", "reserve1": "…", "swapCount": 6 } ],
+  "recentTransfers": [ { "…见 /transfers 的元素，最多 20 条…" } ],
+  "creatorActions": [ { "seq": 8821, "kind": "DEPLOY", "summary": "…", "tx": "0x…", "ts": 1789999950 } ],
+  "events": [ { "kind": "DETECTED", "rule": null, "block": 1234502, "ts": 1789999953 } ],
+  "updatedAt": 1790000000
+}
+```
+
+`topHolders` 固定 10 条，`role` ∈ `"pair" | "token" | "factory" | null`。
+**`role == "pair"` 的持有者必须在页面上标成「交易对合约（池子里的钱）」**，否则「第一大户占 62%」这句话是误导。
+`shareBps` 是整数 bps，按 `onchainTotalSupply` 算；`onchainTotalSupply == "0"` 时返回 `null`。
+
+#### `GET /api/token/{address}/holders`
+
+参数：`page`（默认 1）、`pageSize`（默认 50，最大 200）。
+固定按余额倒序（`balance_sort`），余额相同按地址升序 —— 有第二排序键翻页才稳定。
+
+```json
+{
+  "schema": "bac/token-holders/1",
+  "token": "0x4f2…9a1", "total": 4, "page": 1, "pageSize": 50,
+  "detection": { "…" },
+  "balanceDrift": false,
+  "items": [
+    { "rank": 1, "address": "0x…", "agentId": 17, "balance": "620000000000000000000000",
+      "shareBps": 6200, "inTotal": "…", "outTotal": "…", "txCount": 7,
+      "isContract": true, "role": "pair", "firstTs": 1789999950, "lastTs": 1790000400 }
+  ],
+  "burned": { "amount": "0", "addresses": ["0x0000000000000000000000000000000000000000",
+                                           "0x000000000000000000000000000000000000dEaD"] },
+  "updatedAt": 1790000000
+}
+```
+
+#### `GET /api/token/{address}/transfers`
+
+| 参数 | 说明 |
+|---|---|
+| `before` / `after` | 游标，值是 `"{block}:{logIndex}"`。**不是自增 id**：这张表没有自增列，用区块 + 日志序号才能在重放后稳定 |
+| `limit` | 默认 50，最大 200 |
+| `address` | 只看某个地址参与的转账 |
+| `direction` | `in\|out`，**必须与 `address` 同时给**，否则 `400 bad_request` |
+| `kind` | `mint\|burn\|transfer` |
+
+```json
+{
+  "schema": "bac/token-transfers/1",
+  "token": "0x4f2…9a1",
+  "detection": { "…" },
+  "items": [
+    { "cursor": "1234560:3", "block": 1234560, "ts": 1790000400, "tx": "0x…", "logIndex": 3,
+      "from": "0x…", "to": "0x…", "fromAgentId": 17, "toAgentId": null,
+      "value": "1000000000000000000", "kind": "transfer" }
+  ],
+  "next": "1234501:0",
+  "updatedAt": 1790000000
+}
+```
+
+`next` 为 `null` 表示没有更多了。
+
+#### `GET /api/pairs`
+
+参数：`page`、`pageSize`（默认 50，最大 200）、`sort`（`newest|swaps|activity`，默认 `newest`）、
+`token`（只看含某个代币的池子）、`factory`、`kind`（`v2|v3`）、`agentId`（建池人）。
+
+```json
+{
+  "schema": "bac/pairs/1",
+  "total": 3, "page": 1, "pageSize": 50,
+  "detection": { "…" },
+  "items": [
+    { "address": "0x…", "kind": "v2", "discoveredVia": "factory",
+      "factory": { "address": "0x…", "creatorAgentId": 21 },
+      "token0": { "address": "0x…", "symbol": "FUEL", "decimals": 18, "known": true },
+      "token1": { "address": "0x…", "symbol": "BACX", "decimals": 18, "known": true },
+      "creator": { "agentId": 21, "wallet": "0x…" },
+      "deployTx": "0x…", "deployBlock": 1234510, "deployTs": 1789999980,
+      "reserve0": "…", "reserve1": "…", "reserveSource": "getReserves", "reserveBlock": 1234566,
+      "feePpm": null, "tickSpacing": null,
+      "swapCount": 6, "vol0": "…", "vol1": "…", "volSkipped": 0,
+      "mintCount": 2, "burnCount": 0,
+      "lastPrice": "1024000000000000000", "lastPriceBlock": 1234566,
+      "firstTs": 1789999980, "lastTs": 1790000400, "detectLevel": "full" }
+  ],
+  "updatedAt": 1790000000
+}
+```
+
+`lastPrice` 是 `price_1_per_0` 的 ×10^-18 定点十进制字符串。**返回体里不出现任何法币或 BAC 折算值**（§7.3）。
+`token*.known == false` 表示这一边没被判成代币（此时 `detectLevel = "partial"`），前端显示地址并注明。
+
+#### `GET /api/pair/{address}`
+
+```json
+{
+  "schema": "bac/pair/1",
+  "detection": { "…" },
+  "pair": { "…同 /api/pairs 的元素…" },
+  "price": {
+    "price1Per0": "1024000000000000000",
+    "price0Per1": "976562500000000000",
+    "source": "reserves",
+    "atBlock": 1234566,
+    "note": "这是按池子当前储备算出来的兑换比，不是行情价。本链没有法币计价，也没有预言机。"
+  },
+  "recentSwaps": [ { "…见 /api/swaps 的元素，最多 20 条…" } ],
+  "liquidity": [ { "tx": "0x…", "block": 1234511, "ts": 1789999983, "agentId": 21,
+                   "kind": "add", "amount0": "…", "amount1": "…" } ],
+  "v3Note": "V3 池子只显示池内余额与成交，不显示 tick 深度分布。",
+  "updatedAt": 1790000000
+}
+```
+
+`price.source` ∈ `"reserves"`（V2 的 `getReserves`）/ `"balances"`（V3 的池内余额）/
+`"lastSwap"`（储备读不到时的回退）/ `null`（算不出）。V2 时 `v3Note` 不出现。
+
+#### `GET /api/swaps`
+
+| 参数 | 说明 |
+|---|---|
+| `pair` | 某个交易对 |
+| `token` | 某个代币（`token_in` 或 `token_out` 命中） |
+| `agentId` | 某个 agent 做的成交 |
+| `before` / `after` | 游标，`"{block}:{logIndex}"` |
+| `limit` | 默认 50，最大 200 |
+| `normalized` | `0\|1\|all`，默认 `all` |
+
+```json
+{
+  "schema": "bac/swaps/1",
+  "detection": { "…" },
+  "items": [
+    { "cursor": "1234566:5", "block": 1234566, "ts": 1790000400, "epoch": 20718,
+      "tx": "0x…", "logIndex": 5,
+      "pair": { "address": "0x…", "kind": "v2",
+                "token0": { "address": "0x…", "symbol": "FUEL", "decimals": 18 },
+                "token1": { "address": "0x…", "symbol": "BACX", "decimals": 18 } },
+      "agentId": 17, "txFrom": "0xAbC…",
+      "sender": "0xRouter…", "recipient": "0xAbC…",
+      "tokenIn": "0x…", "amountIn": "1000000000000000000",
+      "tokenOut": "0x…", "amountOut": "1024000000000000000",
+      "side": "sell0", "price1Per0": "1024000000000000000",
+      "normalized": true }
+  ],
+  "next": "1234560:2",
+  "anchoredThrough": 20716,
+  "updatedAt": 1790000000
+}
+```
+
+`side` 的含义固定为**相对 token0**：`sell0` = token0 进池子，`buy0` = token0 出池子。
+前端要显示「买 / 卖」时必须自己挑一个基准代币并把基准写在表头上，
+**不许直接把 `sell0` 翻译成「卖出」然后不说卖的是哪个。**
+
+#### `GET /api/contract/{address}`（新增端点）
+
+现在只有 `/api/contracts` 列表，合约详情页靠 `?address=` 过滤。本节需要一个能回答「这是个什么」的端点：
+
+```json
+{
+  "schema": "bac/contract/1",
+  "detection": { "…" },
+  "contract": { "address": "0x…", "deployer": "0x…", "agentId": 17, "tx": "0x…",
+                "block": 1234501, "ts": 1789999950, "codeSize": 12844,
+                "callCount": 190, "lastCall": 1234566 },
+  "classified": "token",
+  "classifiedZh": "这是一个代币",
+  "token": { "…tokens 的一行，或 null…" },
+  "pair": null,
+  "factory": null,
+  "probe": { "state": "token", "probeBlock": 1234502, "probedAt": 1789999953, "attempts": 1 },
+  "events": [ { "kind": "DETECTED", "rule": null, "block": 1234502, "ts": 1789999953 } ],
+  "callers": [ { "agentId": 21, "calls": 88, "lastTs": 1790000400 } ],
+  "updatedAt": 1790000000
+}
+```
+
+`classified` ∈ `"token" | "pair" | "factory" | "multi_token" | "nft" | null`，`classifiedZh` 是给页面直接用的中文：
+
+| `classified` | `classifiedZh` |
+|---|---|
+| `token` | `这是一个代币` |
+| `pair` | `这是一个交易对` |
+| `factory` | `这是一个交易对工厂` |
+| `multi_token` | `这是一个多代币合约（ERC-1155 形状）` |
+| `nft` | `这是一个 NFT 形状的合约` |
+| `null` | `我们没能识别出这个合约是什么。它照样是 agent 造出来的东西，只是不在我们的解码规则里。` |
+
+`/api/contracts` 同时新增两个参数：`address`（精确匹配，返回 0 或 1 条）与 `classified`（按上面的集合过滤），
+并在每个 `items[]` 元素上追加 `classified` / `classifiedZh` / `symbol`（非代币为 `null`）。
+
+### 7.7 既有端点的增量（只加字段，不改已有字段）
+
+| 端点 | 增量 |
+|---|---|
+| `GET /api/summary` | 新增顶层 `built`：`{ "tokens": 12, "pairs": 3, "factories": 1, "swaps": 118, "transfers": 640, "unclassifiedContracts": 3, "firstTokenTs": 1789999950, "firstPairTs": 1789999980, "detection": { … } }`。`built` 里**只有计数，没有金额** —— 和 `treasury` / `gasFees` 一样，不得与任何 BAC / BNB 金额合并 |
+| `GET /api/agent/{id}` | 新增 `built`：`{ "tokens": [ …它发的币… ], "pairs": [ …它建的池… ], "factories": [ … ] }`；新增 `trades`：`{ "swapCount": 41, "firstTs": …, "lastTs": …, "pairs": [ { "address": "0x…", "swaps": 30 } ], "recent": [ …最多 10 条 swaps 元素… ] }`；新增 `holdings`：`[{ "token": "0x…", "symbol": "FUEL", "decimals": 18, "balance": "…", "shareBps": 1200, "balanceDrift": false }]`（按 `balance_sort` 取前 20，附 `holdingsTruncated: true\|false`）。已有的 `contracts[]` 每个元素追加 `classified` / `classifiedZh` / `symbol` |
+| `GET /api/agents` | 每个元素追加 `tokensIssued` / `pairsCreated` / `swapCount` 三个计数；`sort` 新增 `tokens` / `swaps` 两个取值 |
+| `GET /api/contracts` | 见 §7.6 最后一段：新增 `address` / `classified` 两个参数，元素追加 `classified` / `classifiedZh` / `symbol` |
+| `GET /api/tx/{hash}` | 新增 `transfers[]`（这笔交易里所有已识别代币的转账，元素同 `/transfers`）与 `swaps[]`（元素同 `/api/swaps`）。两者都可能为空数组；**空数组和 `null` 不是一回事，永远返回数组** |
+| `GET /api/block/{n}` | 每条 `txs[]` 追加 `swapCount` / `transferCount` 两个计数，让区块页能一眼看出「这个块里有交易发生」 |
+| `GET /api/feed` | 新增三个 `kind`（全部 `chain: "layer"`）：`TOKEN_NEW` / `PAIR_NEW` / `TOKEN_FIRST_TRADE` |
+
+**成交不进 feed。** 一旦有人开始刷量，feed 会被成交淹没，而 feed 是「发生了什么大事」的时间线。
+成交有自己的 `/api/swaps` 流水页。这是刻意的取舍，写在这里免得以后有人当成漏掉了。
+
+新增 feed 的中文模板（并入 §4.2 的模板表，风格一致：直白、不替 agent 背书、不做评级）：
+
+| `kind` | 中文模板 |
+|---|---|
+| `TOKEN_NEW` | `agent #{id} 发了一个代币 {symbol}（{address}），总量 {totalSupply}` |
+| `PAIR_NEW` | `agent #{id} 建了一个交易对 {symbol0}/{symbol1}（{address}）` |
+| `TOKEN_FIRST_TRADE` | `{symbol} 有了第一笔成交：agent #{id} 在 {pair} 上成交` |
+
+`symbol` 是 agent 自己写的不可信文本，进模板前**必须转义**（与 `summary` 同一条纪律，§2 末尾）。
+`symbol` 为空时用地址缩写代替，不许显示空括号。
+
+### 7.8 浏览器页面（规格；本轮不动 `web/`，留给后面的 UI 轮次实现）
+
+每个页面都有三件必须做的事：
+**① 顶部一句话说明这是启发式解码；② 空状态是一句人话，不是一个坏掉的表格；③ 金额带符号、带 decimals，不出现任何法币符号。**
+
+#### 7.8.1 代币列表 `/tokens`
+
+- 表头：代币（符号 + 名字 + 地址缩写）、发行者（agent #N，链到 agent 页）、总量、持有人、转账数、成交数、交易对数、最后活动时间。
+- 排序：最新 / 持有人 / 转账 / 成交 / 活跃；筛选：只看某个 agent、只看 `full`、是否显示 `zeroOnly` 的那批。
+- `partial` 的行：用地址当名字，右边一枚小标记「没有 name/symbol」。
+- 同名代币：符号后面跟「还有 N 个同名」，点开是一张按地址列的表。**不打「假币」标签，也不排序偏袒先发的那个。**
+- 页脚固定一行：「另有 N 个被调用过但我们没能识别出类型的合约。」
+- **空状态**（一个代币都没有时）：
+  > 还没有 agent 在这条链上发过代币。
+  > 这条链出厂就是空的：没有官方代币，没有官方 DEX，也没有官方工具合约。第一个代币要等某个 agent 自己部署出来。
+  > 只有 agent 能在这一层发交易，所以这一页要么是空的，要么上面每一行都是某个 agent 自己造的。
+
+  下面给一个「agent 怎么发一个」的链接指向 SDK 文档，**不提供任何一键发币入口**。
+
+#### 7.8.2 代币详情 `/token/{address}`
+
+- 头部：符号 / 名字 / 地址 / decimals / 总量 / 发行者 agent / 部署交易 / 部署时间。
+  名字旁固定一句「名字和符号由部署者自己写，本站不核实」。
+- 四个数：持有人、转账数、成交数、交易对数。
+- `supplyCheck`：链上 `totalSupply()` 与推导余额之和并排显示；不一致时整块变黄条并显示 §7.1.7 那句话。
+- 前 10 持有人（`role == "pair"` 那一行必须标「交易对合约（池子里的钱）」）、这个代币的交易对列表、最近转账、发行者的相关动作。
+- `detectLevel = "partial"` 时顶部一句：「这个合约没有实现 name/symbol/decimals，下面按最小单位显示原始数字。」
+- **空状态**（识别成代币但一笔转账都没有）：「这个代币还没有任何转账。它被部署出来了，但还没有人用过。」
+- **404 状态**（地址不是代币）：不显示「页面不存在」，显示「这个地址没有被识别为代币」加一个跳到合约页的按钮。
+
+#### 7.8.3 交易对列表 `/pairs`
+
+- 表头：交易对（`FUEL/BACX`）、类型（v2 / v3）、建池人、两边储备（各带自己的符号与 decimals）、成交数、最后成交时间、来源（工厂 / 只看到事件）。
+- 「来源 = 只看到事件」的行要能点出一句解释：「这个池子没有对应的工厂事件，是靠它自己发的 Swap/Sync 事件认出来的。」
+- V3 行的储备列标注「池内余额」而不是「储备」，并带一句 `v3Note`。
+- **空状态**：
+  > 还没有 agent 建过交易对。
+  > 这条链上没有官方 DEX。要出现第一个交易对，得有某个 agent 自己把 AMM 合约部署上来，再往里放两种代币。
+
+#### 7.8.4 交易对详情 `/pair/{address}`
+
+- 头部：两个代币（各自链到代币页）、类型、费率（V3 才有）、工厂、建池人、创建交易。
+- 价格一行：「1 FUEL = 1.024 BACX」，旁边固定一句「这是池子当前的兑换比，不是行情价。本链没有法币计价，也没有预言机。」
+- 储备两行（各带符号）、加 / 撤流动性的时间线、最近成交表。
+- **不画 K 线。** 没有法币计价、没有外部行情源、成交笔数还是个位数的时候，K 线是编出来的图。
+  要画就画「逐笔成交价散点 + 时间轴」，并写明这是逐笔成交价。
+- **空状态**（有池子没成交）：「这个交易对还没有成交。池子建好了，但还没有 agent 在这里买过东西。」
+
+#### 7.8.5 成交流水 `/swaps`
+
+- 一屏一张表，倒序，自动追新（和 feed 同一套实时机制）：时间、agent、交易对、方向、卖出数量 + 符号、买入数量 + 符号、成交价、交易哈希。
+- 方向列的表头必须写明基准：「方向（以 {token0 符号} 为基准）」。
+- `normalized = false` 的行：整行变灰，方向与数量列显示「形状不标准」，只给交易哈希，**不隐藏**。
+- 筛选：按交易对、按代币、按 agent。
+- **空状态**：
+  > 还没有成交。
+  > 成交要等两件事同时发生：有 agent 发了币，有 agent 建了池子并放了流动性进去。
+  > 这一页只统计我们能解码出来的 Swap 事件；agent 用别的方式换东西，我们看不见。
+
+#### 7.8.6 agent 详情页的增量
+
+在现有的「部署的合约 / 动作 / 存款 / 退出」之外新增四块：
+
+- **它发的币**：卡片列表（符号、总量、持有人、成交数），空时写「这个 agent 还没发过代币」。
+- **它建的池**：同上，空时写「这个 agent 还没建过交易对」。
+- **它的成交**：成交笔数 + 最近 10 笔 + 按交易对的分布，空时写「这个 agent 还没有做过成交」。
+- **它持有的代币**：前 20 个，超过时显示「只列前 20 个」。余额来自转账推导，`balanceDrift` 的代币逐行标注。
+
+#### 7.8.7 合约详情页的增量
+
+页面顶部一行结论，取 `classifiedZh` 原样显示：
+`这是一个代币` / `这是一个交易对` / `这是一个交易对工厂` / `这是一个多代币合约（ERC-1155 形状）` / `这是一个 NFT 形状的合约`。
+识别成代币或交易对时，下面直接嵌一张摘要卡并给「查看代币页 / 交易对页」的按钮。
+
+没识别出来时显示：
+> 我们没能识别出这个合约是什么。它照样是 agent 造出来的东西，只是不在我们的解码规则里。
+
+并链到本节（§7）的解码规则说明。
+`token_events` 里有 `DEMOTED` 记录的，页面上照实写一行：「曾被识别为代币，后因规则 X2 移出（{时间}）。」
+
+### 7.9 决策 #18 的术语在本文的落实
+
+两处，且只有这两处：
+
+- 锚点的 24 小时一律写 **「锚点等待 24 小时」**，配一句人话「锚点提交后要等 24 小时才能兑付，这期间任何人都能指出它是错的」；
+- agent 的 `CHALLENGED`（`status == 1`）一律显示 **「入场验证中」**。
+
+API 的字段名与取值（`status: 1`、`statusName: "CHALLENGED"`、`/api/agents?status=challenged`、
+`/api/summary` 里的 `agents.challenged`、`JoinProgress.step === "challenge"`）**不改** ——
+它们是与合约 `AgentRegistry.Status` 对齐的契约，改了要同时动索引器、API、网站数据层、SDK 四处。
+**改的是显示名。** 索引器与前端共用同一张对照表：
+
+| `status` | `statusName` | 页面显示 |
+|---|---|---|
+| 0 | `NONE` | 未注册 |
+| 1 | `CHALLENGED` | 入场验证中 |
+| 2 | `ACTIVE` | 正常 |
+| 3 | `DORMANT` | 休眠 |
+| 4 | `BANNED` | 已封禁 |
+| 5 | `RETIRED` | 已退出 |
+
+**页面上不许再出现「挑战」两个字**，无论是锚点那条时间线还是 agent 状态。
+本文自身已按这条改过（§5.3 / §5.5），其余仍需同样改口的文件列在 §7.10。
+
+### 7.10 仓库里其它还需要同样改口的地方（本轮不改，只登记）
+
+下面这些文件里还有「挑战」，**本轮不动它们**（`web/` 与 `contracts/` 由别的工作流持有，
+合约里的 `Challenge*` 是链上标识符，只能改显示层）。按「要不要改」分三档：
+
+**A. 必须改（用户能看见的文案）**
+- `web/js/ui/pages.js`、`web/js/ui/shell.js`、`web/js/ui/demo-data.js`、`web/js/data/bac-core.js` —— 浏览器站的可见文案与状态中文名。
+- `indexer/src/render.js` —— feed 的中文模板里的「挑战」。
+- `docs/00-DESIGN-SPEC.md`（15 处）、`docs/01-CONTRACT-SPEC.md`（7 处）、`docs/02-CHAIN-SPEC.md`（1 处）——
+  凡描述「锚点 24 小时」与「agent 状态」的地方。
+- `docs/04-X-PROMPTS.md`（11 处）—— 对外文案，口径要和站上一致。
+- `sdk/README.md`（3 处）、`sdk/examples/*.mjs`（3 个文件）—— 面向 agent 开发者的说明文字。
+- `node-cli/src/constants.mjs`、`node-cli/src/attest-state.mjs` —— 若其中的「挑战」出现在打印给人看的字符串里。
+
+**B. 只改注释，不改标识符**
+- `sdk/src/agent.ts` / `challenge.ts` / `errors.ts` / `join.ts` / `keccak.ts` / `solvePool.ts` / `solveWorker.ts` / `types.ts`
+  与对应的 `sdk/dist/*`（`dist` 是构建产物，改完源码重新构建即可，不手改）。
+- `sdk/test/*`、`node-cli/test/*` 里的测试描述文字。
+
+**C. 不改**
+- `contracts/src/AgentRegistry.sol` / `ChainAnchor.sol` / `ValidatorStaking.sol` 及其测试与 verify JSON ——
+  链上标识符（`CHALLENGED`、`ChallengeIssued`、`challengePeriod` 等）是已部署合约的一部分，改名会破坏 ABI。
+- `docs/01-CONTRACT-SPEC.bak.md`、`artifacts/sim/00-DESIGN-SPEC.bak.md`、`artifacts/site-backup/**`、
+  `artifacts/design-options/**` —— 备份与历史方案存档，保持原样才有对照价值。
+- `docs/decisions.md` 里决策 #18 自己那一行（它记录的就是「挑战」这个旧叫法）。
+
+---
+
 ## [待定]
 
 1. **`@bac/agent-sdk` / `@bac/node-cli` 的发布方式** —— npm 组织名、包名、license、是否公开仓库。两个旧项目全是 `"private": true`，没有先例。在定下来之前，SDK 以 `artifacts/` 下的本地包形式交付。
@@ -1323,3 +2223,6 @@ epoch 20716
 4. **ERC-8004 registration JSON 的最终字段**（`SDK.cardJson()`）需对照 https://eips.ethereum.org/EIPS/eip-8004 原文核一遍。
 5. **`/api/epoch/{n}/leaves` 的分页**：单纪元退出数超过几千时需要分页，阈值待定（v1 先不分页，加一条 `exitCount > 2000` 的告警）。
 6. **索引器是否暴露第二套只读镜像**（由某个验证者运行、页面并排显示分歧），属于 v2 路线图，接口形状与本文一致即可。
+7. **§7.6 里 `detection.rulesUrl` 指向的那页解码规则说明**还不存在（暂定 `https://bnbagentchain-scan.com/docs/detection`）。它只是把 §7.1–§7.3 的规则用人话讲一遍，随 UI 轮次一起上；在它上线之前，该字段返回 `null`，前端退化成纯文字说明。
+8. **本文 §3 开头的 Base 仍写着 `https://95-179-183-132.sslip.io`**，而决策 #18（域名那一条）已经买了 `bnbagentchain-rpc.xyz`（`/rpc`、`/api/*`）与 `bnbagentchain-scan.com`（站点）。全文的 Base、`howToCheck` 里的 `--rpc-url`、SDK 默认值要不要一次性改掉（并保留 sslip.io 作 `fallbackRpc` / `fallbackApi`），是一次独立的改动，**不在决策 #19 这轮里顺手做** —— 它会动到 §1、§3、§5 三节和四个包的默认配置。
+9. **`decisions.md` 里有两行都编号 #18**（域名、术语改口）。本文引用术语那一条时写的是「决策 #18（术语）」。编号要不要重排由决策文档自己定，本文跟着改即可。

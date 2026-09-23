@@ -1,0 +1,277 @@
+# chain/docker-compose.yml - the production stack for the real BNB Agent Chain layer.
+#
+# Deploy target: /opt/bac/docker-compose.yml on the launch server.  Bring-up, health checks,
+# backups and rollback are in chain/OPERATIONS.md; the design behind each flag is in
+# docs/02-CHAIN-SPEC.md 5.2.  Where this file and the spec disagree, THIS FILE is what we measured
+# and the spec gets corrected - the two differences are marked MEASURED below.
+#
+# Everything here is set by measurement, not preference:
+#   * `--bonsai-limit-trie-logs-enabled` is ABSENT ON PURPOSE (MEASURED, docs/research/11).  Besu
+#     refuses to start with it under FULL sync + BONSAI:
+#       "Cannot enable --bonsai-limit-trie-logs-enabled with --sync-mode=FULL and
+#        --data-storage-format=BONSAI"
+#     A single-validator private chain is always FULL sync, so online trie-log pruning is simply
+#     unavailable to us.  Pruning is offline, quarterly: OPERATIONS.md "quarterly maintenance".
+#     DO NOT ADD THIS FLAG BACK.  It does not make the node start with a warning; it makes it not
+#     start at all, at 3am, after an unattended restart.
+#   * -Xmx2g / mem_limit 3g: 11.4 hours of staging measured RSS 318 -> 468 MB with the growth rate
+#     decaying (18.7 MB/h early, 7.7 MB/h late).  That is JVM heap filling, not a leak.
+#   * BONSAI + historical-block-limit 512: eth_call reaches ~25.6 minutes back, and that number is
+#     published in /api/health rpc.limits.  Changing it here means changing it there.
+#   * Every image is pinned.  `latest` is banned: an unattended `docker compose pull` must never be
+#     able to change the consensus client under a live chain.
+#
+# Requires /opt/bac/.env with at least:
+#   BAC_UID / BAC_GID     # id -u ops / id -g ops
+#   BAC_PUBLIC_IP         # 95.179.183.132 - goes into the enode we publish
+#   BAC_SITE_HOST         # 95-179-183-132.sslip.io
+#   WATCHDOG_ARMED        # true|false - no default on purpose, see the watchdog service below
+# Secrets live in ./secrets/*, never in this file and never in the repo.
+
+name: bac
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+services:
+  besu:
+    image: hyperledger/besu:24.12.2
+    container_name: bac-besu
+    restart: unless-stopped
+    # The container must run as ops, or the data-path ends up owned by root and ops can neither
+    # back it up nor delete it.  We hit exactly that during the consensus probe.
+    user: "${BAC_UID:?set BAC_UID in /opt/bac/.env - run: id -u ops}:${BAC_GID:?set BAC_GID in /opt/bac/.env - run: id -g ops}"
+    stop_grace_period: 2m          # RocksDB needs time to close; SIGKILL leaves a DB to repair
+    environment:
+      BESU_OPTS: "-Xmx2g -Xms512m"
+      LOG4J_CONFIGURATION_FILE: /config/log4j2.xml
+    command:
+      # --- identity and data ---
+      - --data-path=/data
+      - --genesis-file=/config/genesis.json      # read on EVERY start and compared with the hash in
+                                                 # the DB; a mismatch refuses to start. Good. Keep it.
+      - --node-private-key-file=/secrets/key     # enode identity AND QBFT validator identity, one file
+      - --data-storage-format=BONSAI
+      - --bonsai-historical-block-limit=512
+      - --sync-mode=FULL
+      # NOTE: no --bonsai-limit-trie-logs-enabled here. See the MEASURED note at the top of the file.
+      # --- HTTP RPC: compose network only, never published ---
+      - --rpc-http-enabled=true
+      - --rpc-http-host=0.0.0.0
+      - --rpc-http-port=8545
+      - --rpc-http-api=ETH,NET,WEB3,QBFT,ADMIN,MINER
+      - --rpc-http-cors-origins=all              # Besu spells it `all`, not `*`
+      - --host-allowlist=besu,bac-besu,localhost,127.0.0.1
+      - --rpc-http-max-active-connections=100
+      - --rpc-max-logs-range=5000                # second line of defence behind the indexer's rpcguard
+      - --revert-reason-enabled=true             # our requires are bilingual strings; let agents see them
+      # --- WebSocket: internal, for the indexer's new-block subscription ---
+      - --rpc-ws-enabled=true
+      - --rpc-ws-host=0.0.0.0
+      - --rpc-ws-port=8546
+      - --rpc-ws-api=ETH,NET,WEB3
+      # --- p2p ---
+      - --p2p-enabled=true
+      - --p2p-host=${BAC_PUBLIC_IP:?set BAC_PUBLIC_IP in /opt/bac/.env}
+      - --p2p-port=30303
+      - --nat-method=NONE
+      - --max-peers=50
+      - --discovery-enabled=true                 # off means outside witnesses need manual admin_addPeer
+      # --- block production and gas ---
+      - --min-gas-price=1000000000               # 1 gwei. Under zeroBaseFee this is the ONLY price floor
+      - --target-gas-limit=20000000              # emergency lever: 2000000 (OPERATIONS.md)
+      # --- metrics and logs ---
+      - --metrics-enabled=true
+      - --metrics-host=0.0.0.0
+      - --metrics-port=9545
+      - --logging=INFO
+    volumes:
+      - ./data/besu:/data
+      - ./config:/config:ro                      # genesis.json + log4j2.xml
+      - ./secrets/besu:/secrets:ro               # key, 0600, owned by ops
+    ports:
+      - "30303:30303/tcp"
+      - "30303:30303/udp"
+    expose: ["8545", "8546", "9545"]
+    mem_limit: 3g
+    healthcheck:
+      # No curl in this image; bash's /dev/tcp is enough to know the RPC port is accepting.
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/8545' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    logging: *logging
+
+  relayer:
+    image: node:22-alpine
+    container_name: bac-relayer
+    restart: unless-stopped
+    user: "${BAC_UID}:${BAC_GID}"
+    working_dir: /app
+    command: ["node", "src/index.mjs"]           # relayer/package.json main + start script
+    environment:
+      LAYER_RPC: http://besu:8545
+      LAYER_WS: ws://besu:8546
+      LAYER_FINALITY: instant                    # QBFT is final on commit; the relayer does no layer reorg handling
+      BSC_RPC: https://bsc-rpc.publicnode.com
+      BSC_RPC_2: https://bsc-dataseed.bnbchain.org   # must differ from BSC_RPC: two independent finalized views
+      DB_PATH: /var/bac/relayer.db
+      # Layer genesis addresses default correctly in relayer/src/config.mjs; the BSC-side ones do not.
+      BAC_BRIDGE: ${BAC_BRIDGE:?BacBridge address on BSC}
+      AGENT_REGISTRY: ${AGENT_REGISTRY:?AgentRegistry address on BSC}
+      CHAIN_ANCHOR: ${CHAIN_ANCHOR:?ChainAnchor address on BSC}
+      LAYER_SIGNER_ADDRESS: ${LAYER_SIGNER_ADDRESS:?the QBFT validator address - fees land here}
+      LAYER_VALIDATORS: ${LAYER_VALIDATORS:-}    # everValidator table; empty = just the official proposer
+      FEE_SPLITTER: "0x0000000000000000000000000000000000000104"
+    env_file:
+      - ./secrets/relayer.env                    # RELAYER_PRIVATE_KEY / RELAYER_LAYER_PRIVATE_KEY, 0600
+    volumes:
+      - ./relayer:/app:ro
+      - ./data/relayer:/var/bac
+    depends_on:
+      besu:
+        condition: service_healthy
+    logging: *logging
+
+  # The automated brake (decision #25a).  With a 120-second anchor wait there is no human
+  # reaction window left, so against a COMPROMISED RELAYER this process is one of only two brakes -
+  # the other being the 2%-5% daily release cap, which only rate-limits, never stops.
+  # Decision #29b: it is NOT the last line of defence.  Once the bridge becomes an upgradeable
+  # proxy with emergencyWithdraw, the owner outranks pause(), the escape hatch and this container.
+  # Say that plainly; do not let the docs or the site describe this as the final backstop.
+  # Bring-up, what each alert means and what a human does about it: OPERATIONS.md section 9.
+  #
+  # Two deliberate differences from the other services:
+  #   * `restart: "on-failure:3"`, not `unless-stopped`.  After it trips it EXITS with code 3 and
+  #     keeps exiting on every restart until a human clears the finding.  A watchdog that has
+  #     already declared the bridge compromised must not quietly go back to watching it.
+  #   * The `depends_on: besu` gate below is necessary but not sufficient: it also needs both BSC
+  #     endpoints, which compose cannot gate on.  A read that fails is logged and retried on the
+  #     next tick rather than killing the process - a watchdog that dies on a flaky RPC is worse
+  #     than one that says so and keeps going.
+  watchdog:
+    image: node:22-alpine
+    container_name: bac-watchdog
+    restart: "on-failure:3"
+    user: "${BAC_UID}:${BAC_GID}"
+    working_dir: /app
+    command: ["node", "src/index.mjs"]
+    environment:
+      LAYER_RPC: http://besu:8545
+      # LAYER_RPC_2 is deliberately EMPTY: there is exactly one official signing node, so the
+      # layer-side confirmation read degrades to "read the same node again a moment later".
+      # That rules out a transient read error; it does not rule out the node itself lying.
+      # Same trust domain as row 1 of the trust table - do not paper over it.
+      LAYER_RPC_2: ""
+      BSC_RPC: https://bsc-rpc.publicnode.com
+      BSC_RPC_2: https://bsc-dataseed.bnbchain.org   # must differ from BSC_RPC: the trip
+                                                     # confirmation read goes out on this one
+      WATCHDOG_DB: /var/bac/watchdog.db
+      # true = it really sends pause().  There is NO default: false would leave the operator
+      # believing the bridge has a brake when it has none, true would let a rehearsal pause
+      # mainnet collect.  Set it explicitly in /opt/bac/.env.
+      WATCHDOG_ARMED: ${WATCHDOG_ARMED:?set WATCHDOG_ARMED=true|false in /opt/bac/.env}
+      BAC_BRIDGE: ${BAC_BRIDGE:?BacBridge address on BSC}
+      CHAIN_ANCHOR: ${CHAIN_ANCHOR:?ChainAnchor address on BSC}
+      BAC_TOKEN: ${BAC_TOKEN:?BAC token address on BSC}
+      LAYER_SIGNER_ADDRESS: ${LAYER_SIGNER_ADDRESS:?the QBFT validator address - fees land here}
+      LAYER_VALIDATORS: ${LAYER_VALIDATORS:-}
+      FEE_SPLITTER: "0x0000000000000000000000000000000000000104"
+      FLAP_VAULT_PORTAL: ${FLAP_VAULT_PORTAL:-}
+      BSC_START_BLOCK: ${BSC_START_BLOCK:-}
+      # 5 s.  The economy model's requirement is a poll interval <= 10 s and end-to-end detection
+      # <= 30 s (artifacts/sim/RESULTS-buyback.md 3.3); config validation refuses anything > 10 s.
+      WATCHDOG_POLL_MS: "5000"
+      WATCHDOG_SLOW_POLL_MS: "30000"
+      WATCHDOG_WEBHOOK_URL: ${WATCHDOG_WEBHOOK_URL:-}
+      WATCHDOG_WEBHOOK_FORMAT: ${WATCHDOG_WEBHOOK_FORMAT:-json}
+    env_file:
+      - ./secrets/watchdog.env                   # WATCHDOG_PRIVATE_KEY (and optionally
+                                                 # WATCHDOG_VETO_PRIVATE_KEY), 0600, owned by ops.
+                                                 # This key's ONLY powers are pause / unpause /
+                                                 # armEscape / revokeEpochOwed - it can never move
+                                                 # BNB or BAC.  Keep it in its own file, NOT in
+                                                 # relayer.env: they are different trust levels.
+    volumes:
+      - ./watchdog:/app:ro
+      - ./data/watchdog:/var/bac
+    depends_on:
+      besu:
+        condition: service_healthy
+    logging: *logging
+
+  indexer:
+    image: node:22-alpine
+    container_name: bac-indexer
+    restart: unless-stopped
+    user: "${BAC_UID}:${BAC_GID}"
+    working_dir: /app
+    command: ["node", "--no-warnings=ExperimentalWarning", "src/cli.js", "serve"]
+    environment:
+      BAC_LAYER_RPC: http://besu:8545
+      BAC_LAYER_WS: ws://besu:8546
+      BAC_LAYER_CHAIN_ID: "56777"
+      BAC_LAYER_METRICS: http://besu:9545/metrics   # peers / txpool / height for the ops panel
+      BSC_RPC: https://bsc-rpc.publicnode.com
+      BSC_RPC_2: https://bsc-dataseed.bnbchain.org
+      BAC_INDEXER_DB: /var/bac/index.db
+      BAC_RELAYER_DB: /var/bac-relayer/relayer.db  # read-only view of the relayer's DB for /api/health
+      BAC_GENESIS_PATH: /config/genesis.json
+      BAC_API_HOST: 0.0.0.0
+      BAC_API_PORT: "8080"
+      BAC_ETH_CALL_STATE_WINDOW: "512"             # must equal --bonsai-historical-block-limit above
+      BAC_API_BASE: https://${BAC_SITE_HOST:?set BAC_SITE_HOST in /opt/bac/.env}
+      BAC_ADDR_REGISTRY: ${AGENT_REGISTRY:?}
+      BAC_ADDR_BRIDGE: ${BAC_BRIDGE:?}
+      BAC_ADDR_ANCHOR: ${CHAIN_ANCHOR:?}
+      BAC_ADDR_STAKING: ${VALIDATOR_STAKING:-}
+      BAC_ADDR_NODE_FUND: ${BAC_NODE_FUND:-}
+      BAC_ADDR_VAULT: ${BAC_VAULT:-}
+      BAC_ADDR_FACTORY: ${VAULT_FACTORY:-}
+      BAC_ADDR_TOKEN: ${BAC_TOKEN:-}
+      BAC_ADDR_TAX_PROCESSOR: ${TAX_PROCESSOR:-}
+      BAC_ADDR_FLAP_VAULT_PORTAL: ${FLAP_VAULT_PORTAL:-}
+    volumes:
+      - ./indexer:/app:ro
+      - ./data/indexer:/var/bac
+      - ./data/relayer:/var/bac-relayer:ro
+      - ./config:/config:ro
+    expose: ["8080"]
+    depends_on:
+      besu:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging: *logging
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: bac-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      BAC_SITE_HOST: ${BAC_SITE_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data                       # ACME account + certificates. Back this up.
+      - ./data/caddy-config:/config
+    depends_on:
+      indexer:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *logging

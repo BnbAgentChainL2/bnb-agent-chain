@@ -1,0 +1,139 @@
+{
+  "title": "Just a moment...",
+  "text": "bscscan.com\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a3f77f638ce2ff8a\nPerformance and Security by Cloudflare\nPrivacy",
+  "stylesheets": [
+    null,
+    null
+  ],
+  "colors": [
+    [
+      "color:rgb(49, 49, 49)",
+      21
+    ],
+    [
+      "borderTopColor:rgb(49, 49, 49)",
+      19
+    ],
+    [
+      "borderTopColor:rgb(217, 217, 217)",
+      2
+    ],
+    [
+      "color:rgb(0, 0, 238)",
+      2
+    ],
+    [
+      "borderTopColor:rgb(0, 0, 238)",
+      2
+    ]
+  ],
+  "fonts": [
+    [
+      "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\" | 16px | 400",
+      10
+    ],
+    [
+      "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\" | 12px | 400",
+      10
+    ],
+    [
+      "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\" | 40px | 600",
+      1
+    ],
+    [
+      "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\" | 24px | 600",
+      1
+    ],
+    [
+      "monospace | 12px | 400",
+      1
+    ]
+  ],
+  "details": [
+    {
+      "tag": "BODY",
+      "cls": "",
+      "text": "bscscan.comPerforming security verificationThis website uses a security service to protect",
+      "color": "rgb(49, 49, 49)",
+      "bg": "rgba(0, 0, 0, 0)",
+      "border": "rgb(49, 49, 49)",
+      "font": "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+      "size": "16px",
+      "weight": "400",
+      "radius": "0px"
+    },
+    {
+      "tag": "H1",
+      "cls": "",
+      "text": "bscscan.com",
+      "color": "rgb(49, 49, 49)",
+      "bg": "rgba(0, 0, 0, 0)",
+      "border": "rgb(49, 49, 49)",
+      "font": "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+      "size": "40px",
+      "weight": "600",
+      "radius": "0px"
+    },
+    {
+      "tag": "H2",
+      "cls": "YNaX0",
+      "text": "Performing security verification",
+      "color": "rgb(49, 49, 49)",
+      "bg": "rgba(0, 0, 0, 0)",
+      "border": "rgb(49, 49, 49)",
+      "font": "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+      "size": "24px",
+      "weight": "600",
+      "radius": "0px"
+    },
+    {
+      "tag": "INPUT",
+      "cls": "",
+      "text": "",
+      "color": "rgb(0, 0, 0)",
+      "bg": "rgba(0, 0, 0, 0)",
+      "border": "rgb(0, 0, 0)",
+      "font": "Arial",
+      "size": "13.3333px",
+      "weight": "400",
+      "radius": "0px"
+    },
+    {
+      "tag": "H2",
+      "cls": "ndZkd3",
+      "text": "Verification successful. Waiting for bscscan.com to respond",
+      "color": "rgb(49, 49, 49)",
+      "bg": "rgba(0, 0, 0, 0)",
+      "border": "rgb(49, 49, 49)",
+      "font": "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+      "size": "24px",
+      "weight": "600",
+      "radius": "0px"
+    },
+    {
+      "tag": "A",
+      "cls": "",
+      "text": "Cloudflare",
+      "color": "rgb(0, 0, 238)",
+      "bg": "rgba(0, 0, 0, 0)",
+      "border": "rgb(0, 0, 238)",
+      "font": "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+      "size": "12px",
+      "weight": "400",
+      "radius": "0px"
+    },
+    {
+      "tag": "A",
+      "cls": "footer-text",
+      "text": "Privacy",
+      "color": "rgb(0, 0, 238)",
+      "bg": "rgba(0, 0, 0, 0)",
+      "border": "rgb(0, 0, 238)",
+      "font": "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+      "size": "12px",
+      "weight": "400",
+      "radius": "0px"
+    }
+  ],
+  "status": 403
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@bac/watchdog",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BNB Agent Chain 常驻自动看门狗（决策 #25a）：独立复算锚点、对账、两个 BAC 桶、回购滑点与释放率，异常时调 BacBridge.pause()",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "once": "node src/index.mjs --once",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "ethers": "6.13.4"
+  }
+}

@@ -15,6 +15,17 @@ export class RpcError extends Error {
 /** 公共 BSC RPC 对 eth_getLogs 限窗时返回的错误码（2026-09-22 实测）。 */
 export const RATE_LIMIT_CODES = new Set([-32005, -32000, 429]);
 
+/**
+ * eth_call 被合约 revert 了（geth / Besu / publicnode 都用 code 3 带 revert 数据，也有节点只写在 message 里）。
+ * 这是**确定性**的结果，不是网络抖动：重试 5 次只会让一次快照多等 15 秒。所以它不重试，直接抛给调用方。
+ * 注意 -32000 也被上面当成限速码：只有 message 里明说 revert 的 -32000 才算 revert。
+ */
+export function isRevertError(e) {
+  if (!(e instanceof RpcError)) return false;
+  if (e.code === 3) return true;
+  return /revert/i.test(String(e.rpcMessage || ""));
+}
+
 export class Rpc {
   constructor(url, { name = "rpc", timeoutMs = 20000, maxRetries = 5 } = {}) {
     this.url = url;
@@ -55,7 +66,8 @@ export class Rpc {
         const body = await res.json();
         if (body.error) {
           const code = Number(body.error.code);
-          if (RATE_LIMIT_CODES.has(code)) {
+          const msg = String(body.error.message || "");
+          if (RATE_LIMIT_CODES.has(code) && !/revert/i.test(msg)) {
             this.rateLimitHits.push(Date.now());
             warn("rpc_rate_limited", `${this.name} 对 ${method} 返回 ${code}：${body.error.message}`);
           }
@@ -65,6 +77,8 @@ export class Rpc {
       } catch (e) {
         clearTimeout(timer);
         lastErr = e;
+        // revert 是确定性结果，重试没有意义（见 isRevertError）。
+        if (isRevertError(e)) throw e;
         // 限窗类错误交给调用方缩小分片，不在这里盲目重试。
         if (e instanceof RpcError && RATE_LIMIT_CODES.has(e.code)) throw e;
         attempt += 1;
@@ -97,6 +111,14 @@ export class Rpc {
 
   ethCall(to, data, tag = "latest") {
     return this.call("eth_call", [{ to, data }, typeof tag === "number" ? toHex(tag) : tag]);
+  }
+
+  getCode(a, tag = "latest") {
+    return this.call("eth_getCode", [a, typeof tag === "number" ? toHex(tag) : tag]);
+  }
+
+  getStorageAt(a, slot, tag = "latest") {
+    return this.call("eth_getStorageAt", [a, slot, typeof tag === "number" ? toHex(tag) : tag]);
   }
 
   netPeerCount() {

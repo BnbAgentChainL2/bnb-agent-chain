@@ -1,6 +1,7 @@
 # BAC 索引器 + 浏览器 API
 
-实现 `docs/03-INTERFACES.md` 的 **§2（SQLite 库）**、**§3（HTTP API）**、**§4（层内动作的规范事件模式）**。
+实现 `docs/03-INTERFACES.md` 的 **§2（SQLite 库）**、**§3（HTTP API）**、**§4（层内动作的规范事件模式）**、
+**§7（agent 造出来的东西：代币 / 交易对 / 成交，决策 #19）**。
 一个 Node 22 进程：两条链的摄入循环 + 一个只读 HTTP 服务。**它不需要、也不许持有任何私钥。**
 
 ## 跑起来
@@ -26,6 +27,8 @@ curl -s localhost:8080/api/feed?limit=5 | jq .items
 
 ```
 migrations/001_init.sql   §2 的库，表名列名逐字照抄（外加 4 张标注清楚的补充表）
+migrations/002_fee_split.sql  决策 #17：gas 费分账
+migrations/003_agent_built.sql §7.5：代币 / 持有量 / 交易对 / 成交 / 探测缓存
 src/abi.js                事件 ABI，与 contracts/src 逐条对过
 src/decode.js             日志 -> §4 的规范事件（金额十进制字符串、地址 EIP-55）
 src/render.js             规范事件 -> feed 的一句中文（§4.2 / §4.3 / §4.4）
@@ -37,7 +40,33 @@ src/snapshot.js           定期读 view，喂 /api/health 与 treasury 表
 src/api/handlers.js       §3 的每一个端点（纯函数，好测）
 src/api/server.js         路由 / 公共响应头 / 错误形状 / 限速
 src/api/rpcguard.js       POST /rpc 的方法白名单（02 §5.3）
+src/api/built.js          §7.6 / §7.7 的端点（/api/tokens、/api/token/*、/api/pairs、/api/pair/*、/api/swaps、/api/contract/*）
+src/economy/constants.js  §7.1.1 / §7.2.1 的 topic0 与选择器（**现算，不抄十六进制**）
+src/economy/parse.js      按 topic0 分派，把日志解成 Transfer / PairCreated / Sync / Swap / Mint / Burn
+src/economy/probe.js      探测用的 eth_call 封装：状态窗口降级 + 调用预算 + ProbeUnavailable
+src/economy/classify.js   §7.1 的 N1–N4 与 X1–X7，§7.2.3 的 P1–P6
+src/economy/index.js      主流程：候选收集 -> 探测 -> 一个事务里写完身份行 / 流水 / 计数器 / feed
 ```
+
+## 决策 #19：agent 造出来的东西
+
+链出厂就是空的。**我们不发任何官方 DEX、官方代币、官方工具合约**，这一块只做一件事：
+把 agent 自己部署的合约按日志形状和 `eth_call` 应答**解码出来给人看**。
+
+- 判定全是启发式，会漏也会错。所以 §7.6 的每个返回体都带一个 `detection` 块，
+  里面那句话一字不改，页面必须显示出来；`unclassifiedContracts` 是「被调用过但我们没认出来的合约」条数 ——
+  **没有这一行，前面所有列表都是在暗示「这就是全部」，而那是假的**。
+- **「探测失败」与「不是代币」是两件事**：网络断 / 超时 / 被限速只让地址留在 `pending` 并 `attempts += 1`，
+  绝不写 `not_token`（混为一谈会永久漏掉真代币）。`probe_unavailable` 会进 `/api/health` 的 `warnings`。
+- 探测很便宜且只做一次：一个代币 6 次 `eth_call`（`getCode` + `totalSupply` + `balanceOf` + `name` + `symbol` + `decimals`），
+  结论落 `contract_probes` 之后不再重探（`not_token` 的地址 24 小时后遇到新的 `Transfer` 才会重试，因为它可能是代理）。
+- 持有量是**按 `Transfer` 累加**出来的，收税 / rebase 代币一定对不上链上 `balanceOf`。
+  刷新作业每 30 秒用 `balanceOf` 对前 20 个持有者对拍，对不上就置 `balance_drift = 1`，
+  `/api/token/{address}` 的 `supplyCheck` 把链上值和推导值并排放出来让人自己看。
+- **本链没有任何法币计价**：没有稳定币、没有预言机、没有外部行情源。
+  价格一律是定点整数 `price_1_per_0`（×10^-18），返回体里永远不出现 `$`、市值、24h 涨跌 %。
+- `rulesUrl` 暂时返回 `null`（解码规则说明页还没上线，见 03 的 [待定] 第 7 条），
+  页上线后用 `BAC_DETECTION_RULES_URL` 配上去，代码不用改。
 
 ## 幂等：重启为什么不会产生重复行
 

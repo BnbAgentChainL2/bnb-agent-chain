@@ -35,6 +35,12 @@ export * as anchorMath from "./anchorMath.js";
 export * as api from "./api.js";
 export * as reconcile from "./reconcile.js";
 
+/**
+ * agent 自己造出来的那一层（决策 #19 / 03 §7）：部署自己的合约、发现别人造了什么、对着别人的池子交易。
+ * **不含任何官方代币 / DEX / 工具合约的字节码** —— 链出厂就是空的，这些东西由 agent 自己造。
+ */
+export * as built from "./built/index.js";
+
 // 求解器内核与多核池子（自己写 miner 或做基准测试时用）
 export { keccak256_64, solveNonce } from "./keccak.js";
 export { SolverPool } from "./solvePool.js";

@@ -15,22 +15,46 @@
 
   function empty() {
     return {
-      /* 'pre' | 'demo' | 'live' —— 只影响「能不能显示这些数字」的判断，不影响排版 */
+      /* 'pre' | 'demo' | 'live' —— 只影响「能不能显示这些数字」的判断，不影响排版。
+         注意：层内那条链**现在就在出块**，所以只要层内 RPC 答话就是 'live'，
+         哪怕 BSC 侧的代币还没发射。两者完全独立。 */
       mode: 'pre',
-      /* 每一段的状态，渲染器照它选占位文案 */
+      /* 现在出块的是不是**演练链**（HANDOFF §2）：创世预置了测试用 BAC、桥里是 0，
+         发射时用新创世重建，数据全部清空。BSC 侧合约地址没配（BAC.LIVE === false）就一定是演练链；
+         bind.js 负责写它，外壳横幅照它如实披露。 */
+      rehearsal: true,
+      /* 每一段的状态，渲染器照它选占位文案。
+         'pre'   发射后公布（BSC 侧那些还不存在的合约）
+         'loading' 读取中…  'error' 读取失败 · 重试中  'ok' 有真实数据
+         'noidx' 这一项只有索引器算得出，索引器还没上线 → 显示「—」，来源写在面板小标上 */
       st: {
-        chain: 'pre', blocks: 'pre', txs: 'pre', agents: 'pre', epochs: 'pre',
+        chain: 'loading', blocks: 'loading', txs: 'loading', agents: 'pre', epochs: 'pre',
         validators: 'pre', treasury: 'pre', bridge: 'pre', feed: 'pre',
-        contracts: 'pre', fees: 'pre', daily: 'pre'
+        contracts: 'noidx', fees: 'pre', daily: 'noidx', idx: 'noidx', layer: 'loading',
+        /* agent 造出来的东西（代币 / 交易对 / 成交）：只有索引器解得出来 */
+        built: 'noidx'
+      },
+
+      /* ── 层内直读的来源信息（面板小标上如实写清楚数字是谁给的）───── */
+      layer: {
+        live: false,
+        source: null,          // 'indexer' | 'rpc' | null
+        endpoint: null,        // 现在实际在用的那个地址（索引器供数时是索引器的根地址）
+        rpc: null,             // 配置里的公开 RPC：给人自己核对用的就是它
+        primary: null,         // 用的是主域名还是兜底 IP
+        note: null,            // 降级说明（索引器读不到时的那一句）
+        stale: false,
+        sections: null         // {head, blocks, txs}
       },
 
       /* ── 链指标（顶部状态条 / 状态栏 / 概览）────────────────── */
       chain: {
-        chainId: 56777, source: null, degraded: false, degradedNote: null,
-        head: null, headTs: null, blockLagSec: null,
-        blockTimeSec: null, targetBlockTimeSec: 3,
-        gasLimit: null, baseFee: null, minGasPriceGwei: 1,
-        peers: null, txPool: null,
+        chainId: 56777, source: null, endpoint: null, degraded: false, degradedNote: null,
+        head: null, headTs: null, headHash: null, miner: null, blockLagSec: null,
+        blockTimeSec: null, blockIntervalSec: null, targetBlockTimeSec: 3,
+        gasLimit: null, baseFee: null, gasPrice: null, minGasPriceGwei: 1,
+        epochLenSec: 86400,
+        peers: null, txPool: null, txPoolQueued: null,
         txTotal: null, contractsTotal: null,
         circulating: null, burnedTotal: null, totalSupply: null,
         epoch: null, epochLeftSec: null, lastPostedEpoch: null, lastFinalEpoch: null,
@@ -65,6 +89,9 @@
         minStake: null, agreeingCount: null, memberCount: null, releaseBps: null
       },
 
+      /* 税收 → BacTaxRouter → 50/50 → BacBridge 桥池 / BacNodeFund（决策 #30，没有金库工厂了）。
+         vaultBalance / vaultUnsplit 两个键名沿用旧名，是因为 index.html 的插槽还在读它们；
+         disclosure 由 bind.js 写成决策 #29a 的那句，不照搬数据层的旧文案。 */
       treasury: {
         bridgeBps: 5000, nodeFundBps: 5000, taxFeeRateBps: null,
         lifetimeTotal: null, toBridge: null, toNodeFund: null,
@@ -82,6 +109,23 @@
         paused: null, halted: null
       },
 
+      /* ── agent 造出来的东西：代币 / 交易对 / 成交（决策 #19，03 §7）──────
+         全部是**启发式解码**的结果：会漏也会错。detection 是索引器原样给的那一块，
+         页面必须把 note 与 unclassifiedContracts 显示出来，不许把列表说成「全链所有代币」。
+         金额一律是**该代币自己的最小单位**（BigInt），带自己的 decimals，
+         decimals 未知就是 null（页面显示原始最小单位，不许默认当 18）。
+         这条链上没有法币、没有稳定币、没有预言机 → **任何 $ 金额 / 市值 / 涨跌幅都不存在**，
+         价格只能表达成「1 token0 折合多少 token1」。 */
+      built: {
+        detection: null,        // {method, note, rulesUrl, unclassifiedContracts}
+        tokens: [], tokensTotal: null, tokensAt: null,
+        pairs: [], pairsTotal: null, pairsAt: null,
+        swaps: [], swapsNext: null, swapsAt: null,
+        tokenDetail: null,      // {token, supplyCheck, topHolders, pairs, recentTransfers, events}
+        pairDetail: null,       // {pair, price, recentSwaps, liquidity, v3Note}
+        tokenErr: null, pairErr: null
+      },
+
       /* 30 日序列：索引器目前没有日聚合端点，正式站点一律为 null（见 README / 报告） */
       daily: null,
 
@@ -90,8 +134,11 @@
       layerAddresses: {},
       links: { explorer: '', flapUrl: '', x: '', siteUrl: '' },
 
-      /* 详情页缓存：bind.js 按需填，渲染器只读 */
-      detail: { block: null, tx: null, agent: null, epoch: null, contract: null },
+      /* 详情页缓存：bind.js 按需填，渲染器只读。
+         blockErr / txErr 记的是「这一条确实读过、但节点说没有或读失败了」——
+         有它才能显示「找不到」，没有它就只会一直转圈。 */
+      detail: { block: null, tx: null, agent: null, epoch: null, contract: null,
+        blockErr: null, txErr: null },
 
       updatedAt: null,
       warnings: []

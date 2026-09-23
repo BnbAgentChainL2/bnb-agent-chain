@@ -31,19 +31,34 @@
 
   var C = {
     MULTICALL3: '0xcA11bde05977b3631167028862bE2a173976CA11',
-    EPOCH: 86400,                       // 纪元 = floor(timestamp / 86400)，两条链同一个定义
+    // 决策 #20：纪元 = 10 分钟。BacBridge / ChainAnchor / ValidatorStaking 里都是 EPOCH = 600，
+    // 纪元号 = floor(timestamp / 600)，两条链同一个定义。
+    EPOCH: 600,
     LAYER_CHAIN_ID: 56777,
     TOTAL_SUPPLY: 1000000000000000000000000000n,  // 1e27 wei = 1,000,000,000 BAC
     OPERATOR_FLOAT: 1000000000000000000000n,      // 1,000 BAC，创世给中继的 gas，BSC 侧已锁等额
     BPS: 10000,
-    BRIDGE_BPS: 5000,                   // 金库分账：桥池 50%
-    NODE_FUND_BPS: 5000,                // 金库分账：官方节点基金 50%（owner 可提，决策 #10）
+    BRIDGE_BPS: 5000,                   // BacTaxRouter 分账：桥池 50%（合约常量 BRIDGE_BPS，没有 setter）
+    NODE_FUND_BPS: 5000,                // BacTaxRouter 分账：官方节点基金 50%（owner 可提，决策 #10）
     OFFICIAL_BLOCK_VALIDATOR_BPS: 1000, // 官方出块 → 验证者池 10%（决策 #17）
     VALIDATOR_BLOCK_VALIDATOR_BPS: 5000,// 验证者出块 → 自留 50%（决策 #17）
     MIN_VALIDATOR_STAKE: 2000000000000000000000000n, // 2,000,000 BAC
     MAX_EXIT_SHARE_BPS: 1000,           // 单地址每纪元最多拿当期释放额的 10%
-    COMMIT_WINDOW: 7200,                // 纪元结束后中继必须等 2 小时才能发锚点
-    CHALLENGE_WINDOW: 86400,            // 24 小时挑战窗口
+    // ChainAnchor.COMMIT_WINDOW = 0：纪元一结束中继就能发锚点（10 分钟纪元下不再等 2 小时）
+    COMMIT_WINDOW: 0,
+    /* ── BNB Chain / Flap 的主网常量（不是我们的合约，发射前就真实存在）── */
+    // 决策 #31：ERC-8004 Identity Registry（BNB Chain 官方，ERC-721 形态，代理合约）
+    ERC8004_IDENTITY: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
+    // 决策 #30：Flap 的普通 Portal（v5.24.0），代币状态从这里读（getTokenV8Safe）
+    FLAP_PORTAL: '0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0',
+    // Portal 实测的协议费（docs/research 09~12）：税先被抽走 10%，路由收到约 0.90 倍。
+    // 这是 Portal 的参数，不是 BAC 自己的读数；发射后以 taxProcessor.feeConfigV2().feeRate 为准。
+    FLAP_FEE_RATE_BPS: 1000,
+    // OpenZeppelin ERC1967 实现槽：bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1)
+    ERC1967_IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc',
+    // 决策 #25：锚点提交到可兑付之间的等待期 = 120 秒（合约里的 ChainAnchor.ANCHOR_WAIT）。
+    // 页面上一律叫「锚点等待」，不叫「挑战窗口」（决策 #18 术语）。
+    CHALLENGE_WINDOW: 120,              // 锚点等待 2 分钟
     BLOCK_PERIOD: 3,                    // 层内 QBFT blockperiodseconds
     GAS_LIMIT: 20000000,
     BSC_BLOCK_TIME: 0.45                // 实测（09-chain-truth.md）
@@ -55,16 +70,33 @@
     ERR: '读取失败 · 重试中',
     LOADING: '读取中…',
     NO_RPC: '没有配置 RPC 地址',
-    NO_VAULT: '读不到金库合约：请检查配置里的 vault 地址，或合约接口和网站不一致',
+    // 键名沿用旧名（v2 没有金库了，指的是 BacTaxRouter / BacBridge）
+    NO_VAULT: '读不到税收路由或桥合约：请检查配置里的 router / bridge 地址，或合约接口和网站不一致',
     NO_INDEXER: '索引器读不到：层内数据暂时不可用，BSC 侧数字仍然是实时的',
+    // 索引器读不到、但层内节点答话时用这一条：块和交易仍然是真的，只是没有历史与搜索
+    RPC_DIRECT: '索引器读不到：区块与交易改由本站直接读层内节点，历史与搜索暂时不可用',
     UNTRUSTED: '由 agent 自己写的，本站不做任何背书',
     NOT_ANCHORED: '未锚定 · 仅来自官方节点',
-    ANCHORED: '已锚定'
+    ANCHORED: '已锚定',
+    // 决策 #18（术语）+ #25：锚点的等待期一律这么说，页面各处逐字复用这一句
+    ANCHOR_WAIT: '锚点等待 2 分钟',
+    ANCHOR_WAIT_NOTE: '锚点提交后要等 2 分钟才能兑付，这期间任何人都能指出它是错的',
+    // 决策 #29a，逐字（BacBridge.OWNER_POWER_NOTICE 也是这一句，数据层会拿链上那份来比对）
+    OWNER_POWER: '项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。',
+    // 决策 #31a，逐字
+    IDENTITY_LIMIT: '我们要求持有 agent 身份，我们不能证明它是 AI。',
+    // ERC-8004 的 tokenURI 是持有人自己写的，谁都没核对过
+    SELF_REPORTED: '持有人自述 · 未经核对',
+    // 代币合约地址已锁定但还没发射：地址上还没有代码
+    TOKEN_NOT_LAUNCHED: '代币地址已锁定，还没发射：这个地址上现在没有合约代码'
   };
 
+  /* v2（决策 #31）已经没有自研 AgentRegistry，也就没有 CHALLENGED / ACTIVE / DORMANT… 这套状态机：
+     一个 agent = 一个锁进过桥的 ERC-8004 身份编号。下面两张表只为兼容旧代码（BAC.statusName /
+     BAC.statusZh 仍然存在），数据层自己产出的 agent 条目里 status / statusName / statusZh 一律是 null。 */
   var AGENT_STATUS = ['NONE', 'CHALLENGED', 'ACTIVE', 'DORMANT', 'BANNED', 'RETIRED'];
-  var AGENT_STATUS_ZH = ['未注册', '挑战中', '活跃', '休眠', '封禁', '退役'];
-  var EPOCH_STATE_ZH = { NONE: '未上报', POSTED: '已上报 · 挑战窗口内', FINAL: '已定案', VETOED: '被否决', DISPUTED: '有异议' };
+  var AGENT_STATUS_ZH = ['未注册', '入场验证中', '活跃', '休眠', '封禁', '退役'];
+  var EPOCH_STATE_ZH = { NONE: '未上报', POSTED: '已上报 · 锚点等待中', FINAL: '已定案', VETOED: '被否决', DISPUTED: '有异议' };
   var ACTION_KINDS = ['JOIN', 'DEPLOY', 'PUBLISH', 'SERVICE', 'TRADE', 'LIST', 'POOL', 'STRATEGY', 'MESSAGE', 'CLAIM', 'NOTE'];
 
   /* ══════════════════════════════════════════════════════
@@ -76,12 +108,33 @@
   }
   function lc(a) { return typeof a === 'string' ? a.toLowerCase() : a; }
 
-  var DEFAULT_ADDRESSES = {
-    factory: '0x0', vault: '0x0', token: '0x0', bridge: '0x0',
-    nodeFund: '0x0', registry: '0x0', anchor: '0x0', staking: '0x0'
-  };
+  /* v2 的地址簿（决策 #30 / #31）：没有 factory / vault / registry / vaultPortal 了。
+       token     BAC（Flap Tax Token V3，地址已由 lockSalt 锁定，发射前没有代码）
+       router    BacTaxRouter（Flap 的 beneficiary，税收 BNB 的落点，50/50 推给桥与节点基金）
+       bridge    BacBridge 的 ERC1967 代理地址（UUPS，owner 可升级 + 紧急提取，决策 #29）
+       nodeFund  BacNodeFund
+       anchor    ChainAnchor
+       staking   ValidatorStaking */
+  var ADDRESS_KEYS = ['token', 'router', 'bridge', 'nodeFund', 'anchor', 'staking'];
+  var DEFAULT_ADDRESSES = { token: '0x0', router: '0x0', bridge: '0x0', nodeFund: '0x0', anchor: '0x0', staking: '0x0' };
+  // 旧配置（v1）里还有、v2 已删除的键：读到了只记一笔，不参与任何判断
+  var LEGACY_KEYS = ['factory', 'vault', 'registry'];
 
   var raw = root.BAC_CONFIG || {};
+
+  /** 防御式读取地址簿：新旧两种配置都能加载，缺键、写错、非字符串一律当「没配」（'0x0'）。
+      旧配置的 vault（「税收落点」）在 v2 就是 BacTaxRouter —— 只有 router 没配时才拿它顶上。 */
+  function readAddresses(src) {
+    var a = src && typeof src === 'object' ? src : {};
+    var out = {};
+    ADDRESS_KEYS.forEach(function (k) {
+      out[k] = typeof a[k] === 'string' && a[k] ? a[k] : DEFAULT_ADDRESSES[k];
+    });
+    if (!isAddr(out.router) && isAddr(a.vault)) out.router = a.vault;
+    return out;
+  }
+  var rawAddrs = raw.addresses && typeof raw.addresses === 'object' ? raw.addresses : {};
+
   var CFG = {
     chainId: Number(raw.chainId || 56),
     chainName: raw.chainName || 'BNB Smart Chain',
@@ -91,19 +144,47 @@
     layerChainId: Number(raw.layerChainId || C.LAYER_CHAIN_ID),
     layerRpc: raw.layerRpc || '',
     indexerBase: (raw.indexerBase || '').replace(/\/+$/, ''),
-    addresses: Object.assign({}, DEFAULT_ADDRESSES, raw.addresses || {}),
-    guardian: raw.guardian || '',
-    vaultPortal: raw.vaultPortal || '',
+    // 域名失效 / 还没解析出来时的兜底端点：永久保留，任何人都能用它独立核对这条链
+    fallbackRpc: raw.fallbackRpc || '',
+    fallbackApi: (raw.fallbackApi || '').replace(/\/+$/, ''),
+    addresses: readAddresses(rawAddrs),
+    // 旧配置里出现过的 v1 键（只做记录，给「配置还没换」的提示用）
+    legacyKeys: LEGACY_KEYS.filter(function (k) { return rawAddrs[k] !== undefined; })
+      .concat(['guardian', 'vaultPortal'].filter(function (k) { return raw[k] !== undefined; })),
+    // 主网常量：允许配置覆盖（测试网 / 换注册表），默认就是 BSC 主网那两个
+    identityRegistry: isAddr(raw.identityRegistry) ? raw.identityRegistry : C.ERC8004_IDENTITY,
+    flapPortal: isAddr(raw.flapPortal) ? raw.flapPortal : C.FLAP_PORTAL,
+    // 合约部署所在的 BSC 块号（日志时间线从这里开始才算「完整」）；0 / 缺省 = 不知道
+    deployBlock: Math.max(0, Math.floor(Number(raw.deployBlock) || 0)),
+    // 层内现在是不是演练链：配置显式写了就照它（bind.js 读 BAC.CFG.rehearsal）；没写是 null
+    rehearsal: typeof raw.rehearsal === 'boolean' ? raw.rehearsal : null,
     flapUrl: raw.flapUrl || '',
     x: raw.x || '',
     siteUrl: raw.siteUrl || '',
     // 轮询节奏
     pollMs: Math.max(3000, Number(raw.pollMs || 15000)),
     prelaunchPollMs: Math.max(10000, Number(raw.prelaunchPollMs || 60000)),
+    // 「地址上有没有代码」的复探节奏：代币发射当天不用重新部署网站，开着的页面最迟这么久就会翻过来
+    codeProbeMs: Math.max(10000, Number(raw.codeProbeMs || 120000)),
+    // BSC 日志（eth_getLogs）：公共节点只留最近几千块（publicnode 实测 ~6000 块之外报
+    // "Archive requests require a personal token"），所以浏览器只看得到一个窗口，完整历史要靠索引器
+    logWindowBlocks: Math.max(100, Math.min(50000, Number(raw.logWindowBlocks || 5000))),
+    logChunkBlocks: Math.max(100, Math.min(50000, Number(raw.logChunkBlocks || 5000))),
+    timelineMax: Math.max(10, Math.min(1000, Number(raw.timelineMax || 200))),
+    blockTsPerRefresh: Math.max(0, Math.min(50, Number(raw.blockTsPerRefresh || 12))),
+    // agent 名录（BacBridge.deposits + ERC-8004）：最多读最近多少笔存入、多少个身份
+    depositsMax: Math.max(10, Math.min(2000, Number(raw.depositsMax || 400))),
+    agentsMax: Math.max(5, Math.min(500, Number(raw.agentsMax || 100))),
+    agentsPollMs: Math.max(15000, Number(raw.agentsPollMs || 120000)),
     apiPollMs: Math.max(3000, Number(raw.apiPollMs || 6000)),
+    // 层内直读 RPC 的节奏：链 3 秒一块，不许比它更快
+    layerPollMs: Math.max(3000, Number(raw.layerPollMs || 6000)),
+    layerIdlePollMs: Math.max(10000, Number(raw.layerIdlePollMs || 60000)),   // 索引器在供数时的慢档探活
+    layerHiddenPollMs: Math.max(10000, Number(raw.layerHiddenPollMs || 60000)), // 标签页切到后台时的慢档
     // 超时
     rpcTimeoutMs: Number(raw.rpcTimeoutMs || 15000),
     apiTimeoutMs: Number(raw.apiTimeoutMs || 8000),
+    layerTimeoutMs: Number(raw.layerTimeoutMs || 8000),
     // 列表长度
     feedLimit: Math.min(200, Number(raw.feedLimit || 50)),
     feedMax: Math.min(500, Number(raw.feedMax || 120)),
@@ -112,10 +193,9 @@
     autoStart: raw.autoStart !== false
   };
 
-  // 兼容写法：cfg.vault / cfg.token 直接可读（约定里 BAC.LIVE = isAddr(cfg.vault)）
-  ['factory', 'vault', 'token', 'bridge', 'nodeFund', 'registry', 'anchor', 'staking'].forEach(function (k) {
-    if (!CFG[k]) CFG[k] = CFG.addresses[k];
-  });
+  // 兼容写法：cfg.token / cfg.router … 直接可读。cfg.vault 是 router 的旧名（只读别名，v2 没有金库）。
+  ADDRESS_KEYS.forEach(function (k) { if (!CFG[k]) CFG[k] = CFG.addresses[k]; });
+  CFG.vault = CFG.addresses.router;
 
   BAC.CFG = CFG;
   BAC.C = C;
@@ -126,11 +206,58 @@
   BAC.AGENT_STATUS = AGENT_STATUS;
   BAC.AGENT_STATUS_ZH = AGENT_STATUS_ZH;
   BAC.ACTION_KINDS = ACTION_KINDS;
+  BAC.ADDRESS_KEYS = ADDRESS_KEYS.slice();
 
-  /** 发射与否只看金库地址：没有金库就没有税收，也就没有任何真实数字。 */
-  BAC.LIVE = isAddr(CFG.vault);
-  /** 索引器是否配置好（层内一半的前提）。 */
-  BAC.HAS_INDEXER = !!CFG.indexerBase;
+  /* ── BSC 侧的三个阶段（决策 #35：合约先部署，代币后发射）────────────────
+       'none'      (a) 什么都没部署：只有已锁定的代币地址，地址上没有代码
+       'deployed'  (b) router + bridge 已部署（有代码），代币还没发射：
+                       合约自己的状态（0 余额、owner、升级次数、空时间线）是**真的**，要照实显示；
+                       价格 / 税率 / 交易这些**还不存在**，才写「发射后公布」
+       'launched'  (c) 代币地址上有代码了
+     三个开关都由 bac-chain.js 的 eth_getCode 探针改写（结果缓存，只从 false 翻到 true，
+     没翻完之前每 codeProbeMs 复探一次 —— 发射当天不用重新部署网站）。
+
+     BAC.CONTRACTS_CONFIGURED  配置里 router 与 bridge 都填了（同步可知，加载时就定）
+     BAC.CONTRACTS_LIVE        router 与 bridge 地址上都有代码
+     BAC.TOKEN_LIVE            代币地址上有代码
+     BAC.LIVE                  兼容旧消费者的别名 = CONTRACTS_LIVE || TOKEN_LIVE。
+                               探针回来之前是 CONTRACTS_CONFIGURED（绑定层在加载时同步读它决定演示模式）。
+     **这几个开关都只管 BSC 那一半**，绝对不许用来挡层内的区块和交易 —— 那条链现在就在出块。 */
+  BAC.CONTRACTS_CONFIGURED = isAddr(CFG.addresses.router) && isAddr(CFG.addresses.bridge);
+  BAC.TOKEN_CONFIGURED = isAddr(CFG.addresses.token);
+  BAC.CONTRACTS_LIVE = false;
+  BAC.TOKEN_LIVE = false;
+  BAC.LIVE = BAC.CONTRACTS_CONFIGURED;
+  BAC.STAGE = 'none';
+  /** 探针有没有回来过（没回来 = 还不知道，视图给 'loading' 而不是 'pre'）。 */
+  BAC.STAGE_KNOWN = !BAC.CONTRACTS_CONFIGURED && !BAC.TOKEN_CONFIGURED;
+
+  /** 探针结果落地：只从 false 翻到 true（地址上的代码不会自己消失），然后广播 'stage'。 */
+  BAC.setStage = function (contractsLive, tokenLive) {
+    var before = BAC.STAGE + '|' + BAC.STAGE_KNOWN;
+    if (contractsLive === true) BAC.CONTRACTS_LIVE = true;
+    if (tokenLive === true) BAC.TOKEN_LIVE = true;
+    BAC.STAGE_KNOWN = true;
+    BAC.LIVE = BAC.CONTRACTS_LIVE || BAC.TOKEN_LIVE;
+    BAC.STAGE = BAC.TOKEN_LIVE ? 'launched' : (BAC.CONTRACTS_LIVE ? 'deployed' : 'none');
+    var s = BAC.state;
+    if (s) {
+      s.live = BAC.LIVE; s.prelaunch = !BAC.LIVE;
+      s.contractsLive = BAC.CONTRACTS_LIVE; s.tokenLive = BAC.TOKEN_LIVE;
+      s.stage = BAC.STAGE; s.stageKnown = true;
+    }
+    if (before !== BAC.STAGE + '|' + BAC.STAGE_KNOWN) BAC.emit('stage', BAC.STAGE);
+    return BAC.STAGE;
+  };
+  /** 索引器是否配置好（历史 / 搜索 / 聚合的前提）。 */
+  BAC.HAS_INDEXER = !!(CFG.indexerBase || CFG.fallbackApi);
+  /** 是否配了层内 RPC（主用或兜底任意一个）。 */
+  BAC.HAS_LAYER_RPC = !!(CFG.layerRpc || CFG.fallbackRpc);
+  /** **层内链是不是在应答**。和 BAC.LIVE 完全独立：
+      BAC.LIVE  = BSC 上的代币发射了没有；
+      BAC.LAYER_LIVE = 层内那条链的 RPC 现在答不答话。
+      由 bac-layer.js 在每一轮轮询后改写。 */
+  BAC.LAYER_LIVE = false;
 
   BAC.statusName = function (n) { return AGENT_STATUS[Number(n)] || 'NONE'; };
   BAC.statusZh = function (n) { return AGENT_STATUS_ZH[Number(n)] || '未注册'; };
@@ -334,6 +461,8 @@
   BAC.links = {
     tx: function (h) { return h ? EX + '/tx/' + h : null; },
     address: function (a) { return a ? EX + '/address/' + a : null; },
+    // 合约的全部事件（浏览器只读得到最近一个窗口的日志，完整历史去这里核对）
+    addressEvents: function (a) { return a ? EX + '/address/' + a + '#events' : null; },
     token: function (a) { return a ? EX + '/token/' + a : null; },
     block: function (n) { return (n || n === 0) ? EX + '/block/' + n : null; },
     // 层内没有第三方浏览器：本站自己就是浏览器，用 hash 路由指回自己
@@ -399,7 +528,7 @@
      ══════════════════════════════════════════════════════ */
 
   var listeners = {}, lastEvent = {};
-  var REPLAY = { feed: true, state: true, blocks: true, health: true };
+  var REPLAY = { feed: true, state: true, blocks: true, health: true, layer: true };
 
   BAC.on = function (name, fn) {
     if (typeof fn !== 'function') return function () {};
@@ -433,13 +562,26 @@
         null = 未知（显示「发射后公布」或「读取中…」），不是 0。
      ══════════════════════════════════════════════════════ */
 
+  /** source: 'indexer' | 'rpc' | null —— 这一段的数是从哪来的，绑定层要如实显示。
+      status: 'prelaunch' | 'loading' | 'ok' | 'error'。
+      stale: 上一轮读到过、这一轮失败 —— 显示的是旧数，必须标出来。 */
   function section() {
-    return { ready: false, error: null, errorDetail: null, failures: 0, updatedAt: null };
+    return {
+      ready: false, error: null, errorDetail: null, failures: 0, updatedAt: null,
+      source: null, status: 'loading', stale: false
+    };
   }
 
   BAC.state = {
     live: BAC.LIVE,
     prelaunch: !BAC.LIVE,
+    // 三阶段（见上面 BAC.STAGE 的说明）
+    stage: BAC.STAGE,
+    stageKnown: BAC.STAGE_KNOWN,
+    contractsLive: false,
+    tokenLive: false,
+    // 层内链是否在应答（和 live 无关）
+    layerLive: false,
     ready: false,
     loading: false,
     hidden: false,
@@ -452,17 +594,40 @@
     // ── BSC 侧（直接读合约）──
     bsc: Object.assign(section(), {
       block: null,        // { number, timestamp, at }
-      params: null,       // 代币 / 税率 / 金库配置
-      treasury: null,     // 金库 + 桥池 + 节点基金
-      bridge: null,       // BacBridge 的桥状态
-      agents: null,       // 计数（详细名录走索引器）
+      // eth_getCode 探针：true 有代码 / false 没代码 / null 还没探或探失败
+      code: { token: null, router: null, bridge: null, at: null },
+      params: null,       // 合约接线（router / bridge / nodeFund 的不可变参数与互相核对）
+      tokenParams: null,  // 代币元数据 / 税率 / taxProcessor（只在 TOKEN_LIVE 之后才有）
+      token: null,        // 代币的活数据：Portal 状态、价格、待分发税、桥里的 BAC
+      treasury: null,     // BacTaxRouter + 桥池 + 节点基金
+      bridge: null,       // BacBridge 的桥状态 + owner 权力（#29）
+      agents: null,       // 计数兜底（depositId）
       staking: null,      // ValidatorStaking
       anchor: null        // ChainAnchor + 纪元
     }),
+    // BSC 日志时间线（公共节点只给最近一个窗口，complete 说明是不是全量）
+    timeline: Object.assign(section(), {
+      owner: [], flow: [], nodeFund: [],
+      fromBlock: null, syncedTo: null, deployBlock: CFG.deployBlock || null,
+      complete: false, gaps: [], windowBlocks: CFG.logWindowBlocks
+    }),
+    // agent 名录（BSC 链上：BacBridge.deposits + ERC-8004 注册表）
+    agentDir: Object.assign(section(), {
+      items: [], total: null, depositsTotal: null, depositsRead: 0, truncated: false, identityAt: null
+    }),
 
     // ── 层内 + feed（走索引器；索引器挂了进降级模式）──
-    indexer: Object.assign(section(), { degraded: false, lastOkAt: null, base: CFG.indexerBase }),
-    layer: Object.assign(section(), { source: null, head: null, headTs: null, chainId: null }),
+    indexer: Object.assign(section(), { degraded: false, lastOkAt: null, base: CFG.indexerBase, endpoint: null }),
+    // 层内：索引器给得了就用索引器（有历史 / 搜索 / 聚合），给不了就由 bac-layer.js 直接读 RPC。
+    // sections 是每一段各自的状态，绑定层照它选占位文案。
+    layer: Object.assign(section(), {
+      source: null, endpoint: null,
+      sections: { head: 'loading', blocks: 'loading', txs: 'loading' },
+      head: null, headTs: null, headHash: null, chainId: null, miner: null,
+      gasLimit: null, baseFee: null, gasPrice: null, peers: null, txpool: null,
+      blockIntervalSec: null, blockTimeSec: null, blockLagSec: null,
+      rpcHead: null, rpcHeadTs: null, rpcAt: null
+    }),
     health: null,
     summary: null,
     feed: Object.assign(section(), { items: [], head: null, anchoredThrough: null }),
@@ -490,6 +655,13 @@
     return {
       live: s.live,
       prelaunch: s.prelaunch,
+      stage: BAC.STAGE,
+      stageKnown: BAC.STAGE_KNOWN,
+      contractsLive: BAC.CONTRACTS_LIVE,
+      tokenLive: BAC.TOKEN_LIVE,
+      layerLive: !!BAC.LAYER_LIVE,
+      layerSource: s.layer.source,
+      layerEndpoint: s.layer.endpoint,
       bscOk: !!(s.bsc.ready && !s.bsc.error),
       indexerOk: !!(s.indexer.ready && !s.indexer.error),
       degraded: !!s.indexer.degraded,

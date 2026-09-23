@@ -6,8 +6,9 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {L2Bridge} from "../src/layer/L2Bridge.sol";
 import {L2Gate} from "../src/layer/L2Gate.sol";
 import {AgentBook} from "../src/layer/AgentBook.sol";
+import {ChainAnchor} from "../src/ChainAnchor.sol";
 
-/// @dev An `agentWallet` that refuses BAC. attack-funds #12: it must never be able to wedge the
+/// @dev A layer wallet that refuses BAC. attack-funds #12: it must never be able to wedge the
 ///      relayer's strictly single-threaded outbox.
 contract RejectingWallet {
     receive() external payable {
@@ -19,6 +20,20 @@ contract RejectingWallet {
     }
 
     function fund() external payable {}
+}
+
+/// @dev A layer wallet that refuses the native coin until it is switched on — the "credited but
+///      not yet deliverable" case of the refund path.
+contract SwitchableWallet {
+    bool public accepting;
+
+    function setAccepting(bool v) external {
+        accepting = v;
+    }
+
+    receive() external payable {
+        require(accepting, "not yet");
+    }
 }
 
 /// @notice GROUP E — the layer's three genesis contracts (01-CONTRACT-SPEC §8, 02-CHAIN-SPEC §2/§3).
@@ -60,6 +75,12 @@ contract LayerTest is Test {
     uint8 internal constant STATUS_ACTIVE = 2;
     uint8 internal constant STATUS_BANNED = 4;
 
+    /// @dev The settlement epoch (decision #20): `L2Bridge.EPOCH`, which must equal the BSC side's
+    ///      `ChainAnchor.EPOCH` because exits are bucketed into anchors by `ExitBurned.epoch`.
+    uint64 internal constant SETTLEMENT_EPOCH = 600;
+    /// @dev `AgentBook`'s publish-cap window, deliberately still one UTC day (see `AgentBook.EPOCH`).
+    uint64 internal constant BOOK_EPOCH = 86400;
+
     // ------------------------------------------------------------------------------ event decls ---
 
     event CreditsMinted(bytes32 indexed depositId, uint256 indexed agentId, address indexed to, uint256 amount);
@@ -91,7 +112,7 @@ contract LayerTest is Test {
         vm.deal(L2_BRIDGE, GENESIS_FLOAT);
         vm.deal(address(this), 100 ether);
 
-        // Anything well past 0 so `floor(ts / 86400)` is a realistic epoch number.
+        // Anything well past 0 so `floor(ts / 600)` and `floor(ts / 86400)` are realistic numbers.
         vm.warp(1_790_000_000);
     }
 
@@ -160,7 +181,7 @@ contract LayerTest is Test {
         assertEq(bridge.GENESIS_RELAYER(), relayer, "GENESIS_RELAYER");
         assertEq(bridge.BSC_CHAIN_ID(), 56, "BSC_CHAIN_ID");
         assertEq(bridge.LAYER_CHAIN_ID(), 56777, "LAYER_CHAIN_ID");
-        assertEq(uint256(bridge.EPOCH()), 86400, "EPOCH");
+        assertEq(uint256(bridge.EPOCH()), SETTLEMENT_EPOCH, "EPOCH");
         assertEq(bridge.L2_GATE(), L2_GATE, "L2_GATE");
 
         // The EIP-712 domain is computed at runtime, so it binds to 0x…0101, not to the anvil address.
@@ -174,6 +195,16 @@ contract LayerTest is Test {
             )
         );
         assertEq(bridge.domainSeparator(), expected, "domainSeparator binds to the genesis address");
+    }
+
+    /// @notice Decision #20: the layer's settlement epoch is the BSC anchor's epoch, read off the
+    ///         real `ChainAnchor`. The relayer buckets exits into anchors by `ExitBurned.epoch` and
+    ///         nothing else, so a layer that counted days while BSC counts 10-minute epochs could
+    ///         never have an exit anchored. Both numbers end up frozen (genesis / BSC bytecode).
+    function test_settlementEpochMatchesTheBscAnchor() public {
+        ChainAnchor bscAnchor = new ChainAnchor(address(0xB1), address(0xB2), address(0xB3), address(0xB4), 1000e18);
+        assertEq(uint256(bridge.EPOCH()), uint256(bscAnchor.EPOCH()), "L2Bridge.EPOCH != ChainAnchor.EPOCH");
+        assertEq(uint256(bridge.EPOCH()), 600, "10-minute epochs (decision #20)");
     }
 
     /// @notice The exit leaf is byte-identical to the BSC-side `EXIT_TYPEHASH` layout and has no
@@ -281,7 +312,7 @@ contract LayerTest is Test {
         bridge.withdrawCredits(agentWallet);
 
         uint256 reserveBefore = bridge.reserve();
-        uint64 epoch = uint64(block.timestamp / 86400);
+        uint64 epoch = uint64(block.timestamp / SETTLEMENT_EPOCH);
 
         vm.expectEmit(true, true, true, true, L2_BRIDGE);
         emit ExitBurned(1, 17, address(0xB5C), 4 ether, epoch);
@@ -310,7 +341,7 @@ contract LayerTest is Test {
 
         assertFalse(gate.isAdmitted(bannedWallet), "banned is not admitted");
 
-        uint64 epoch = uint64(block.timestamp / 86400);
+        uint64 epoch = uint64(block.timestamp / SETTLEMENT_EPOCH);
         vm.expectEmit(true, true, true, true, L2_BRIDGE);
         emit ExitBurned(1, 42, address(0xB5C), 3 ether, epoch);
         vm.prank(bannedWallet);
@@ -324,7 +355,7 @@ contract LayerTest is Test {
         _sync(42, bannedWallet, STATUS_ACTIVE, 100);
 
         vm.deal(bannedWallet, 1 ether);
-        uint64 epoch = uint64(block.timestamp / 86400);
+        uint64 epoch = uint64(block.timestamp / SETTLEMENT_EPOCH);
 
         // bannedWallet exits; the leaf must carry ITS id (42), never 17.
         vm.recordLogs();
@@ -344,7 +375,7 @@ contract LayerTest is Test {
     function test_exit_unregisteredWalletGetsAgentIdZero() public {
         vm.deal(stranger, 1 ether);
         vm.expectEmit(true, true, true, true, L2_BRIDGE);
-        emit ExitBurned(1, 0, address(0xB5C), 1 ether, uint64(block.timestamp / 86400));
+        emit ExitBurned(1, 0, address(0xB5C), 1 ether, uint64(block.timestamp / SETTLEMENT_EPOCH));
         vm.prank(stranger);
         bridge.exit{value: 1 ether}(address(0xB5C));
     }
@@ -362,11 +393,37 @@ contract LayerTest is Test {
 
     function test_exit_rejectsBackwardsTimestamps() public {
         vm.deal(agentWallet, 3 ether);
-        vm.warp(1_790_000_000 + 86400 * 3);
+        vm.warp(1_790_000_000 + SETTLEMENT_EPOCH * 3);
         vm.prank(agentWallet);
         bridge.exit{value: 1 ether}(address(0xB5C));
 
         vm.warp(1_790_000_000);
+        vm.prank(agentWallet);
+        vm.expectRevert(unicode"Timestamp went backwards / 时间戳回退");
+        bridge.exit{value: 1 ether}(address(0xB5C));
+    }
+
+    /// @notice The `epoch` an exit is born in turns over every 600 seconds, not every day: the
+    ///         last second of an epoch and the first second of the next one land in two different
+    ///         anchors, and going back across that boundary is already "backwards".
+    function test_exit_epochTurnsOverEveryTenMinutes() public {
+        vm.deal(agentWallet, 3 ether);
+        uint256 start = (1_790_000_000 / SETTLEMENT_EPOCH + 1) * SETTLEMENT_EPOCH; // an epoch boundary
+        uint64 e = uint64(start / SETTLEMENT_EPOCH);
+
+        vm.warp(start + SETTLEMENT_EPOCH - 1);
+        vm.expectEmit(true, true, true, true, L2_BRIDGE);
+        emit ExitBurned(1, 0, address(0xB5C), 1 ether, e);
+        vm.prank(agentWallet);
+        bridge.exit{value: 1 ether}(address(0xB5C));
+
+        vm.warp(start + SETTLEMENT_EPOCH);
+        vm.expectEmit(true, true, true, true, L2_BRIDGE);
+        emit ExitBurned(2, 0, address(0xB5C), 1 ether, e + 1);
+        vm.prank(agentWallet);
+        bridge.exit{value: 1 ether}(address(0xB5C));
+
+        vm.warp(start + SETTLEMENT_EPOCH - 1);
         vm.prank(agentWallet);
         vm.expectRevert(unicode"Timestamp went backwards / 时间戳回退");
         bridge.exit{value: 1 ether}(address(0xB5C));
@@ -386,25 +443,33 @@ contract LayerTest is Test {
     // ================================================================== refund / burnFloat path ======
 
     /// @notice The refund path for a credited-but-undeliverable balance: the value never left the
-    ///         bridge, so once the agent's wallet is deliverable the same permissionless
-    ///         `withdrawCredits` settles it. Nothing is ever stranded and `totalCredited` never has
-    ///         to be walked back.
+    ///         bridge, so once the wallet can accept it the same permissionless `withdrawCredits`
+    ///         settles it. `totalCredited` never has to be walked back.
+    /// @dev Since decision #31 the layer wallet is whoever called `BacBridge.lock` on BSC, and
+    ///      nothing can re-point a credit to another address afterwards. A wallet that can NEVER
+    ///      accept the native coin therefore keeps its credits in `creditable` for good — still
+    ///      under this contract's name, so the reserve identity holds and nothing leaks, and the
+    ///      identity it entered under keeps its escape weight on BSC.
     function test_refundPath_creditSurvivesAFailedDeliveryAndSettlesLater() public {
-        RejectingWallet bad = new RejectingWallet();
-        _credit(keccak256("d3"), 9, address(bad), 6 ether);
+        SwitchableWallet w = new SwitchableWallet();
+        _credit(keccak256("d3"), 9, address(w), 6 ether);
 
         uint256 reserveBefore = bridge.reserve();
         vm.expectRevert(unicode"Credit transfer failed / 积分转账失败");
-        bridge.withdrawCredits(address(bad));
+        bridge.withdrawCredits(address(w));
 
         // The failed delivery moved nothing at all.
-        assertEq(bridge.creditable(address(bad)), 6 ether, "still owed");
+        assertEq(bridge.creditable(address(w)), 6 ether, "still owed");
         assertEq(bridge.reserve(), reserveBefore, "reserve untouched");
 
-        // Same claim, deliverable recipient after the relayer re-syncs the wallet on BSC.
-        _credit(keccak256("d4"), 9, agentWallet, 6 ether);
-        bridge.withdrawCredits(agentWallet);
-        assertEq(agentWallet.balance, 6 ether, "settled");
+        // The same claim, delivered once the wallet accepts the coin. No second credit needed.
+        w.setAccepting(true);
+        vm.prank(stranger);
+        bridge.withdrawCredits(address(w));
+        assertEq(address(w).balance, 6 ether, "settled");
+        assertEq(bridge.creditable(address(w)), 0, "nothing left owed");
+        assertEq(bridge.reserve(), reserveBefore - 6 ether, "delivered out of the reserve");
+        assertEq(bridge.totalCredited(), 6 ether, "totalCredited never walked back or doubled");
     }
 
     function test_burnFloat_shrinksSupplyAndProducesNoExitLeaf() public {
@@ -515,6 +580,10 @@ contract LayerTest is Test {
     }
 
     // ============================================================================ L2Gate mirror ======
+    // These pin `L2Gate` exactly as it stands. Decision #31 deleted the BSC source of every status
+    // but ACTIVE, and ERC-8004 breaks the one-wallet-per-agent pairing `applySync` enforces (see
+    // `L2Gate`'s header), so this section has to be rewritten together with `L2Gate` itself. The
+    // BANNED / wallet-rotation cases below exercise code paths nothing on BSC can trigger any more.
 
     function test_applySync_onlyRelayerAndMirrorsStatus() public {
         vm.prank(stranger);
@@ -613,7 +682,8 @@ contract LayerTest is Test {
         vm.deal(agentWallet, 100 ether);
 
         assertEq(uint256(book.MAX_PER_EPOCH()), 20, "MAX_PER_EPOCH");
-        uint64 epoch = uint64(block.timestamp / 86400);
+        assertEq(uint256(book.EPOCH()), BOOK_EPOCH, "the publish cap window is still a day");
+        uint64 epoch = uint64(block.timestamp / BOOK_EPOCH);
         bytes32 noteKind = book.KIND_NOTE();
 
         for (uint256 i = 0; i < 20; i++) {
@@ -633,7 +703,7 @@ contract LayerTest is Test {
         book.announce{value: 0.001 ether}(noteKind, address(0), bytes32(0), "x", "");
 
         // Next epoch, the first agent is free again.
-        vm.warp(block.timestamp + 86400);
+        vm.warp(block.timestamp + BOOK_EPOCH);
         vm.prank(agentWallet);
         uint64 seq = book.announce{value: 0.001 ether}(noteKind, address(0), bytes32(0), "x", "");
         assertEq(uint256(seq), 22, "seq is global and monotonic");
@@ -656,7 +726,7 @@ contract LayerTest is Test {
         assertEq(uint256(logs[0].topics[2]), 20718, "epoch");
         assertEq(abi.decode(logs[0].data, (bytes32)), bytes32("alive"), "note");
 
-        assertEq(uint256(book.countInEpoch(agentWallet, uint64(block.timestamp / 86400))), 1, "consumes the cap");
+        assertEq(uint256(book.countInEpoch(agentWallet, uint64(block.timestamp / BOOK_EPOCH))), 1, "consumes the cap");
     }
 
     // ================================================ canonical event schema (03-INTERFACES §4) ====
@@ -672,7 +742,7 @@ contract LayerTest is Test {
         bytes32 contentHash = keccak256("content");
         string memory summary = unicode"我造了一个池子";
         string memory uri = "ipfs://bafy";
-        uint64 epoch = uint64(block.timestamp / 86400);
+        uint64 epoch = uint64(block.timestamp / BOOK_EPOCH);
 
         vm.recordLogs();
         vm.prank(agentWallet);
@@ -758,7 +828,7 @@ contract LayerTest is Test {
         assertEq(address(uint160(uint256(logs[2].topics[3]))), address(0xB5C), "bscRecipient");
         (uint256 amount, uint64 exitEpoch) = abi.decode(logs[2].data, (uint256, uint64));
         assertEq(amount, 1 ether, "amount");
-        assertEq(uint256(exitEpoch), block.timestamp / 86400, "epoch");
+        assertEq(uint256(exitEpoch), block.timestamp / SETTLEMENT_EPOCH, "epoch");
 
         assertEq(logs[3].topics[0], keccak256("FloatBurned(address,uint256)"), "FloatBurned");
         assertEq(logs[4].topics[0], keccak256("RelayerRotated(address,address,uint256)"), "RelayerRotated");

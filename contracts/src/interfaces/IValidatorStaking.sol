@@ -12,4 +12,10 @@ interface IValidatorStaking {
         returns (uint256 agreeingWeight, uint256 disputingWeight, uint32 agreeingCount, uint32 disputingCount);
 
     function totalStaked() external view returns (uint256);
+
+    /// @notice How many distinct validator addresses have filed an attestation inside
+    ///         the rolling 144-epoch (24 h) roster window. `ChainAnchor.releaseBpsFor`
+    ///         reads this instead of an epoch's `agreeingCount`, because a batched
+    ///         daily attestation lands long after that epoch was settled.
+    function witnessRoster() external view returns (uint32);
 }

@@ -183,6 +183,11 @@ CHAIN_ID="$(cast chain-id --rpc-url "$RPC")"
 SENDER="$(cast rpc eth_accounts --rpc-url "$RPC" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0])')"
 ok "anvil pid $ANVIL_PID, chain id 31337, unlocked deployer $SENDER (no private key used)"
 
+# While a client is running anyway, prove our own keccak/RLP/trie agrees with it. The state root
+# printed at the end is only worth anything if this passes, so it is not optional.
+python3 "$CHAIN/scripts/statetrie.py" --selftest --rpc "$RPC" | sed 's/^/   /' \
+  || die "statetrie.py self-test failed - do not trust any state root this run would print"
+
 # ---------------------------------------------------------- 4. deploy the system contracts here --
 
 say "4. deploy the genesis system contracts"
@@ -203,8 +208,9 @@ get_addr() {
 A_L2BRIDGE="$(get_addr L2BRIDGE)"
 A_L2GATE="$(get_addr L2GATE)"
 A_AGENTBOOK="$(get_addr AGENTBOOK)"
+A_WBAC="$(get_addr WBAC)"
 A_FEESPLITTER="$(get_addr FEESPLITTER || true)"
-for pair in "L2BRIDGE:$A_L2BRIDGE" "L2GATE:$A_L2GATE" "AGENTBOOK:$A_AGENTBOOK"; do
+for pair in "L2BRIDGE:$A_L2BRIDGE" "L2GATE:$A_L2GATE" "AGENTBOOK:$A_AGENTBOOK" "WBAC:$A_WBAC"; do
   [ -n "${pair#*:}" ] || die "deploy log has no address for ${pair%%:*} (see $DEPLOY_LOG)"
   ok "${pair%%:*} deployed at ${pair#*:}"
 done
@@ -241,9 +247,11 @@ assert_stateless() {              # assert_stateless NAME ADDRESS
 extract L2BRIDGE  "$A_L2BRIDGE"
 extract L2GATE    "$A_L2GATE"
 extract AGENTBOOK "$A_AGENTBOOK"
+extract WBAC      "$A_WBAC"
 assert_stateless L2BRIDGE  "$A_L2BRIDGE"
 assert_stateless L2GATE    "$A_L2GATE"
 assert_stateless AGENTBOOK "$A_AGENTBOOK"
+assert_stateless WBAC      "$A_WBAC"
 if [ "$HAVE_FEESPLITTER" = 1 ]; then
   extract FEESPLITTER "$A_FEESPLITTER"
   assert_stateless FEESPLITTER "$A_FEESPLITTER"
@@ -255,7 +263,7 @@ fi
 # The proof that the *constructor arguments* really landed in the bytes we are about to paste:
 # these are immutables, so they are read out of the runtime code itself, not out of storage.
 say "5b. read the immutables back out of the deployed code"
-lc() { printf '%s' "$1" | tr 'A-F' 'a-f'; }
+lc() { printf '%s' "$1" | tr 'A-F' 'a-f' | tr -d '"'; }   # cast quotes string returns
 check_call() {                    # check_call LABEL ADDRESS EXPECTED SIG [ARGS...]
   local label="$1" addr="$2" want="$3"; shift 3
   local got
@@ -272,6 +280,15 @@ check_call "L2Bridge.exitCount()"       "$A_L2BRIDGE"  "0"                    "e
 check_call "AgentBook.actionCount()"    "$A_AGENTBOOK" "0"                    "actionCount()(uint64)"
 check_call "L2Gate.agentIdOf(relayer)"  "$A_L2GATE"    "0"                    "agentIdOf(address)(uint256)" "$BAC_GENESIS_RELAYER"
 check_call "L2Gate.isAdmitted(relayer)" "$A_L2GATE"    "false"                "isAdmitted(address)(bool)"   "$BAC_GENESIS_RELAYER"
+
+# WBAC is a neutral tool, not a system contract: nothing on this chain calls it, so the only thing
+# to read back is that it really is an empty WETH9 with the literal name and symbol we froze
+# (decision #22).  `name`/`symbol`/`decimals` are compile-time constants, which is exactly why the
+# zero-storage assertion above can pass at all - WETH9 itself writes them in its constructor.
+check_call "WBAC.name()"        "$A_WBAC" "Wrapped BAC" "name()(string)"
+check_call "WBAC.symbol()"      "$A_WBAC" "WBAC"        "symbol()(string)"
+check_call "WBAC.decimals()"    "$A_WBAC" "18"          "decimals()(uint8)"
+check_call "WBAC.totalSupply()" "$A_WBAC" "0"           "totalSupply()(uint256)"
 
 # ------------------------------------------------ 6. Multicall3 + CREATE2 deployer, copied, not typed
 
@@ -315,6 +332,7 @@ cat >"$SOURCES" <<JSON
   "L2BRIDGE_RUNTIME_BYTECODE": "cast code on the throwaway anvil, from contracts/src/layer/L2Bridge.sol; immutables read back in step 5b",
   "L2GATE_RUNTIME_BYTECODE": "cast code on the throwaway anvil, from contracts/src/layer/L2Gate.sol",
   "AGENTBOOK_RUNTIME_BYTECODE": "cast code on the throwaway anvil, from contracts/src/layer/AgentBook.sol",
+  "WBAC_RUNTIME_BYTECODE": "cast code on the throwaway anvil, from contracts/src/layer/WBAC.sol; no constructor arguments, name/symbol/decimals are compile-time constants",
   "FEESPLITTER_RUNTIME_BYTECODE": "$( [ "$HAVE_FEESPLITTER" = 1 ] && echo "cast code on the throwaway anvil, from contracts/src/layer/FeeSplitter.sol" || echo "REHEARSAL STUB 0xfe - FeeSplitter.sol is not written yet")",
   "MULTICALL3_RUNTIME_BYTECODE": "cast code at 0xcA11bde05977b3631167028862bE2a173976CA11 on BSC mainnet, two independent RPCs required to agree",
   "CREATE2_DEPLOYER_RUNTIME_BYTECODE": "cast code at 0x4e59b44847b379578588920cA78FbF26c0B4956C on BSC mainnet, two independent RPCs plus anvil's predeploy required to agree",
@@ -383,8 +401,15 @@ docker rm -f bac-genverify
 CMDS
 chmod +x "$BESU_CMD_FILE" 2>/dev/null || true
 ok "wrote $BESU_CMD_FILE"
-if [ "$HAVE_DOCKER" = 1 ]; then
-  info "docker is available here; you may run $BESU_CMD_FILE now, then chain/verify-genesis.sh"
+if [ "$HAVE_DOCKER" = 1 ] && [ "$REHEARSAL" = 0 ] && [ "${BAC_SKIP_VERIFY:-0}" != "1" ]; then
+  say "9b. docker is here, so finish the job: chain/verify-genesis.sh --boot"
+  info "this boots Besu on the genesis we just wrote, checks every byte back, and PRINTS THE"
+  info "GENESIS HASH - the number that goes into chain/GENESIS.md and onto the website."
+  bash "$CHAIN/verify-genesis.sh" --boot --genesis "$GENESIS_OUT" \
+    || die "verify-genesis.sh rejected the genesis we just built"
+elif [ "$HAVE_DOCKER" = 1 ]; then
+  info "docker is available; rehearsal output is not worth booting. For a real build this script"
+  info "runs chain/verify-genesis.sh --boot itself and prints the genesis hash."
 else
   server "bash chain/build/$(basename "$BESU_CMD_FILE")"
   server "bash chain/verify-genesis.sh --genesis chain/build/$(basename "$GENESIS_OUT")"

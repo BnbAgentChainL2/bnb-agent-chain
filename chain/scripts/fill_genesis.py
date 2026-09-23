@@ -14,14 +14,14 @@
 #   4. every `balance` is a hex string (02-CHAIN-SPEC 3.2 alloc rule 7 - never decimal);
 #   5. the arithmetic: L2Bridge holds TOTAL_SUPPLY - OPERATOR_FLOAT, the relayer holds
 #      OPERATOR_FLOAT, everything else holds 0, and the alloc sums to exactly TOTAL_SUPPLY;
-#   6. the alloc address set is exactly the eight addresses of 02-CHAIN-SPEC 2, and the relayer is
-#      not one of the system addresses;
+#   6. the alloc address set is exactly the eight fixed addresses of 02-CHAIN-SPEC 2 plus the
+#      relayer, and the relayer is not one of the system addresses;
 #   7. the genesis timestamp is a UTC midnight (layer epochs must line up with the BSC side, which
 #      defines epoch = floor(ts / 86400));
 #   8. no storage slots anywhere in the alloc (rule 1: genesis carries state, never storage).
 #
 # It writes a manifest next to the genesis listing where each placeholder's value came from, so the
-# question "why is this byte here" has a written answer for all nine of them.
+# question "why is this byte here" has a written answer for all ten of them.
 
 import argparse
 import json
@@ -40,6 +40,7 @@ L2BRIDGE = "0x0000000000000000000000000000000000000101"
 L2GATE = "0x0000000000000000000000000000000000000102"
 AGENTBOOK = "0x0000000000000000000000000000000000000103"
 FEESPLITTER = "0x0000000000000000000000000000000000000104"
+WBAC = "0x0000000000000000000000000000000000000106"
 MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11"
 CREATE2_DEPLOYER = "0x4e59b44847b379578588920cA78FbF26c0B4956C"
 FEE_SINK = "0x000000000000000000000000000000000000dEaD"
@@ -100,6 +101,7 @@ def build(args):
         "<L2GATE_RUNTIME_BYTECODE>": codes.get("L2GATE", ""),
         "<AGENTBOOK_RUNTIME_BYTECODE>": codes.get("AGENTBOOK", ""),
         "<FEESPLITTER_RUNTIME_BYTECODE>": codes.get("FEESPLITTER", ""),
+        "<WBAC_RUNTIME_BYTECODE>": codes.get("WBAC", ""),
         "<MULTICALL3_RUNTIME_BYTECODE>": codes.get("MULTICALL3", ""),
         "<CREATE2_DEPLOYER_RUNTIME_BYTECODE>": codes.get("CREATE2_DEPLOYER", ""),
     }
@@ -153,14 +155,15 @@ def check(genesis, allow_stub_code):
     _hexbytes(genesis["extraData"], "extraData")
 
     alloc = genesis["alloc"]
-    expected = {L2BRIDGE, L2GATE, AGENTBOOK, FEESPLITTER, MULTICALL3, CREATE2_DEPLOYER, FEE_SINK}
+    expected = {L2BRIDGE, L2GATE, AGENTBOOK, FEESPLITTER, WBAC, MULTICALL3, CREATE2_DEPLOYER,
+                FEE_SINK}
     keys = {_addr_key(a) for a in alloc}
     if len(keys) != len(alloc):
         raise Fail("duplicate address in alloc (differing only by case)")
     expected_keys = {_addr_key(a) for a in expected}
     extra = keys - expected_keys
     if len(extra) != 1:
-        raise Fail("alloc must hold exactly the 7 fixed addresses plus the relayer; "
+        raise Fail("alloc must hold exactly the 8 fixed addresses plus the relayer; "
                    "unexpected set: %s" % sorted("0x" + k for k in extra))
     missing = expected_keys - keys
     if missing:
@@ -205,8 +208,8 @@ def check(genesis, allow_stub_code):
 
     if total != TOTAL_SUPPLY:
         raise Fail("alloc balances sum to %d, expected TOTAL_SUPPLY = %d" % (total, TOTAL_SUPPLY))
-    if with_code != 6:
-        raise Fail("expected 6 accounts with code, found %d" % with_code)
+    if with_code != 7:
+        raise Fail("expected 7 accounts with code, found %d" % with_code)
     return relayer_key
 
 

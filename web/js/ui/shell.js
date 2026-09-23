@@ -69,6 +69,7 @@
       ? '质押 ' + UI.tokenAmt(VM.validators.totalStaked) + ' BAC'
       : miss(VM.st.validators));
 
+    /* peers / txpool：Besu 默认不开 TXPOOL API（实测 -32601），读不到就写「—」，不写 0 */
     UI.setHTML('#ssPeers', (c.peers !== null && c.peers !== undefined) || (c.txPool !== null && c.txPool !== undefined)
       ? (c.peers == null ? '—' : c.peers) + '<u>/' + (c.txPool == null ? '—' : c.txPool) + '</u>'
       : esc(miss(s)));
@@ -77,7 +78,10 @@
       ? Number(c.blockTimeSec).toFixed(1) + '<u>s</u>'
       : esc(miss(s)));
 
-    UI.setHTML('#ssGasPrice', '1.0000<u>gwei</u>');
+    /* gas 单价：eth_gasPrice 的真实读数，读不到才按状态显示占位 —— 不再写死 1.0000 */
+    UI.setHTML('#ssGasPrice', c.gasPrice !== null && c.gasPrice !== undefined
+      ? esc(UI.units(c.gasPrice, 4, 9)) + '<u>gwei</u>'
+      : esc(miss(s)));
 
     UI.setHTML('#ssPool', c.bridgePool !== null && c.bridgePool !== undefined
       ? UI.bnb(c.bridgePool) + '<u>BNB</u>'
@@ -88,7 +92,7 @@
       if (c.epoch == null) epLink.textContent = miss(s);
       else epLink.innerHTML = '<a href="#/epoch/' + c.epoch + '">' + c.epoch + '</a>';
     }
-    UI.setText('#ssEpochSub', c.lastPostedEpoch != null ? c.lastPostedEpoch + ' 挑战窗口' : miss(VM.st.epochs));
+    UI.setText('#ssEpochSub', c.lastPostedEpoch != null ? c.lastPostedEpoch + ' 锚点等待中' : miss(VM.st.epochs));
 
     /* 顶栏 HEAD + 状态栏 */
     UI.setText('#headNum', c.head == null ? miss(s) : comma(c.head));
@@ -97,27 +101,120 @@
     UI.setText('#sbAnchor', c.lastPostedEpoch == null ? miss(VM.st.epochs) : c.lastPostedEpoch + ' POSTED');
     UI.setText('#ssHeadAgo', c.headTs == null ? '' : UI.ago(c.headTs));
 
-    /* 三个服务灯：只有真读到才点亮，读不到就是灰的 */
+    /* 三个服务灯：只有真读到才点亮，读不到就是灰的。
+       NODE = 层内出块节点（现在就在出块）；RELAY = 中继（要 BSC 的 ChainAnchor，还没部署）；
+       INDEX = 索引器（还没部署）。 */
     setLed('#ledNode', VM.st.chain === 'ok' ? 'ok' : (VM.st.chain === 'error' ? 'bad' : 'idle'));
     setLed('#ledRelay', VM.st.epochs === 'ok' ? 'ok' : (VM.st.epochs === 'error' ? 'bad' : 'idle'));
-    setLed('#ledIndex', VM.chain.degraded ? 'bad' : (VM.st.feed === 'ok' ? 'ok' : 'idle'));
+    setLed('#ledIndex', VM.st.idx === 'ok' ? 'ok' : 'idle');
 
+    /* LIVE 看的是**层内链在不在出块**，不是 BSC 侧发射了没有 */
     var live = $('#sbLive');
     if (live) {
-      live.className = 'sb-k ' + (VM.mode === 'live' && VM.st.chain === 'ok' ? 'ok' : 'idle');
-      live.innerHTML = '<b></b>' + (VM.mode === 'demo' ? 'DEMO' : (VM.mode === 'live' ? 'LIVE' : 'PRE'));
+      var isLive = VM.mode === 'live' && VM.st.chain === 'ok';
+      live.className = 'sb-k ' + (isLive ? 'ok' : (VM.st.chain === 'error' ? 'bad' : 'idle'));
+      live.innerHTML = '<b></b>' + (VM.mode === 'demo' ? 'DEMO' : (isLive ? 'LIVE' : (VM.st.chain === 'error' ? 'DOWN' : 'WAIT')));
+      live.title = VM.mode === 'demo' ? '演示模式'
+        : (isLive ? '层内链正在出块（chainId ' + (VM.chain.chainId || '—') + '）' : '还没读到层内块高');
     }
 
-    /* 降级横幅：索引器挂了也要把 BSC 那一半照常显示，并说清楚 */
+    /* 首屏链头卡片上的那颗呼吸点：同一个判断 —— 读到了才金，读失败是红，还没读到是灰 */
+    var hl = $('#heroLive');
+    if (hl) {
+      hl.classList.remove('bad', 'idle');
+      if (VM.st.chain === 'error') hl.classList.add('bad');
+      else if (VM.st.chain !== 'ok') hl.classList.add('idle');
+    }
+
+    paintSource();
+    paintBars();
+    paintAddrs();
+  }
+
+  /** 「这个数字是谁给的」：面板小标 [data-src] 与页脚 / 状态栏的端点地址。
+      索引器还没上线时必须如实写「直读层内 RPC · 索引器未上线」，不许装成索引器给的。 */
+  function paintSource() {
+    var src = VM.layer && VM.layer.source ? VM.layer.source : null;
+    var label = VM.mode === 'demo' ? '演示模式 · 不连任何节点' : UI.srcLabel(src);
+    $$('[data-src]').forEach(function (el) {
+      var kind = el.getAttribute('data-src');
+      if (kind === 'layer') el.textContent = label;
+      else if (kind === 'idx') el.textContent = VM.st.idx === 'ok' ? UI.TEXT.SRC_IDX : UI.TEXT.NO_IDX;
+      else if (kind === 'bsc') el.textContent = VM.mode === 'demo' ? '演示模式' : 'BSC · 合约未部署';
+      else if (kind === 'endpoint') el.textContent = shortEp(VM.layer && VM.layer.endpoint);
+    });
+    UI.setText('#sbRpc', shortEp(VM.layer && VM.layer.endpoint));
+    UI.setText('#navRpc', shortEp(VM.layer && VM.layer.endpoint));
+  }
+
+  /** 端点地址只显示主机名，够核对又不至于撑破一行。 */
+  function shortEp(u) {
+    if (!u) return '—';
+    try { return String(u).replace(/^https?:\/\//, '').replace(/\/.*$/, ''); }
+    catch (e) { return String(u); }
+  }
+
+  /** 顶部横幅：说清楚现在**哪一半是实时的、哪一半还不存在**，不夸大。
+      现在出块的是演练链 —— 这一条必须照实写在最前面：创世预置了测试 BAC（桥里是 0），
+      预置账户的私钥是公开的 Hardhat 测试私钥（谁都能发交易），发射时重建、数据清空；
+      v1 只有官方一个验证者，但演练链的只读同步已经公开（HANDOFF §2），验证者发射后才开放。
+      每一句单独一个元素：翻译表按整句匹配，句子之间不拼成一个文本节点。
+      手机上（≤620px）只留加粗那句和公开 RPC，其余（.bar-x）收在「详情」后面 ——
+      否则英文下这条横幅有近 300px 高，会把首屏的决策 #29a 那句挤到折线以下。 */
+  function paintBars() {
+    var bar = $('#stateBar');
+    if (bar) {
+      var html = null;
+      if (VM.mode === 'demo') html = null;                      // 演示模式有自己的横幅
+      else if (VM.st.chain === 'error') html = esc(UI.TEXT.ERR + '：层内节点两个地址都没答话，区块与交易暂时读不到。');
+      else if (VM.rehearsal || VM.st.idx !== 'ok') {
+        /* 给人去核对的是**配置里的公开 RPC**：数据源切到索引器之后 VM.layer.endpoint 是索引器的根地址，
+           对它 POST eth_blockNumber 会 405。只有真在直读 RPC 时（可能是兜底 IP），才写实际在用的那个。 */
+        var ly = VM.layer || {};
+        var ep = (ly.source === 'rpc' && ly.endpoint) || ly.rpc || '—';
+        html = (VM.rehearsal
+          ? '<b>现在出块的是演练链。</b>'
+            + '<span class="bar-x">创世里预置了测试用的 BAC（没有一枚是从 BSC 桥过来的），预置账户用的是公开的 Hardhat 测试私钥，'
+            + '任何人都能用它发交易，币没有任何价值；正式发射时会用新的创世重建这条链，现在的区块、交易和余额届时全部清空。</span>'
+            + '<span class="bar-x">v1 只有一个官方验证者节点。演练链的同步已经公开，任何人都能照 </span>'
+            + '<code class="bar-x">' + esc(UI.NODE_JSON) + '</code>'
+            + '<span class="bar-x"> 自己跑一个只读节点（没有任何奖励）；质押 BAC 做验证者、分 gas 费发射后开放。</span>'
+          : '')
+          + '<span>区块、交易、块高、gas 是本站直接读层内节点拿到的真数据，任何人都能向同一个公开 RPC 自己核对：</span>'
+          + '<code>' + esc(ep) + '</code> '
+          + (VM.st.idx !== 'ok' ? '<span class="bar-x">索引器还没上线，所以历史检索、agent 名录、日聚合曲线暂时没有。</span>' : '')
+          + (VM.st.treasury === 'pre'
+            ? '<span class="bar-x">BSC 侧的代币还没发射，税收路由 / 桥 / 质押 / 锚点合约都还不存在，那些数字写「' + esc(UI.TEXT.PRE) + '」。</span>'
+            : '')
+          + '<button class="bar-more" type="button" aria-controls="stateBar">'
+          + '<span class="bm-o">详情</span><span class="bm-c">收起</span></button>';
+      }
+      /* 每次刷新都会走到这里：内容没变就不动 DOM，免得翻译层每 6 秒重译一遍 */
+      if (html) {
+        bar.hidden = false;
+        if (bar._src !== html) { bar._src = html; bar.innerHTML = html; }
+        var mb = bar.querySelector('.bar-more');
+        if (mb) mb.setAttribute('aria-expanded', bar.classList.contains('open') ? 'true' : 'false');
+      } else { bar.hidden = true; bar._src = null; }
+    }
+    /* 旧的降级横幅只在数据层真的给了降级说明、且和上面那条不重复时才出现 */
     var warn = $('#degradedBar');
     if (warn) {
-      if (VM.chain.degradedNote) { warn.hidden = false; warn.textContent = VM.chain.degradedNote; }
+      var note = VM.chain.degradedNote;
+      var dup = bar && !bar.hidden;
+      if (note && !dup && VM.mode !== 'demo') { warn.hidden = false; warn.textContent = note; }
       else warn.hidden = true;
     }
+    /* 演示横幅的文字只在演示模式下写进去：index.html 里那个元素是空的（见那里的注释） */
     var demoBar = $('#demoBar');
-    if (demoBar) demoBar.hidden = VM.mode !== 'demo';
-
-    paintAddrs();
+    if (demoBar) {
+      var demo = VM.mode === 'demo';
+      demoBar.hidden = !demo;
+      if (demo && !demoBar.firstChild) {
+        demoBar.innerHTML = '<span>演示模式（</span><code>?demo=1</code>'
+          + '<span>）：页面上的数字是占位值，只为看排版。正式站点的每一个数字都直接来自链上。</span>';
+      } else if (!demo && demoBar.firstChild) demoBar.textContent = '';
+    }
   }
 
   /** 页脚地址行：发射前是「发射后公布」，配好地址之后逐字显示并可复制。
@@ -143,19 +240,31 @@
   /* 倒计时：纪元剩余秒数，每秒本地递减，来源仍然是链上时间 */
   function paintCountdown() {
     var left = VM.chain.epochLeftSec;
+    var len = VM.chain.epochLenSec || 86400;
     var s = left === null || left === undefined ? miss(VM.st.chain) : UI.hmsLeft(left);
-    ['#ssAnchor', '#anchorCd', '#cd2', '#epCd'].forEach(function (sel) { UI.setText(sel, s); });
+    ['#ssAnchor', '#anchorCd', '#cd2', '#epCd', '#heroCd'].forEach(function (sel) { UI.setText(sel, s); });
     var fill = $('#cdFill');
-    if (fill) fill.style.width = (left === null ? 0 : (100 - left / 864)).toFixed(1) + '%';
+    /* 进度条按纪元真实长度算（纪元长度是数据层的常量，改了这里跟着走，不写死 86400） */
+    if (fill) {
+      var pctDone = (left === null || left === undefined) ? 0
+        : Math.max(0, Math.min(100, (1 - left / len) * 100));
+      fill.style.width = pctDone.toFixed(1) + '%';
+    }
   }
 
   /* ══════════════════ 路由 ══════════════════ */
 
-  var PARENT = { block: 'blocks', tx: 'txs', agent: 'agents', search: '', contract: 'agents', epoch: 'epochs' };
+  var PARENT = {
+    block: 'blocks', tx: 'txs', agent: 'agents', search: '', contract: 'agents', epoch: 'epochs',
+    /* agent 造出来的东西：详情页高亮回到它自己的列表页（决策 #19） */
+    token: 'tokens', pair: 'pairs', swaps: 'pairs'
+  };
   var TITLES = {
     overview: 'BNB Agent Chain · 区块浏览器', blocks: '区块 · BAC', txs: '交易 · BAC',
     agents: 'Agent 目录 · BAC', treasury: '金库 · BAC', validators: '验证者 · BAC',
-    epochs: '纪元与锚点 · BAC', contract: '合约 · BAC', search: '搜索 · BAC', tx: '交易 · BAC'
+    epochs: '纪元与锚点 · BAC', contract: '合约 · BAC', search: '搜索 · BAC', tx: '交易 · BAC',
+    tokens: '代币 · BAC', token: '代币详情 · BAC', pairs: '交易对 · BAC',
+    pair: '交易对详情 · BAC', swaps: '成交流水 · BAC'
   };
   var curView = 'overview', curArg = null;
 
@@ -192,6 +301,12 @@
     else if (v === 'tx') P.renderTxDetail(arg);
     else if (v === 'agent') P.renderAgentDetail(parseInt(arg, 10));
     else if (v === 'contract') P.renderContractDetail(arg);
+    /* agent 造出来的东西（决策 #19 / 03 §7.8） */
+    else if (v === 'tokens') P.renderTokens();
+    else if (v === 'token') P.renderTokenDetail(arg);
+    else if (v === 'pairs') P.renderPairs();
+    else if (v === 'pair') P.renderPairDetail(arg);
+    else if (v === 'swaps') P.renderSwaps();
     else if (v === 'search') P.renderSearchPage(arg || '');
   }
 
@@ -224,9 +339,13 @@
     searchError._t = setTimeout(function () { sErr.hidden = true; if (!suggList.length) closeSres(); }, 6500);
   }
   function hintText() {
-    return VM.st.blocks === 'pre'
-      ? '还没有发射：链上还没有区块、交易或 agent 可以搜。'
-      : '可以输入：区块高度、0x 开头的交易哈希 / 地址 / 合约地址、agent 编号（如 #17）、纪元号。';
+    if (VM.st.blocks === 'pre') return '还没有发射：链上还没有区块、交易或 agent 可以搜。';
+    var base = '可以输入：区块高度、0x 开头的交易哈希 / 地址 / 合约地址、agent 编号（如 #17）、纪元号。';
+    /* 索引器还没上线：块高和完整交易哈希能直接查层内节点，其余的等索引器 —— 照实说 */
+    if (VM.layer && VM.layer.source === 'rpc') {
+      base += '索引器还没上线，现在能查的是区块高度和完整交易哈希（直接问层内节点）。';
+    }
+    return base;
   }
   function paintSugg() {
     if (!qEl) return;
@@ -356,6 +475,12 @@
       if (tr && !e.target.closest('a')) { location.hash = tr.dataset.go; return; }
       var a = e.target.closest('a[aria-disabled="true"]');
       if (a) e.preventDefault();
+      /* 顶部横幅在手机上的「详情 / 收起」：只切一个 class，内容不重画 */
+      var mb = e.target.closest('#stateBar .bar-more');
+      if (mb) {
+        var open = mb.parentElement.classList.toggle('open');
+        mb.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
     });
 
     wireChips('#blkChips', P.state.blocks, P.renderBlocks);

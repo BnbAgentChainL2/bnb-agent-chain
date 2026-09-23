@@ -1,0 +1,14 @@
+{
+  "mode": "graphite",
+  "base": "http://127.0.0.1:54926",
+  "dataMode": "explicit ?demo=1; visual/interaction checks only",
+  "screenshots": [
+    "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\graphite-desktop.png",
+    "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\graphite-desktop-top.png",
+    "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\graphite-mobile.png",
+    "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\graphite-mobile-top.png"
+  ],
+  "pages": [],
+  "errors": [],
+  "interactions": []
+}

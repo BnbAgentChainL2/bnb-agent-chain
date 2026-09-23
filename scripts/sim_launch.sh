@@ -63,7 +63,7 @@ QUOTE_AMT="${QUOTE_AMT:-0}"
 SALT="${SALT:-}"
 TOKEN="${TOKEN:-}"
 NEGATIVE="${NEGATIVE:-1}"
-RETRIES="${RETRIES:-4}"
+RETRIES="${RETRIES:-6}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -268,8 +268,11 @@ PLANNED=$(mk "$SALT" $ZERO "$QUOTE_WEI" "$BUY" "$SELL" "$MKT" "$DEFL" "$DIV" "$L
 # fee can be read without sending anything.
 LOCK_OUT=$(call $PORTAL 'lockSalt(bytes32,uint8)' "$SALT" 6 --from "$LAUNCHER" --value 0)
 if [[ "$LOCK_OUT" == *20beb318* ]]; then
-  LOCK_HEX=$(printf '%s' "$LOCK_OUT" | grep -o '0x20beb318[0-9a-fA-F]*' | head -1)
-  LOCK_FEE=$(cast --to-dec "0x${LOCK_HEX:10:64}" 2>/dev/null)
+  # cast renders the revert differently depending on the node (raw hex blob on a public RPC,
+  # "custom error 0x20beb318: <args>" on anvil), so take everything after the LAST occurrence of
+  # the selector, drop the separators, and read the first 32-byte word.
+  LOCK_HEX=$(printf '%s' "$LOCK_OUT" | sed 's/.*20beb318//' | tr -cd '0-9a-fA-F')
+  LOCK_FEE=$(cast --to-dec "0x${LOCK_HEX:0:64}" 2>/dev/null)
   echo
   printf '  %-36s %s wei (%s BNB)\n' "Portal.lockSalt required fee" "${LOCK_FEE:-?}" "$(cast from-wei "${LOCK_FEE:-0}")"
   echo "                                       step 9-1: lock this salt BEFORE anything else, or a stranger can take T"

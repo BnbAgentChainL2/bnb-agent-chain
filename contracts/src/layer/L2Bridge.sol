@@ -24,8 +24,13 @@ contract L2Bridge {
     /// @notice The mother chain: BSC mainnet.
     uint256 public constant BSC_CHAIN_ID = 56;
 
-    /// @notice Settlement epoch length, identical to the BSC side (`epoch = floor(ts / 86400)`).
-    uint64 public constant EPOCH = 86400;
+    /// @notice Settlement epoch length, identical to the BSC side: `epoch = floor(ts / 600)`, the
+    ///         same 10-minute epoch as `ChainAnchor.EPOCH` and `BacBridge.EPOCH` (decision #20).
+    /// @dev The relayer buckets every exit into an anchor by the `epoch` field of `ExitBurned`
+    ///      and nothing else (01-CONTRACT-SPEC §8.1), and `ChainAnchor.postAnchor` only accepts
+    ///      600-second epochs, so this number has to be the BSC one exactly. It is a constant in
+    ///      the genesis bytecode: getting it wrong here means a new genesis, not a transaction.
+    uint64 public constant EPOCH = 600;
 
     /// @notice Layer chainId, part of the exit-leaf domain separation on the BSC side.
     uint256 public constant LAYER_CHAIN_ID = 56777;
@@ -49,6 +54,12 @@ contract L2Bridge {
     string public constant EIP712_VERSION = "1";
 
     /// @notice `BacBridge` on BSC. Informational on this side; it is the exit-leaf domain anchor.
+    /// @dev Since decision #29 `BacBridge` is an ERC1967 (UUPS) proxy, and this MUST be the
+    ///      PROXY address, never the implementation's: `claimExit` rebuilds the leaf with
+    ///      `address(this)`, which under the proxy's delegatecall is the proxy. Baking the
+    ///      implementation here would make every exit leaf unprovable on BSC. An upgrade keeps
+    ///      the proxy address, so leaves stay valid across upgrades; a NEW proxy would not, and
+    ///      this immutable can only be changed by a new genesis.
     address public immutable BSC_BRIDGE;
 
     /// @notice Cold key hard-wired at genesis: the ONLY authority that can point `relayer()`
@@ -120,9 +131,11 @@ contract L2Bridge {
     // -------------------------------------------------------------------------------------- in ---
 
     /// @notice Relayer-only, idempotent, PULL MODE — contains no external call at all.
-    /// @dev An `agentWallet` may be a contract whose `receive()` reverts. Pushing here would either
-    ///      revert the whole call (one job permanently wedges the strictly single-threaded outbox and
-    ///      the entire chain stops taking deposits) or silently drop the value (`totalCredited` grows
+    /// @dev `to` is the `layerWallet` of a BSC `BacBridge.Locked` event, i.e. the address that
+    ///      passed the ERC-8004 entry gate (decision #31), and it may be a contract whose
+    ///      `receive()` reverts. Pushing here would either revert the whole call (one job
+    ///      permanently wedges the strictly single-threaded outbox and the entire chain stops
+    ///      taking deposits) or silently drop the value (`totalCredited` grows
     ///      while no BAC leaves this contract, so off-chain reconciliation diverges forever).
     ///      attack-funds #12. Delivery is a separate, permissionless `withdrawCredits`.
     function credit(bytes32 depositId, uint256 agentId, address to, uint256 amount) external {
@@ -157,9 +170,13 @@ contract L2Bridge {
     ///      `agentId` is NOT a caller-supplied argument: it is looked up from `L2Gate` (table lookup
     ///      only, the status is never read). If the caller could pass it, an attacker would exit its
     ///      own credits under a victim's agentId — keeping its own full escape weight while the
-    ///      victim's `credited - exitedCredits` underflows and `escapeCollect` reverts for that
-    ///      victim forever (attack-funds #4). The BSC side additionally clamps (§4.2 step 6); both
-    ///      sides carry the guard.
+    ///      victim's `credited - exitedCredits` is spent down (attack-funds #4). The BSC side
+    ///      clamps attribution at what that id locked (§4.2 step 6), so it can no longer
+    ///      underflow, but the victim would still lose escape weight; both sides carry the guard.
+    ///      A caller `L2Gate` has no row for exits with agentId 0: the exit is paid normally and
+    ///      lands in `unattributedExited` on BSC, while the identity the credits entered under
+    ///      keeps its escape weight. So `L2Gate` has to learn every entering wallet — since
+    ///      decision #31 that means from `BacBridge.Locked` (see `L2Gate`'s header).
     function exit(address bscRecipient) external payable returns (uint256 exitId) {
         require(msg.value > 0, unicode"Exit amount must be positive / 退出金额必须为正");
         require(bscRecipient != address(0), unicode"Zero BSC recipient / BSC 收款地址为零");

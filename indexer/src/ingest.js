@@ -6,9 +6,10 @@
 import { Rpc, getLogsChunked, sleep } from "./rpc.js";
 import { getCursor, setCursor } from "./db.js";
 import { ingestLogs, ingestLayerBlock, markAnchored, anchoredThrough } from "./store.js";
-import { addressBook } from "./config.js";
+import { addressBook, bscLogAddresses } from "./config.js";
 import { warn, clearWarning } from "./warnings.js";
 import { LAYER_SYSTEM_ADDRESSES } from "./abi.js";
+import { processBuiltLogs, refreshStaleTokens } from "./economy/index.js";
 
 /** 块时间戳缓存，避免同一片里对同一个块反复 eth_getBlockByNumber。 */
 export class TsCache {
@@ -40,11 +41,11 @@ export class TsCache {
 /** BSC 侧一轮摄入。返回处理到哪个块。 */
 export async function bscTick(db, cfg, rpc) {
   const book = addressBook(cfg);
-  const addresses = Object.entries(cfg.addresses)
-    .filter(([, v]) => !!v)
-    .map(([, v]) => v);
+  // 只摄我们自己合约的日志（BacBridge 代理 / BacTaxRouter / BacNodeFund / ChainAnchor / ValidatorStaking）。
+  // 代币、TaxProcessor、Portal、ERC-8004 注册表只读 view：它们的日志我们不解码，摄进来只会撑爆 logs 表。
+  const addresses = bscLogAddresses(cfg);
   if (addresses.length === 0) {
-    warn("bsc_addresses_unset", "没有配置任何 BSC 合约地址，BSC 侧不摄入");
+    warn("bsc_addresses_unset", "没有配置任何 BSC 合约地址（BacBridge / BacTaxRouter / ...），BSC 侧不摄入");
     return null;
   }
   clearWarning("bsc_addresses_unset");
@@ -143,6 +144,16 @@ export async function layerTick(db, cfg, rpc, { maxBlocks = 200 } = {}) {
         addressBook: book,
         tsOf: () => block.timestamp,
       });
+      // 决策 #19：agent 造出来的东西（代币 / 交易对 / 成交）。
+      // 必须在 ingestLogs **之后**跑：它会按地址回放 logs 表，补上「先建池后发币」这类乱序。
+      // 探测要打 eth_call，所以这一步是异步的；它自己开一个事务，
+      // 失败就不推游标 —— 下一轮重放，所有写入都是幂等的（§7.5.1）。
+      await processBuiltLogs(db, {
+        logs: allLogs,
+        rpc,
+        tsOf: () => block.timestamp,
+        maxCallsPerContract: cfg.probeMaxCalls ?? 16,
+      });
     }
     setCursor(db, "layer", n);
   }
@@ -184,6 +195,9 @@ export async function runIngest(db, cfg, { signal } = {}) {
   await Promise.all([
     loop("layer", () => layerTick(db, cfg, layerRpc), cfg.layerPollMs),
     loop("bsc", () => bscTick(db, cfg, bscRpc), cfg.bscPollMs),
+    // 决策 #19（§7.1.6）：每 30 秒把 supply_stale = 1 的代币重读一遍 totalSupply，
+    // 顺手用 balanceOf 对前 20 个持有者对拍（§7.1.7 的 balance_drift）。
+    loop("token_refresh", () => refreshStaleTokens(db, { rpc: layerRpc }), 30000),
   ]);
 }
 

@@ -15,13 +15,15 @@ contract MockBridge {
 }
 
 /// @dev Stand-in for `ValidatorStaking`, so the anchor tests can drive every branch of
-///      `finalize` without a full commit-reveal round (that is covered in ValidatorStaking.t.sol).
+///      `finalize` without a full attestation round (that is covered in
+///      ValidatorStaking.t.sol). `witnessRoster` is what the release tier now reads.
 contract MockStaking {
     uint256 public agreeingWeight;
     uint256 public disputingWeight;
     uint32 public agreeingCount;
     uint32 public disputingCount;
     uint256 public totalStaked;
+    uint32 public witnessRoster;
 
     function set(uint256 aw, uint256 dw, uint32 ac, uint32 dc, uint256 ts) external {
         agreeingWeight = aw;
@@ -29,6 +31,10 @@ contract MockStaking {
         agreeingCount = ac;
         disputingCount = dc;
         totalStaked = ts;
+    }
+
+    function setRoster(uint32 n) external {
+        witnessRoster = n;
     }
 
     function attestationResult(uint64, bytes32, bytes32, uint64)
@@ -50,11 +56,16 @@ contract ChainAnchorTest is Test {
     address internal vetoKey = address(0xCAFE);
 
     uint128 internal constant OPERATOR_FLOAT = 1000e18;
-    uint64 internal constant EPOCH = 86400;
+    uint64 internal constant EPOCH = 600; // decision #20
+    uint64 internal constant EPOCHS_PER_DAY = 144;
+    uint64 internal constant DAY = 86400;
+    uint64 internal constant ANCHOR_WAIT = 120; // decision #25
     uint64 internal e0; // first anchorable epoch
 
     function setUp() public {
-        vm.warp(uint256(20000) * EPOCH); // land exactly on an epoch boundary
+        // land exactly on an epoch boundary that is also a day boundary, so that the
+        // day arithmetic in the tests is easy to read
+        vm.warp(uint256(200) * DAY);
         bridge = new MockBridge();
         bridge.setIssued(1_000_000e18);
         staking = new MockStaking();
@@ -66,8 +77,9 @@ contract ChainAnchorTest is Test {
     // helpers
     // ------------------------------------------------------------------
 
+    /// @dev COMMIT_WINDOW is 0, so the earliest legal post is the instant the epoch ends.
     function _postTime(uint64 epoch) internal pure returns (uint256) {
-        return (uint256(epoch) + 1) * EPOCH + 2 hours + 1;
+        return (uint256(epoch) + 1) * EPOCH;
     }
 
     function _mk(uint64 l2Block, uint128 credited, uint128 exitCredits)
@@ -86,19 +98,55 @@ contract ChainAnchorTest is Test {
     }
 
     function _post(uint64 epoch, uint64 l2Block) internal {
-        vm.warp(_postTime(epoch));
+        if (block.timestamp < _postTime(epoch)) vm.warp(_postTime(epoch));
         vm.prank(relayer);
         anchor.postAnchor(epoch, _mk(l2Block, 0, 0));
     }
 
     function _finalize(uint64 epoch) internal {
-        vm.warp(_postTime(epoch) + anchor.CHALLENGE_WINDOW());
+        vm.warp(uint256(anchor.getAnchor(epoch).postedAt) + ANCHOR_WAIT);
         anchor.finalize(epoch);
     }
 
     function _veto(uint64 epoch) internal {
         vm.prank(vetoKey);
         anchor.veto(epoch, keccak256("because"));
+    }
+
+    /// @dev Post + finalize every epoch in `[from, to]`, in order and in real time.
+    function _run(uint64 from, uint64 to) internal {
+        for (uint64 e = from; e <= to; ++e) {
+            _post(e, 100 + (e - e0));
+            _finalize(e);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // the clock itself (decisions #20 / #25 / #18)
+    // ------------------------------------------------------------------
+
+    function test_clock_constants() public view {
+        assertEq(anchor.EPOCH(), 600, unicode"纪元 10 分钟");
+        assertEq(anchor.EPOCHS_PER_DAY(), 144);
+        assertEq(anchor.DAY(), 86400);
+        assertEq(uint256(anchor.EPOCH()) * anchor.EPOCHS_PER_DAY(), anchor.DAY());
+        assertEq(anchor.ANCHOR_WAIT(), 120, unicode"锚点等待 2 分钟");
+        assertEq(anchor.COMMIT_WINDOW(), 0);
+        // durations stay durations: at 144 epochs a day an epoch count would be 1/144th
+        assertEq(anchor.HALT_TIMEOUT(), 90 days);
+        assertEq(anchor.STREAK_WINDOW_DAYS(), 30);
+    }
+
+    /// @dev The number the product promises: burn -> wait out the epoch (<= 600 s) ->
+    ///      anchor -> 120 s -> FINAL. Nothing in this contract can stretch it.
+    function test_clock_worstCaseAnchorLatencyIsUnderThirteenMinutes() public {
+        uint256 burnAt = _postTime(e0) - EPOCH; // the first second of epoch e0
+        vm.warp(burnAt);
+        _post(e0, 100);
+        _finalize(e0);
+        uint256 elapsed = block.timestamp - burnAt;
+        assertEq(elapsed, uint256(EPOCH) + ANCHOR_WAIT, "600 + 120 seconds");
+        assertLt(elapsed, 13 minutes);
     }
 
     // ------------------------------------------------------------------
@@ -151,20 +199,24 @@ contract ChainAnchorTest is Test {
         anchor.postAnchor(e0 + 1, _mk(101, 0, 0));
     }
 
-    function test_postAnchor_commitWindowMustBeClosed() public {
-        vm.warp((uint256(e0) + 1) * EPOCH); // the instant the epoch ends
+    /// @dev COMMIT_WINDOW is 0 now, but check #4 still exists and still bites: the
+    ///      relayer can never anchor an epoch that is not over. This is also what keeps
+    ///      `commitAttestation` honest - an accepted commitment provably predates any
+    ///      possible anchor for that epoch.
+    function test_postAnchor_epochMustBeOver() public {
+        vm.warp(_postTime(e0) - 1); // one second before the epoch ends
         vm.prank(relayer);
-        vm.expectRevert(unicode"Commit window not closed / 承诺窗口未结束");
+        vm.expectRevert(unicode"Epoch not over yet / 本纪元尚未结束");
         anchor.postAnchor(e0, _mk(100, 0, 0));
 
-        vm.warp((uint256(e0) + 1) * EPOCH + 2 hours - 1); // one second short
+        vm.warp(_postTime(e0)); // the instant it ends: accepted
         vm.prank(relayer);
-        vm.expectRevert(unicode"Commit window not closed / 承诺窗口未结束");
         anchor.postAnchor(e0, _mk(100, 0, 0));
+        assertEq(anchor.lastPostedEpoch(), e0);
     }
 
-    /// @dev C8 / revision 32: a signer outage that crosses a UTC day produces an epoch
-    ///      with zero layer blocks. `>=` must accept it or the chain's exits die forever.
+    /// @dev C8 / revision 32: a signer outage that crosses an epoch boundary produces an
+    ///      epoch with zero layer blocks. `>=` must accept it or the chain's exits die.
     function test_postAnchor_zeroBlockEpochIsAccepted() public {
         _post(e0, 100);
         _finalize(e0);
@@ -242,13 +294,13 @@ contract ChainAnchorTest is Test {
     // finalize (§6.3)
     // ------------------------------------------------------------------
 
-    function test_finalize_requiresPostedAndWindow() public {
+    function test_finalize_requiresPostedAndTheAnchorWait() public {
         vm.expectRevert(unicode"Anchor not posted / 锚点不处于已提交状态");
         anchor.finalize(e0);
 
         _post(e0, 100);
-        vm.warp(_postTime(e0) + 24 hours - 1);
-        vm.expectRevert(unicode"Challenge window not closed / 挑战窗口未结束");
+        vm.warp(uint256(anchor.getAnchor(e0).postedAt) + ANCHOR_WAIT - 1);
+        vm.expectRevert(unicode"Anchor wait not over / 锚点等待未结束");
         anchor.finalize(e0);
     }
 
@@ -257,28 +309,53 @@ contract ChainAnchorTest is Test {
         _finalize(e0);
         assertEq(uint8(anchor.getAnchor(e0).state), uint8(IChainAnchor.State.FINAL));
         assertEq(anchor.getAnchor(e0).agreeingCount, 0);
-        assertEq(anchor.releaseBpsFor(e0), 200);
+        assertEq(anchor.releaseBpsFor(e0), 200, "per DAY, not per epoch");
         assertEq(anchor.lastFinalEpoch(), e0);
     }
 
-    function test_releaseBpsLadder() public {
+    // ------------------------------------------------------------------
+    // the release ladder now reads the ROLLING ROSTER (RESULTS-buyback.md §4.1 B5)
+    // ------------------------------------------------------------------
+
+    function test_releaseBpsLadder_readsTheRollingRoster() public {
         anchor.setValidatorStaking(address(staking));
 
-        staking.set(1, 0, 1, 0, 100);
+        staking.setRoster(0);
+        assertEq(anchor.releaseBpsFor(e0), 200, "no witnesses");
+        staking.setRoster(1);
+        assertEq(anchor.releaseBpsFor(e0), 350, "1 witness");
+        staking.setRoster(2);
+        assertEq(anchor.releaseBpsFor(e0), 350, "2 witnesses");
+        staking.setRoster(3);
+        assertEq(anchor.releaseBpsFor(e0), 500, "QUORUM witnesses");
+        assertEq(anchor.witnessCount(), 3);
+    }
+
+    /// @dev The regression this change exists for: a batched daily attestation lands
+    ///      long after `settleEpoch` runs, so this epoch's `agreeingCount` is 0 at the
+    ///      moment the bridge asks. Reading it would pin the release tier at 200 bps
+    ///      per day forever, no matter how many nodes are actually running.
+    function test_releaseBps_isNotThisEpochsAgreeingCount() public {
+        anchor.setValidatorStaking(address(staking));
+        staking.setRoster(5); // five nodes are up and attesting daily
+        staking.set(0, 0, 0, 0, 100e18); // nobody revealed live for THIS epoch
+
         _post(e0, 100);
         _finalize(e0);
-        assertEq(anchor.releaseBpsFor(e0), 350, "1 witness");
 
-        staking.set(1, 0, 2, 0, 100);
-        _post(e0 + 1, 101);
-        _finalize(e0 + 1);
-        assertEq(anchor.releaseBpsFor(e0 + 1), 350, "2 witnesses");
-
-        staking.set(1, 0, 3, 0, 100);
-        _post(e0 + 2, 102);
-        _finalize(e0 + 2);
-        assertEq(anchor.releaseBpsFor(e0 + 2), 500, "QUORUM witnesses");
+        assertEq(anchor.getAnchor(e0).agreeingCount, 0, "no live reveal for this epoch");
+        assertEq(anchor.releaseBpsFor(e0), 500, "the roster is what pays");
     }
+
+    function test_releaseBps_isZeroRosterWhenStakingIsUnbound() public view {
+        assertEq(anchor.validatorStaking(), address(0));
+        assertEq(anchor.witnessCount(), 0);
+        assertEq(anchor.releaseBpsFor(e0), 200);
+    }
+
+    // ------------------------------------------------------------------
+    // dispute thresholds (unchanged)
+    // ------------------------------------------------------------------
 
     /// @dev C6: a single address (however many nodeIdHashes it holds) can never force a
     ///      DISPUTED epoch, because one of the three thresholds is the distinct address count.
@@ -328,24 +405,23 @@ contract ChainAnchorTest is Test {
     }
 
     // ------------------------------------------------------------------
-    // veto + the 30-epoch sliding window (revision 35)
+    // veto + the 30-DAY sliding window (revision 35, re-based by decision #20)
     // ------------------------------------------------------------------
 
-    function test_veto_onlyAdminOrVetoKey_andOnlyInsideTheWindow() public {
+    function test_veto_onlyAdminOrVetoKey_andOnlyInsideTheWait() public {
         _post(e0, 100);
         vm.expectRevert(unicode"Only admin or veto key / 仅限管理员或 veto 钥");
         anchor.veto(e0, bytes32(0));
 
-        vm.warp(_postTime(e0) + 24 hours);
+        vm.warp(uint256(anchor.getAnchor(e0).postedAt) + ANCHOR_WAIT);
         vm.prank(admin);
-        vm.expectRevert(unicode"Challenge window closed / 挑战窗口已结束");
+        vm.expectRevert(unicode"Anchor wait is over / 锚点等待已结束");
         anchor.veto(e0, bytes32(0));
     }
 
     /// @dev THE revision-35 test: "veto seven, let one through, veto seven more".
     ///      Under the old consecutive counter (reset on every FINAL) this loop ran
-    ///      forever and never tripped a halt condition. With a sliding window the
-    ///      8th veto inside 30 epochs reverts and haltReason is already 2.
+    ///      forever and never tripped a halt condition.
     function test_veto_slidingWindowClosesTheLetOneThroughBypass() public {
         uint64 e = e0;
         for (uint64 i; i < 7; ++i) {
@@ -363,15 +439,49 @@ contract ChainAnchorTest is Test {
         assertEq(anchor.vetoCountInWindow(), 7, "a FINAL epoch must NOT clear the window");
         assertEq(anchor.haltReason(), 2);
 
-        // the next veto inside the same 30-epoch window is refused outright
+        // the next veto inside the same 30-day window is refused outright
         _post(e, 100 + e - e0);
         vm.prank(vetoKey);
         vm.expectRevert(unicode"Veto limit reached / 否决次数已用尽");
         anchor.veto(e, bytes32(0));
     }
 
-    /// @dev The window is a window: once the burst is more than STREAK_WINDOW epochs
-    ///      old it ages out on its own and vetoing becomes possible again.
+    /// @dev The whole reason the window had to be re-based. Those seven vetoes happen
+    ///      inside 70 minutes - one single day. A window of "30 epochs" would now be 5
+    ///      hours and a day bitmap would collapse them into one bit; either way the
+    ///      limit would stop meaning "7 vetoes a month". It has to still be 7 here.
+    function test_veto_sevenInsideOneDayStillReachesTheLimit() public {
+        uint64 e = e0;
+        for (uint64 i; i < 7; ++i) {
+            _post(e, 100 + e - e0);
+            _veto(e);
+            e += 1;
+        }
+        // 7 vetoes, 7 consecutive epochs, 70 minutes of wall clock, one calendar day
+        assertLt(block.timestamp - uint256(200) * DAY, 1 hours + 20 minutes);
+        assertEq(anchor.vetoCountInWindow(), 7, "counted per veto, not per day");
+        assertEq(anchor.haltReason(), 2);
+    }
+
+    /// @dev Five hours is nothing now. The window has to be long enough that a thief
+    ///      who posts one bad root every few hours still trips it, which is exactly
+    ///      what "30 epochs" would have stopped doing.
+    function test_veto_spreadOverDaysStillAccumulates() public {
+        uint64 e = e0;
+        for (uint64 i; i < 7; ++i) {
+            // one veto every 3 days: 18 days total, still inside a 30-day window
+            vm.warp(uint256(200) * DAY + uint256(i) * 3 * DAY);
+            e = uint64(block.timestamp / EPOCH);
+            if (e <= anchor.lastPostedEpoch()) e = anchor.lastPostedEpoch() + 1;
+            _post(e, 100 + i);
+            _veto(e);
+        }
+        assertEq(anchor.vetoCountInWindow(), 7, "7 vetoes across 18 days is still 7");
+        assertEq(anchor.haltReason(), 2);
+    }
+
+    /// @dev The window is a window: once the burst is more than 30 DAYS old it ages out
+    ///      on its own and vetoing becomes possible again.
     function test_veto_windowAgesOut() public {
         uint64 e = e0;
         for (uint64 i; i < 7; ++i) {
@@ -381,7 +491,10 @@ contract ChainAnchorTest is Test {
         }
         assertEq(anchor.vetoCountInWindow(), 7);
 
-        vm.warp(uint256(e0 + 40) * EPOCH); // 40 epochs after the first veto
+        vm.warp(uint256(229) * DAY); // 29 days later: still inside
+        assertEq(anchor.vetoCountInWindow(), 7, "29 days is inside a 30-day window");
+
+        vm.warp(uint256(230) * DAY); // 30 days later: aged out
         assertEq(anchor.vetoCountInWindow(), 0, "the burst aged out of the window");
         assertEq(anchor.haltReason(), 0);
     }
@@ -390,7 +503,7 @@ contract ChainAnchorTest is Test {
         _post(e0, 100);
         _veto(e0);
         assertEq(uint8(anchor.getAnchor(e0).state), uint8(IChainAnchor.State.VETOED));
-        vm.warp(_postTime(e0) + 24 hours);
+        vm.warp(block.timestamp + ANCHOR_WAIT);
         vm.expectRevert(unicode"Anchor not posted / 锚点不处于已提交状态");
         anchor.finalize(e0);
         // and the relayer can keep going: a vetoed epoch counts as resolved
@@ -399,13 +512,74 @@ contract ChainAnchorTest is Test {
     }
 
     // ------------------------------------------------------------------
-    // halt cause 1
+    // the daily hash chain the batched attestation checks itself against
+    // ------------------------------------------------------------------
+
+    function test_dayHead_extendsOnEveryFinalAndOnlyOnFinal() public {
+        assertEq(anchor.finalHead(), bytes32(0));
+
+        _post(e0, 100);
+        _finalize(e0);
+        bytes32 h1 = anchor.finalHead();
+        assertTrue(h1 != bytes32(0));
+
+        // a vetoed epoch must not extend the chain
+        _post(e0 + 1, 101);
+        _veto(e0 + 1);
+        assertEq(anchor.finalHead(), h1, "VETOED does not extend the chain");
+
+        _post(e0 + 2, 102);
+        _finalize(e0 + 2);
+        assertTrue(anchor.finalHead() != h1);
+
+        // and it is reproducible off chain from the anchors alone
+        IChainAnchor.Anchor memory a = anchor.getAnchor(e0 + 2);
+        assertEq(anchor.finalHead(), keccak256(abi.encode(h1, e0 + 2, a.exitRoot, a.l2BlockHash, a.l2Block)));
+    }
+
+    function test_dayHead_isNotSealedUntilTheDayIsFullyAnchored() public {
+        uint64 day = anchor.dayOf(e0);
+        uint64 lastOfDay = (day + 1) * EPOCHS_PER_DAY - 1;
+
+        (, bool sealed0) = anchor.dayHeadOf(day);
+        assertFalse(sealed0, "nothing anchored yet");
+
+        _run(e0, lastOfDay);
+        (bytes32 head1, bool sealed1) = anchor.dayHeadOf(day);
+        assertFalse(sealed1, "the day's last epoch is anchored but the day is not sealed");
+        assertEq(head1, anchor.finalHead());
+
+        // one epoch beyond the day: check #2 + check #3 mean every epoch of the day is
+        // resolved, so the head can never change again
+        _post(lastOfDay + 1, 999);
+        (bytes32 head2, bool sealed2) = anchor.dayHeadOf(day);
+        assertTrue(sealed2, "sealed");
+        assertEq(head2, head1, "and frozen at the day's last FINAL anchor");
+
+        _finalize(lastOfDay + 1);
+        (bytes32 head3,) = anchor.dayHeadOf(day);
+        assertEq(head3, head1, "the next day's anchors do not touch it");
+        assertEq(anchor.dayOf(lastOfDay + 1), day + 1);
+    }
+
+    // ------------------------------------------------------------------
+    // halt cause 1 - a DURATION, not an epoch count
     // ------------------------------------------------------------------
 
     function test_haltReason1_afterNinetyDaysWithoutFinal() public {
         assertEq(anchor.haltReason(), 0);
         vm.warp(block.timestamp + 90 days);
         assertEq(anchor.haltReason(), 1);
+    }
+
+    /// @dev 90 days is 12,960 epochs now. If the constant had been written as an epoch
+    ///      count it would have become 90 * 600 seconds = 15 hours.
+    function test_haltReason1_isNinetyDaysNotNinetyEpochs() public {
+        _post(e0, 100);
+        _finalize(e0);
+        vm.warp(block.timestamp + 90 * uint256(EPOCH));
+        assertEq(anchor.haltReason(), 0, "90 epochs is 15 hours and must not halt");
+        assertEq(anchor.HALT_TIMEOUT() / EPOCH, 12960);
     }
 
     function test_haltReason1_clockRestartsOnEveryFinal() public {
@@ -460,5 +634,17 @@ contract ChainAnchorTest is Test {
 
         vm.expectRevert(unicode"Already set / 已经设置过");
         anchor.setValidatorStaking(address(0xBAD));
+    }
+
+    // ------------------------------------------------------------------
+    // 「挑战」 must be gone from the surface (decision #18)
+    // ------------------------------------------------------------------
+
+    function test_terminology_noChallengeWindowInTheAbi() public {
+        (bool ok,) = address(anchor).staticcall(abi.encodeWithSignature("CHALLENGE_WINDOW()"));
+        assertFalse(ok, unicode"CHALLENGE_WINDOW 必须已经改名为 ANCHOR_WAIT");
+        (bool ok2, bytes memory out) = address(anchor).staticcall(abi.encodeWithSignature("ANCHOR_WAIT()"));
+        assertTrue(ok2);
+        assertEq(abi.decode(out, (uint64)), 120);
     }
 }

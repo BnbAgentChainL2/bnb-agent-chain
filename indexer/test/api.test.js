@@ -258,7 +258,8 @@ test("§3.2 /api/summary：五个分组的字段名逐字一致", () => {
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/summary", {});
   assert.equal(body.schema, "bac/summary/1");
-  assert.deepEqual(keys(body), ["agents", "bridge", "epoch", "gasFees", "layer", "schema", "treasury", "updatedAt", "validators"]);
+  // 决策 #19（§7.7）：新增顶层 built（只有计数，没有金额）
+  assert.deepEqual(keys(body), ["agents", "bridge", "built", "epoch", "gasFees", "layer", "schema", "treasury", "updatedAt", "validators"]);
   assert.deepEqual(keys(body.layer), ["blockTimeSec", "burnedTotal", "circulating", "contractsTotal", "head", "txTotal"]);
   assert.deepEqual(keys(body.agents), ["active", "banned", "challenged", "dormant", "retired", "total"]);
   assert.deepEqual(keys(body.treasury), [
@@ -340,6 +341,8 @@ test("§3.4 /api/agents：分页字段与条目字段逐字一致", () => {
     "agentId", "agentURI", "announces", "controller", "credited", "deploys", "endpointHash", "exited",
     "lastHeartbeatEpoch", "lastLayerBlock", "layerBalance", "missed", "modelFingerprint",
     "registeredAt", "activatedAt", "solved", "status", "statusName", "wallet",
+    // 决策 #19（§7.7）
+    "tokensIssued", "pairsCreated", "swapCount",
   ].sort());
   assert.equal(body.total, 2);
   assert.equal(body.page, 1);
@@ -354,7 +357,7 @@ test("§3.4 /api/agents：分页字段与条目字段逐字一致", () => {
   assert.ok(active.items.every((i) => i.statusName === "ACTIVE"));
   assert.throws(() => route(ctx, "GET", "/api/agents", { status: "zzz" }), /status 只能是/);
   assert.throws(() => route(ctx, "GET", "/api/agents", { sort: "zzz" }), /sort 只能是/);
-  for (const sort of ["newest", "actions", "deploys", "credited"]) {
+  for (const sort of ["newest", "actions", "deploys", "credited", "tokens", "swaps"]) {
     assert.equal(route(ctx, "GET", "/api/agents", { sort }).body.items.length, 2);
   }
 });
@@ -363,14 +366,18 @@ test("§3.5 /api/agent/{id}：六个分组齐全，identity 带免责说明", ()
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/agent/17", {});
   assert.equal(body.schema, "bac/agent/1");
-  assert.deepEqual(keys(body), ["actions", "agent", "contracts", "deposits", "escape", "exits", "identity", "schema"]);
+  assert.deepEqual(keys(body), [
+    "actions", "agent", "contracts", "deposits", "escape", "exits", "identity", "schema",
+    // 决策 #19（§7.7）
+    "built", "trades", "holdings", "holdingsTruncated", "detection",
+  ].sort());
   assert.deepEqual(keys(body.identity), [
     "agentURI", "endpointHashMatches", "note", "registrationsBackref", "uriCheckedAt", "uriReachable",
   ]);
   assert.match(body.identity.note, /不背书/);
   assert.deepEqual(keys(body.deposits[0]), ["bscTx", "credits", "depositId", "lagSec", "layerTx"]);
   assert.deepEqual(keys(body.exits[0]), ["anchorEpoch", "bornEpoch", "claimedTx", "collectedWei", "credits", "exitId", "layerTx", "lockedWei"]);
-  assert.deepEqual(keys(body.contracts[0]), ["address", "block", "callCount", "codeSize"]);
+  assert.deepEqual(keys(body.contracts[0]), ["address", "block", "callCount", "classified", "classifiedZh", "codeSize", "symbol"]);
   assert.deepEqual(keys(body.actions[0]), ["block", "kind", "seq", "subject", "summary", "ts", "tx", "uri"]);
   assert.deepEqual(keys(body.escape), ["claimable", "halted", "weight"]);
   // actions[].summary 是原文（不可信），转义由渲染层负责，这里断言它没被悄悄改写
@@ -400,7 +407,10 @@ test("§3.6 /api/tx/{hash}：tx / logs / decoded 三段", () => {
   const deployTx = db.prepare("SELECT hash FROM txs WHERE created IS NOT NULL").get().hash;
   const { body } = route(ctx, "GET", `/api/tx/${deployTx}`, {});
   assert.equal(body.schema, "bac/tx/1");
-  assert.deepEqual(keys(body), ["decoded", "logs", "schema", "tx"]);
+  // 决策 #19（§7.7）：transfers[] 与 swaps[] 永远是数组，空数组和 null 不是一回事
+  assert.deepEqual(keys(body), ["decoded", "detection", "logs", "schema", "swaps", "transfers", "tx"]);
+  assert.deepEqual(body.transfers, []);
+  assert.deepEqual(body.swaps, []);
   assert.deepEqual(keys(body.tx), [
     "agentId", "block", "created", "effGasPrice", "feeBurned", "feeToProposer", "from", "gasUsed",
     "hash", "idx", "status", "to", "ts", "value",
@@ -431,8 +441,8 @@ test("§3.6 /api/contracts：总数、分页、按 agentId 过滤", () => {
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/contracts", {});
   assert.equal(body.schema, "bac/contracts/1");
-  assert.deepEqual(keys(body), ["items", "schema", "total"]);
-  assert.deepEqual(keys(body.items[0]), ["address", "agentId", "block", "callCount", "codeSize", "deployer", "lastCall", "ts"]);
+  assert.deepEqual(keys(body), ["detection", "items", "schema", "total"]);
+  assert.deepEqual(keys(body.items[0]), ["address", "agentId", "block", "callCount", "classified", "classifiedZh", "codeSize", "deployer", "lastCall", "symbol", "ts"]);
   assert.equal(body.total, 1);
   assert.equal(route(ctx, "GET", "/api/contracts", { agentId: "18" }).body.total, 0);
   assert.equal(route(ctx, "GET", "/api/contracts", { page: "2", pageSize: "1" }).body.items.length, 0);

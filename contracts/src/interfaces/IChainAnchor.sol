@@ -15,7 +15,7 @@ interface IChainAnchor {
     }
 
     struct Anchor {
-        bytes32 exitRoot; // leaf = keccak256(abi.encode(EXIT_TYPEHASH, exitId, agentId, to, credits, epoch, 56777, bridge))
+        bytes32 exitRoot; // leaf = keccak256(abi.encode(EXIT_TYPEHASH, exitId, agentId, to, credits, 56777, bridge)), no epoch; bridge = the BacBridge proxy
         bytes32 l2BlockHash;
         uint64 l2Block;
         uint64 postedAt;
@@ -30,11 +30,18 @@ interface IChainAnchor {
     }
 
     function EPOCH() external view returns (uint64);
+    function EPOCHS_PER_DAY() external view returns (uint64);
+    function DAY() external view returns (uint64);
     function COMMIT_WINDOW() external view returns (uint64);
-    function CHALLENGE_WINDOW() external view returns (uint64);
+    /// @notice 「锚点等待」. Renamed from `CHALLENGE_WINDOW` by decision #18.
+    function ANCHOR_WAIT() external view returns (uint64);
 
     function getAnchor(uint64 epoch) external view returns (Anchor memory);
+    /// @notice The release tier, PER DAY. The caller divides by `EPOCHS_PER_DAY`.
     function releaseBpsFor(uint64 epoch) external view returns (uint16);
+    /// @notice Hash-chain head over the FINAL anchors of `day`, and whether it is final.
+    function dayHeadOf(uint64 day) external view returns (bytes32 head, bool sealedDay);
+    function witnessCount() external view returns (uint32);
     function haltReason() external view returns (uint8);
 
     function vetoKey() external view returns (address);

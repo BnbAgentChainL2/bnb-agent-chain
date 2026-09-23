@@ -56,8 +56,7 @@ SKIPPED=0
 [ -f "$GENESIS" ] || die "no such genesis file: $GENESIS"
 GENESIS="$(cd "$(dirname "$GENESIS")" && pwd)/$(basename "$GENESIS")"
 
-jget() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]));
-import functools
+jget() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))
 cur=d
 for k in sys.argv[2].split("."):
     cur=cur[k]
@@ -101,7 +100,7 @@ if [ "$BOOT" = 1 ]; then
   docker run -d --name "$CONTAINER" -u "$(id -u):$(id -g)" \
     -v "$WORK:/g" -p "127.0.0.1:$PORT:8545" "$IMAGE" \
     --data-path=/g/verifydata --genesis-file="/g/$(basename "$GENESIS")" \
-    "${KEYFLAG[@]}" \
+    ${KEYFLAG[@]+"${KEYFLAG[@]}"} \
     --rpc-http-enabled --rpc-http-host=0.0.0.0 --rpc-http-api=ETH,NET,WEB3,QBFT \
     --host-allowlist="*" --min-gas-price=1000000000 --p2p-enabled=false \
     --data-storage-format=BONSAI --sync-mode=FULL >/dev/null
@@ -163,7 +162,6 @@ g = json.load(open(sys.argv[1]))
 for addr, entry in g["alloc"].items():
     print("%s %s %s" % (addr, entry.get("balance", "0x0"), entry.get("code", "0x")))
 PY
-TOTAL=0
 while read -r ADDR BAL CODE; do
   got_bal="$(cast rpc eth_getBalance "\"$ADDR\"" '"0x0"' --rpc-url "$RPC" | tr -d '"')"
   [ "$(cast to-dec "$got_bal")" = "$(cast to-dec "$BAL")" ] \
@@ -171,7 +169,6 @@ while read -r ADDR BAL CODE; do
   got_code="$(cast code "$ADDR" --block 0 --rpc-url "$RPC")"
   [ "$(printf '%s' "$got_code" | tr 'A-F' 'a-f')" = "$(printf '%s' "$CODE" | tr 'A-F' 'a-f')" ] \
     || die "$ADDR code at block 0 differs from the genesis file ($(( (${#got_code} - 2) / 2 )) vs $(( (${#CODE} - 2) / 2 )) bytes)"
-  TOTAL=$(( TOTAL + 0 ))
   ok "$ADDR balance $(cast to-dec "$BAL") wei, code $(( (${#CODE} - 2) / 2 )) bytes - identical"
 done < "${TMPDIR:-/tmp}/bac-alloc.txt"
 
@@ -194,7 +191,8 @@ say "4. [ANYWHERE] no storage slot anywhere in the system contracts"
 for ADDR in 0x0000000000000000000000000000000000000101 \
             0x0000000000000000000000000000000000000102 \
             0x0000000000000000000000000000000000000103 \
-            0x0000000000000000000000000000000000000104; do
+            0x0000000000000000000000000000000000000104 \
+            0x0000000000000000000000000000000000000106; do
   for SLOT in $(seq 0 15); do
     V="$(cast storage "$ADDR" "$SLOT" --block 0 --rpc-url "$RPC")"
     [ "$V" = "0x0000000000000000000000000000000000000000000000000000000000000000" ] \
@@ -210,6 +208,7 @@ L2BRIDGE=0x0000000000000000000000000000000000000101
 L2GATE=0x0000000000000000000000000000000000000102
 AGENTBOOK=0x0000000000000000000000000000000000000103
 FEESPLITTER=0x0000000000000000000000000000000000000104
+WBAC=0x0000000000000000000000000000000000000106
 MULTICALL3=0xcA11bde05977b3631167028862bE2a173976CA11
 
 RELAYER="$(python3 -c '
@@ -217,6 +216,7 @@ import json,sys
 g=json.load(open(sys.argv[1]))
 fixed={"0000000000000000000000000000000000000101","0000000000000000000000000000000000000102",
        "0000000000000000000000000000000000000103","0000000000000000000000000000000000000104",
+       "0000000000000000000000000000000000000106",
        "ca11bde05977b3631167028862be2a173976ca11","4e59b44847b379578588920ca78fbf26c0b4956c",
        "000000000000000000000000000000000000dead"}
 for a in g["alloc"]:
@@ -224,7 +224,7 @@ for a in g["alloc"]:
         print(a)' "$GENESIS")"
 ok "relayer (the one EOA with a genesis balance) $RELAYER"
 
-lc() { printf '%s' "$1" | tr 'A-F' 'a-f'; }
+lc() { printf '%s' "$1" | tr 'A-F' 'a-f' | tr -d '"'; }   # cast quotes string returns
 expect() {                       # expect LABEL ADDRESS EXPECTED SIG [ARGS...]
   local label="$1" addr="$2" want="$3"; shift 3
   local got
@@ -248,6 +248,17 @@ cast call "$MULTICALL3" "getBlockNumber()(uint256)" --rpc-url "$RPC" >/dev/null 
   || die "Multicall3.getBlockNumber() reverted - the canonical predeploy is not working"
 ok "Multicall3.getBlockNumber() answers"
 
+# WBAC (decision #22): the wrapped native coin, a neutral tool sitting next to Multicall3 and the
+# CREATE2 deployer. Nothing on this chain calls it and nobody can change it, so all we verify is
+# that the genesis really holds an empty WETH9 with the literal name and symbol that were frozen,
+# and that no coin stands behind it yet (totalSupply() IS address(this).balance, so a non-zero
+# reading here would mean the alloc handed it a balance it must never have).
+expect "WBAC.name()"        "$WBAC" "Wrapped BAC" "name()(string)"
+expect "WBAC.symbol()"      "$WBAC" "WBAC"        "symbol()(string)"
+expect "WBAC.decimals()"    "$WBAC" "18"          "decimals()(uint8)"
+expect "WBAC.totalSupply()" "$WBAC" "0"           "totalSupply()(uint256)"
+expect "WBAC.balanceOf(relayer)" "$WBAC" "0" "balanceOf(address)(uint256)" "$RELAYER"
+
 FEECODE="$(cast code "$FEESPLITTER" --block 0 --rpc-url "$RPC")"
 if [ "$(( (${#FEECODE} - 2) / 2 ))" -lt 32 ]; then
   die "0x..0104 holds $(( (${#FEECODE} - 2) / 2 )) bytes of code - that is the rehearsal stub, not
@@ -257,6 +268,13 @@ expect "FeeSplitter.relayer()" "$FEESPLITTER" "$RELAYER" "relayer()(address)"
 expect "FeeSplitter.rotationNonce()" "$FEESPLITTER" "0" "rotationNonce()(uint256)"
 expect "FeeSplitter.lifetimeOfficialGross()" "$FEESPLITTER" "0" "lifetimeOfficialGross()(uint256)"
 expect "FeeSplitter.foundationBalance()" "$FEESPLITTER" "0" "foundationBalance()(uint256)"
+
+# 0x...0105 is RESERVED for the v2 validator-contract mode (02-CHAIN-SPEC 6.3) and must be empty
+# at genesis. Genesis code can never be added later, but an address left empty can still be taken
+# by an ordinary deploy when the time comes - which is the whole point of reserving it.
+[ "$(cast code 0x0000000000000000000000000000000000000105 --block 0 --rpc-url "$RPC")" = "0x" ] \
+  || die "0x..0105 holds code; it is reserved for the v2 validator-set mirror and must be empty"
+ok "0x..0105 is empty, as reserved"
 
 # ------------------------------------------------------------------------- 6. the validator set --
 
@@ -275,11 +293,11 @@ COUNT="$(printf '%s\n' $GOT_VALIDATORS | wc -l | tr -d ' ')"
 say "7. [ANYWHERE] cancun really executes (MCOPY + TSTORE/TLOAD)"
 PROBE=""
 if command -v forge >/dev/null 2>&1 && [ -d "$CONTRACTS" ]; then
-  PROBE="$(cd "$CONTRACTS" && forge inspect script/CancunProbe.sol:CancunProbe bytecode 2>/dev/null || true)"
+  PROBE="$(cd "$CONTRACTS" && forge inspect CancunProbe bytecode 2>/dev/null | tail -1 || true)"
 fi
 [ -n "$PROBE" ] && [ "$PROBE" != "0x" ] \
   || die "could not build contracts/script/CancunProbe.sol (needs forge and the repo)"
-RESULT="$(cast call --create "$PROBE" --rpc-url "$RPC")" \
+RESULT="$(cast call --rpc-url "$RPC" --create "$PROBE")" \
   || die "the cancun probe REVERTED. MCOPY/TSTORE are not available on this chain, which means every
      layer contract compiled with evm_version=cancun is illegal code at an address genesis froze."
 EXPECT_PROBE="0x000000000000000000000000000000000000000000000000000000000000002a"

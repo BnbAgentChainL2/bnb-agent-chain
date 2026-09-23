@@ -1,0 +1,18 @@
+import { chromium } from 'playwright';
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+await page.goto('https://bnbagentchain-scan.com', { waitUntil: 'networkidle' });
+await page.waitForTimeout(6000);
+const head1 = await page.textContent('#headNum').catch(() => null);
+await page.screenshot({ path: 'out/prod-hero.png' });
+await page.waitForTimeout(10000);
+const head2 = await page.textContent('#headNum').catch(() => null);
+const pre = await page.$$eval('*', els => els.filter(e => e.children.length === 0 && e.textContent.trim() === '发射后公布').length);
+console.log('线上块高 10 秒前后:', head1, '->', head2);
+console.log('剩余「发射后公布」元素:', pre);
+await page.screenshot({ path: 'out/prod-desktop.png', fullPage: true });
+const w = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+await w.goto('https://bnbagentchain-scan.com', { waitUntil: 'networkidle' });
+await w.waitForTimeout(6000);
+await w.screenshot({ path: 'out/prod-wide.png' });
+await browser.close();

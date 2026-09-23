@@ -1,0 +1,69 @@
+# chain/Caddyfile - deploy to /opt/bac/Caddyfile, mounted read-only into the caddy container.
+#
+# One measured rule and one consequence of it:
+#
+#   MEASURED (docs/research/11-staging-overnight.md): Caddy must use `handle_path /rpc*`, not
+#   `handle /rpc*`.  `handle` passes the full path through, and the upstream then gets a request for
+#   `/rpc` - which Besu answers with 404, because Besu serves JSON-RPC at `/`.  That cost an evening
+#   on staging.  `handle_path` strips the matched prefix.
+#
+#   CONSEQUENCE: in production, `/rpc` does NOT go to Besu.  It goes to the indexer, whose rpcguard
+#   enforces the method allowlist and the rate limit (02-CHAIN-SPEC 5.3) - and the indexer routes on
+#   `url.pathname === "/rpc"` (indexer/src/api/server.js).  So we keep `handle_path` (the prefix is
+#   stripped, as measured) and then `rewrite * /rpc` to hand the indexer the exact path it expects.
+#   If you ever point /rpc straight at Besu for debugging, drop the rewrite and nothing else changes.
+#
+# Never expose Besu's 8545 directly.  ADMIN, MINER and the QBFT *write* methods live there, and the
+# allowlist that keeps them unreachable is in the indexer, not here: Caddy cannot read a JSON-RPC body.
+
+{
+	# ACME uses this for expiry notices only.
+	email ops@localhost
+}
+
+{$BAC_SITE_HOST} {
+	encode gzip
+
+	# --- JSON-RPC, method-filtered and rate-limited by the indexer's rpcguard ---
+	handle_path /rpc* {
+		rewrite * /rpc
+		reverse_proxy indexer:8080 {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	# --- explorer / website API ---
+	handle /api* {
+		reverse_proxy indexer:8080 {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	handle /health {
+		reverse_proxy indexer:8080
+	}
+
+	handle {
+		respond "BNB Agent Chain node. Endpoints: /rpc (JSON-RPC), /api/*, /health" 200
+	}
+
+	header {
+		Access-Control-Allow-Origin "*"
+		Access-Control-Allow-Headers "content-type"
+		Access-Control-Allow-Methods "GET, POST, OPTIONS"
+		Cache-Control "public, max-age=3"
+		# The site is read-only JSON; no reason for a browser to guess types or frame us.
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	@options method OPTIONS
+	respond @options 204
+
+	log {
+		output stdout
+		format console
+	}
+}

@@ -4,29 +4,27 @@ pragma solidity 0.8.26;
 import {Vm} from "forge-std/Vm.sol";
 import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/token/ERC20/extensions/IERC20Metadata.sol";
-import {UpgradeableBeacon} from "@openzeppelin/proxy/beacon/UpgradeableBeacon.sol";
 
 import {FlapBSCFixture} from "./FlapBSCFixture.sol";
-import {IPortal, IPortalTypes} from "../src/flap/IPortal.sol";
-import {IVaultPortal, IVaultPortalTypes} from "../src/flap/IVaultPortal.sol";
+import {IPortal, IPortalTypes, IPortalTradeV2, IPortalCommonTypes} from "../src/flap/IPortal.sol";
 import {ITaxProcessor, PackedFeeConfigV2} from "../src/flap/ITaxProcessor.sol";
 import {IFlapTaxTokenV3} from "../src/flap/IFlapTaxTokenV3.sol";
-import {IVaultFactoryValidationV2} from "../src/flap/IVaultFactory.sol";
-import {FactoryPolicy} from "../src/flap/IVaultSchemasV1.sol";
 
-import {BacVaultFactory} from "../src/BacVaultFactory.sol";
-import {BacTreasuryVault} from "../src/BacTreasuryVault.sol";
+import {BacTaxRouter} from "../src/BacTaxRouter.sol";
 import {BacBridge} from "../src/BacBridge.sol";
 import {BacNodeFund} from "../src/BacNodeFund.sol";
 import {AgentRegistry} from "../src/AgentRegistry.sol";
 import {ChainAnchor} from "../src/ChainAnchor.sol";
 import {ValidatorStaking} from "../src/ValidatorStaking.sol";
 import {IChainAnchor} from "../src/interfaces/IChainAnchor.sol";
+import {IPancakeV2Router} from "../src/interfaces/IPancakeV2Router.sol";
 
 /// @title BacForkLaunchTest
 /// @notice The last gate before launch: the whole BNB Agent Chain BSC-side stack deployed in the
-///         real §9 order on a BSC mainnet fork, launched through the LIVE VaultPortal, fed with
-///         real tax from the real bonding curve, and settled through the real `dispatch()`.
+///         real §9 order on a BSC mainnet fork, launched through the LIVE PLAIN Portal with our own
+///         `BacTaxRouter` as the beneficiary (decision #30: no VaultPortal, no vault factory, no
+///         vault), fed with real tax from the real bonding curve, and settled through the real
+///         `dispatch()`.
 ///
 /// @dev Run:
 ///        BSC_RPC_URL=https://bsc-dataseed.bnbchain.org forge test --match-path 'test/BacForkLaunch.t.sol' -vv
@@ -52,7 +50,7 @@ contract BacForkLaunchTest is FlapBSCFixture {
     uint128 internal constant OPERATOR_FLOAT = 1000e18;
     uint256 internal constant MIN_STAKE = 2_000_000e18;
     uint256 internal constant POW_TARGET = 2 ** 236;
-    uint64 internal constant E = 86400;
+    uint64 internal constant E = 600; // decision #20: a 10-minute epoch
 
     // ── our stack ─────────────────────────────────────────────────────────────────────────
     AgentRegistry internal registry;
@@ -60,8 +58,7 @@ contract BacForkLaunchTest is FlapBSCFixture {
     ValidatorStaking internal staking;
     BacNodeFund internal nodeFund;
     BacBridge internal bridge;
-    BacVaultFactory internal factory;
-    BacTreasuryVault internal vault;
+    BacTaxRouter internal router;
 
     address internal token;
     address internal taxProcessor;
@@ -96,6 +93,7 @@ contract BacForkLaunchTest is FlapBSCFixture {
     uint256 public gasLock;
     uint256 public gasClaimExit;
     uint256 public gasCollect;
+    uint256 public gasBuyback;
     uint256 public gasPostAnchor;
     uint256 public gasCommit;
     uint256 public gasReveal;
@@ -121,7 +119,6 @@ contract BacForkLaunchTest is FlapBSCFixture {
         require(vm.getChainId() == 56, "BSC mainnet fork required");
 
         portal = IPortal(PORTAL);
-        vaultPortal = IVaultPortal(VAULT_PORTAL);
         _labelDeployedAddresses();
 
         ctrl = vm.addr(ctrlPk);
@@ -131,7 +128,7 @@ contract BacForkLaunchTest is FlapBSCFixture {
         validators[2] = makeAddr("validator3");
 
         // Salts are searched from a fork-derived seed so two suites never collide on an address
-        // that is already staged on mainnet (VaultPortal would revert TokenAlreadyStaged).
+        // that is already staged on mainnet (the Portal would revert TokenAlreadyStaged).
         _seedVanitySalt(keccak256(abi.encode("BNB Agent Chain/fork", vm.getBlockNumber(), vm.getBlockTimestamp())));
 
         // ── §9 ①: the vanity salt and the token address it predicts ───────────────────────
@@ -157,7 +154,7 @@ contract BacForkLaunchTest is FlapBSCFixture {
         // ⑤⑥⑦ — the three contracts whose `bacToken` is an immutable predicted address
         staking = new ValidatorStaking(predictedToken, address(anchor), admin);
         nodeFund = new BacNodeFund(predictedToken, fundOwner);
-        bridge = new BacBridge(predictedToken, address(registry), address(anchor), watchdog);
+        bridge = new BacBridge(predictedToken, address(registry), address(anchor), watchdog, PORTAL, PANCAKE_V2_ROUTER);
         assertEq(address(bridge), predictedBridge, "CREATE nonce prediction of BacBridge drifted");
         assertEq(anchor.bridge(), address(bridge), "ChainAnchor.bridge() != BacBridge");
 
@@ -170,76 +167,84 @@ contract BacForkLaunchTest is FlapBSCFixture {
         assertEq(staking.bacToken(), predictedToken, "preflight 1: staking token");
         assertEq(predictedToken.code.length, 0, "preflight 2: address already has code");
 
-        // ⑩ the factory — the beacon and the implementation are built inside its constructor
-        factory = new BacVaultFactory(LAUNCHER);
-        assertEq(UpgradeableBeacon(factory.beacon()).owner(), address(factory), "rule 009: beacon owner");
+        // ⑩ the tax router, LAST: its constructor cross-checks both downstreams against `T`
+        router = new BacTaxRouter(predictedToken, address(bridge), address(nodeFund));
 
-        vm.label(address(registry), "AgentRegistry");
         vm.label(address(anchor), "ChainAnchor");
         vm.label(address(staking), "ValidatorStaking");
         vm.label(address(nodeFund), "BacNodeFund");
         vm.label(address(bridge), "BacBridge");
-        vm.label(address(factory), "BacVaultFactory");
+        vm.label(address(router), "BacTaxRouter");
     }
 
-    /// @dev ⑪ the real launch through the live VaultPortal, then ⑫ setVaultSink.
+    /// @dev ⑪ the real launch through the live PLAIN Portal (decision #30: no VaultPortal, no
+    ///      factory, no vault — `beneficiary` is our own `BacTaxRouter` and the Portal does not
+    ///      care that it is a contract).
     function _launch() internal {
-        IVaultPortalTypes.NewTokenV6WithVaultParams memory p = _formParams(launchSalt, _vaultData());
+        IPortalTypes.NewTokenV6Params memory p = _formParams(launchSalt, address(router));
         p.quoteAmt = LAUNCH_BUY;
 
         vm.deal(LAUNCHER, 10 ether);
         vm.startPrank(LAUNCHER, LAUNCHER);
         uint256 g = gasleft();
-        token = vaultPortal.newTokenV6WithVault{value: p.quoteAmt, gas: MAX_OP_GAS}(p);
+        token = portal.newTokenV6{value: p.quoteAmt, gas: MAX_OP_GAS}(p);
         gasLaunch = g - gasleft();
         vm.stopPrank();
 
-        vault = BacTreasuryVault(payable(vaultPortal.getVault(token).vault));
         taxProcessor = IFlapTaxTokenV3(token).taxProcessor();
         vm.label(token, SYMBOL);
-        vm.label(address(vault), "BacTreasuryVault");
         vm.label(taxProcessor, "TaxProcessor");
-
-        // ⑫ the only trusted one-shot write of the whole project
-        registry.setVaultSink(address(vault));
-        assertEq(registry.vaultSink(), address(vault), "vault sink");
     }
 
     // ======================================================================================
     //                                      HELPERS
     // ======================================================================================
 
-    function _vaultData() internal view returns (bytes memory) {
-        return abi.encode(vaultOwner, address(bridge), address(nodeFund));
-    }
-
-    function _formParams(bytes32 salt, bytes memory vaultData)
+    /// @dev The planned launch form, as a plain-Portal `NewTokenV6Params`. Every value that the
+    ///      live Portal was measured to accept only one of is spelled out here, not defaulted.
+    function _formParams(bytes32 salt, address beneficiary)
         internal
-        view
-        returns (IVaultPortalTypes.NewTokenV6WithVaultParams memory p)
+        pure
+        returns (IPortalTypes.NewTokenV6Params memory p)
     {
-        p = _buildV3TaxTokenParams(NAME, SYMBOL, salt, address(factory), vaultData);
-        p.buyTaxRate = BUY_TAX;
-        p.sellTaxRate = SELL_TAX;
-        p.taxDuration = TAX_DURATION;
-        p.antiFarmerDuration = ANTI_FARMER;
-        p.mktBps = MKT_BPS;
-        p.deflationBps = 0;
-        p.dividendBps = 0;
-        p.lpBps = 0;
-        p.minimumShareBalance = 0;
-        p.dividendToken = address(0);
-        p.quoteAmt = 0;
+        p = IPortalTypes.NewTokenV6Params({
+            name: NAME,
+            symbol: SYMBOL,
+            meta: "",
+            dexThresh: IPortalCommonTypes.DexThreshType.FOUR_FIFTHS, // measured: the only value accepted
+            salt: salt,
+            migratorType: IPortalTypes.MigratorType.V2_MIGRATOR, // measured: the only value accepted
+            quoteToken: address(0), // native BNB
+            quoteAmt: 0,
+            beneficiary: beneficiary,
+            permitData: "",
+            extensionID: bytes32(0),
+            extensionData: "",
+            dexId: IPortalTypes.DEXId.DEX0,
+            lpFeeProfile: IPortalTypes.V3LPFeeProfile.LP_FEE_PROFILE_STANDARD,
+            buyTaxRate: BUY_TAX,
+            sellTaxRate: SELL_TAX,
+            taxDuration: TAX_DURATION,
+            antiFarmerDuration: ANTI_FARMER,
+            mktBps: MKT_BPS,
+            deflationBps: 0,
+            dividendBps: 0,
+            lpBps: 0,
+            minimumShareBalance: 0,
+            dividendToken: address(0),
+            commissionReceiver: address(0),
+            tokenVersion: IPortalTypes.TokenVersion.TOKEN_TAXED_V3
+        });
     }
 
-    function _launchReverts(address who, IVaultPortalTypes.NewTokenV6WithVaultParams memory p)
+    function _launchReverts(address who, IPortalTypes.NewTokenV6Params memory p)
         internal
         returns (bytes memory ret)
     {
         vm.deal(who, who.balance + 1 ether);
         bool ok;
         vm.prank(who, who);
-        (ok, ret) = VAULT_PORTAL.call{gas: MAX_OP_GAS}(abi.encodeCall(IVaultPortal.newTokenV6WithVault, (p)));
+        (ok, ret) = PORTAL.call{gas: MAX_OP_GAS}(abi.encodeCall(IPortal.newTokenV6, (p)));
         assertFalse(ok, "launch must revert");
     }
 
@@ -310,30 +315,30 @@ contract BacForkLaunchTest is FlapBSCFixture {
 
     /// @dev The real keeper call: `ITaxProcessor.dispatch{gas: 1_000_000}()`.
     function _dispatch() internal returns (uint256 received) {
-        uint256 before = address(vault).balance;
+        uint256 before = address(router).balance;
         uint256 g = gasleft();
         ITaxProcessor(taxProcessor).dispatch{gas: 1_000_000}();
         uint256 used = g - gasleft();
         if (used > gasDispatch) gasDispatch = used;
-        received = address(vault).balance - before;
+        received = address(router).balance - before;
     }
 
     /// @dev `settle()` with the gas it cost recorded.
     function _settle() internal returns (uint256 toBridge, uint256 toNodeFund) {
         uint256 g = gasleft();
-        (toBridge, toNodeFund) = vault.settle();
+        (toBridge, toNodeFund) = router.settle();
         uint256 used = g - gasleft();
         if (used > gasSettle) gasSettle = used;
     }
 
     function _assertSolvent() internal view {
-        (uint256 bal, uint256 accounted, uint256 buckets) = vault.solvency();
-        assertEq(accounted, buckets, "rule 010 V1: accounted != buckets");
-        assertGe(bal, accounted, "rule 010 V2: balance < accounted");
+        (uint256 bal, uint256 accounted, uint256 buckets) = router.solvency();
+        assertEq(accounted, buckets, "V1: accounted != buckets");
+        assertGe(bal, accounted, "V2: balance < accounted");
         assertEq(
-            vault.totalRecognized(),
-            vault.lifetimeToBridge() + vault.lifetimeToNodeFund() + vault.accountedQuote(),
-            "rule 010 V9"
+            router.totalRecognized(),
+            router.lifetimeToBridge() + router.lifetimeToNodeFund() + router.accountedQuote(),
+            "V9: totalRecognized"
         );
     }
 
@@ -362,7 +367,8 @@ contract BacForkLaunchTest is FlapBSCFixture {
 
     function _activateAgent() internal returns (uint256 id) {
         uint256 dl = vm.getBlockTimestamp() + 1 hours;
-        bytes memory sig = _sign(walletPk, keccak256(abi.encode(registry.BIND_WALLET_TYPEHASH(), agentWallet, ctrl, dl)));
+        bytes memory sig =
+            _sign(walletPk, keccak256(abi.encode(registry.BIND_WALLET_TYPEHASH(), agentWallet, ctrl, dl)));
         // The deposit is read BEFORE the prank: an argument call would consume `vm.prank` and
         // `register` would then run as the test contract (the fixture's PRANK CONVENTION note).
         uint256 deposit = registry.ENTRY_DEPOSIT();
@@ -424,17 +430,9 @@ contract BacForkLaunchTest is FlapBSCFixture {
         assertEq(portal.getTokenV8Safe(token).status, 1, "tradable");
         assertGt(IERC20(token).balanceOf(LAUNCHER), 0, "the launch buy delivered no tokens");
 
-        // — VaultPortal's own record maps our factory —
-        IVaultPortalTypes.VaultInfo memory info = vaultPortal.getVault(token);
-        assertEq(info.vault, address(vault), "getVault.vault");
-        assertEq(info.vaultFactory, address(factory), "getVault.vaultFactory");
-        (bool found, IVaultPortalTypes.VaultInfo memory info2) = vaultPortal.tryGetVault(token);
-        assertTrue(found, "tryGetVault");
-        assertEq(info2.vault, address(vault), "tryGetVault.vault");
-
         // — the single most expensive thing to get wrong: where the tax is sent —
         ITaxProcessor tp = ITaxProcessor(taxProcessor);
-        assertEq(tp.marketAddress(), address(vault), "TaxProcessor.marketAddress must be our vault");
+        assertEq(tp.marketAddress(), address(router), "TaxProcessor.marketAddress must be our router");
         assertEq(tp.taxToken(), token, "TaxProcessor.taxToken");
         // Flap's TaxProcessor books the quote as WBNB (isWeth) but pays the vault in native BNB.
         assertEq(tp.getQuoteToken(), WBNB, "TaxProcessor quote token is WBNB on BSC");
@@ -445,59 +443,42 @@ contract BacForkLaunchTest is FlapBSCFixture {
         assertEq(c.deflationBps, 0, "deflationBps must be 0");
         assertEq(c.lpBps, 0, "lpBps must be 0");
         assertEq(c.commissionBps, 0, "commissionBps must be 0");
-        assertTrue(c.isWeth, "isWeth is true on BSC (the vault still receives native BNB)");
+        assertTrue(c.isWeth, "isWeth is true on BSC (the router still receives native BNB)");
         emit log_named_uint("live Flap protocol feeRate (bps of the tax)", c.feeRate);
+        assertEq(c.feeRate, 1000, "measured: Flap takes 10% of the tax before our share is computed");
 
-        // — the vault is a beacon proxy whose beacon is owned by the factory (rule 009) —
-        address beacon = factory.beacon();
-        assertEq(address(uint160(uint256(vm.load(address(vault), BEACON_SLOT)))), beacon, "EIP-1967 beacon slot");
-        assertEq(UpgradeableBeacon(beacon).owner(), address(factory), "beacon owner must be the factory");
-        assertEq(UpgradeableBeacon(beacon).implementation(), factory.beaconImplementation(), "implementation");
-        assertFalse(factory.isVaultUpgradesLocked(), "upgrades still open to the Guardian");
-        vm.expectRevert(bytes("Initializable: contract is already initialized"));
-        vault.initialize(token, stranger, address(bridge), address(nodeFund));
-        BacTreasuryVault impl = BacTreasuryVault(payable(factory.beaconImplementation()));
-        vm.expectRevert(bytes("Initializable: contract is already initialized"));
-        impl.initialize(token, stranger, address(bridge), address(nodeFund));
+        // — the router's own wiring. It is not a proxy and it is not upgradeable: the address in
+        //   the launch form is the final one, and nobody but Flap's own admin can change it. —
+        assertEq(router.bacToken(), token, "router.bacToken must be the launched token");
+        assertEq(router.bridge(), address(bridge), "router.bridge");
+        assertEq(router.nodeFund(), address(nodeFund), "router.nodeFund");
+        assertEq(router.BRIDGE_BPS(), 5000, "hard-coded 50/50 split");
+        assertEq(
+            vm.load(address(router), 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc),
+            bytes32(0),
+            "the router must not be a proxy"
+        );
+        (bool ownerExists,) = address(router).call(abi.encodeWithSignature("owner()"));
+        assertFalse(ownerExists, "the router must have no owner()");
 
-        // — the vault's own wiring, straight out of vaultData —
-        assertEq(vault.taxToken(), token, "vault.taxToken must be the token");
-        assertEq(vault.owner(), vaultOwner, "vault owner");
-        assertEq(vault.bridge(), address(bridge), "vault.bridge");
-        assertEq(vault.nodeFund(), address(nodeFund), "vault.nodeFund");
-        assertEq(vault.vaultQuoteToken(), address(0), "vault quote must be native BNB");
-        assertEq(vault.vaultSpecVersion(), "v3", "vault spec v3");
-        assertEq(vault.BRIDGE_BPS(), 5000, "hard-coded 50/50 split");
-
-        // — the factory surface flap.sh reads before a launch —
-        assertEq(factory.factorySpecVersion(), "v2.3", "factory spec version");
-        assertTrue(factory.isQuoteTokenSupported(address(0)), "BNB quote supported");
-        assertFalse(factory.isQuoteTokenSupported(USDT), "ERC20 quote must be rejected");
-        FactoryPolicy[] memory pol = factory.tokenCreationPolicies();
-        assertEq(pol.length, 8, "8 creation policies");
-        assertEq(pol[2].target, "mktBps", "policy 3 target");
-        assertEq(pol[2].value, abi.encode(uint16(10000)), "policy 3 value");
-        assertEq(pol[3].target, "dividendBps", "policy 4 target");
-        assertEq(pol[3].value, abi.encode(uint16(0)), "policy 4 value");
-        assertEq(vault.vaultUISchema().methods.length, 10, "rule 002: 10 UI methods");
-
-        // — description() renders at runtime and names the real node-fund withdrawer —
-        string memory d = vault.description();
-        assertTrue(_contains(bytes(d), bytes(_addr(nodeFund.owner()))), "description must name nodeFund.owner()");
-        assertTrue(_contains(bytes(d), bytes(_addr(address(bridge)))), "description must name the bridge");
-        assertTrue(_contains(bytes(d), bytes(_addr(address(nodeFund)))), "description must name the node fund");
+        // — description() carries the sentences decisions #29a and #31a make mandatory —
+        string memory d = router.description();
+        assertTrue(
+            _contains(bytes(d), bytes(unicode"项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。")),
+            "description must carry the decision #29a sentence verbatim"
+        );
+        assertTrue(
+            _contains(bytes(d), bytes(unicode"我们要求持有 agent 身份，我们不能证明它是 AI")),
+            "description must carry the decision #31a sentence verbatim"
+        );
         emit log_string(d);
-
-        // — a stranger cannot call newVault directly —
-        vm.expectRevert(bytes(unicode"Only VaultPortal / 仅限 VaultPortal 调用"));
-        factory.newVault(token, address(0), LAUNCHER, _vaultData());
 
         _assertSolvent();
         emit log_named_address("launched token (vanity ...7777)", token);
-        emit log_named_address("treasury vault", address(vault));
+        emit log_named_address("BacTaxRouter (the beneficiary in the launch form)", address(router));
         emit log_named_bytes32("launch salt", launchSalt);
         emit log_named_uint("fork block", vm.getBlockNumber());
-        emit log_named_uint("GAS launch (newTokenV6WithVault, with 0.05 BNB launch buy)", gasLaunch);
+        emit log_named_uint("GAS launch (plain Portal newTokenV6, with 0.05 BNB launch buy)", gasLaunch);
     }
 
     // ======================================================================================
@@ -521,7 +502,7 @@ contract BacForkLaunchTest is FlapBSCFixture {
         _assertSolvent();
 
         // ── settle: 50/50 to BacBridge.acceptRelease() and BacNodeFund.acceptRelease() ────
-        uint256 poolBefore = bridge.poolBalance();
+        uint256 poolBefore = bridge.bnbBalance();
         uint256 fundBefore = nodeFund.lifetimeReceived();
         uint256 g = gasleft();
         (uint256 toBridge, uint256 toNodeFund) = vault.settle();
@@ -532,8 +513,8 @@ contract BacForkLaunchTest is FlapBSCFixture {
         assertEq(toBridge, received - received / 2, "V11: the rounding remainder goes to the bridge pool");
         assertGe(toBridge, toNodeFund, "V11: bridge >= node fund");
 
-        assertEq(bridge.poolBalance(), poolBefore + toBridge, "bridge pool did not grow by the bridge half");
-        assertEq(address(bridge).balance, bridge.poolBalance(), "bridge balance != poolBalance");
+        assertEq(bridge.bnbBalance(), poolBefore + toBridge, "bridge pool did not grow by the bridge half");
+        assertEq(address(bridge).balance, bridge.bnbBalance(), "bridge balance != poolBalance");
         assertEq(nodeFund.lifetimeReceived(), fundBefore + toNodeFund, "node fund half not received");
         assertEq(address(nodeFund).balance, nodeFund.lifetimeReceived(), "N1 broken");
 
@@ -703,7 +684,7 @@ contract BacForkLaunchTest is FlapBSCFixture {
         // predicts, and the very same form launches.
         address t2 = _predictAddress(TOKEN_IMPL_TAXED_V3, salt, PORTAL);
         BacNodeFund nf2 = new BacNodeFund(t2, fundOwner);
-        BacBridge b2 = new BacBridge(t2, address(registry), address(anchor), watchdog);
+        BacBridge b2 = new BacBridge(t2, address(registry), address(anchor), watchdog, PORTAL, PANCAKE_V2_ROUTER);
         vm.deal(LAUNCHER, LAUNCHER.balance + 1 ether);
         vm.prank(LAUNCHER, LAUNCHER);
         address tok2 = vaultPortal.newTokenV6WithVault{gas: MAX_OP_GAS}(
@@ -723,9 +704,12 @@ contract BacForkLaunchTest is FlapBSCFixture {
     function test_fork_measureBridgeAnchorAndValidatorGas() public {
         // ── fund the bridge pool with real tax, exactly as production would ──────────────
         _accrueTax(4, 0.5 ether);
+        // One buy that is HELD, so the curve has real depth for the buyback further down and
+        // the bridge's 3% slippage bound is measured against a live reserve, not a toy one.
+        _buy(makeAddr("curveDepth"), 5 ether);
         _dispatch();
         _settle();
-        assertGt(bridge.poolBalance(), 0, "bridge pool is empty");
+        assertGt(bridge.bnbBalance(), 0, "bridge pool is empty");
 
         // ── an agent registers for real (PoW + EIP-712) and locks real BAC ───────────────
         uint256 agentId = _activateAgent();
@@ -766,7 +750,9 @@ contract BacForkLaunchTest is FlapBSCFixture {
         IChainAnchor.Anchor memory a1 = _anchorOf(bytes32(0), 2_000, 0, 0, 0);
 
         // both commitments fit inside epoch e0's commit window, which is the earliest either may be made
-        vm.warp((uint256(e0) + 1) * E + 1 hours);
+        // COMMIT_WINDOW is 0: a commitment for epoch N must be filed before N ends, which is
+        // also the earliest instant postAnchor accepts. Nothing has warped yet, so we are still
+        // inside e0 and both commitments are legal right here, with no warp at all.
         for (uint256 i; i < 3; ++i) {
             vm.startPrank(validators[i]);
             uint256 gc = gasleft();
@@ -776,14 +762,14 @@ contract BacForkLaunchTest is FlapBSCFixture {
             vm.stopPrank();
         }
 
-        vm.warp((uint256(e0) + 1) * E + 2 hours + 1);
+        vm.warp((uint256(e0) + 1) * E);
         vm.prank(relayer);
         g = gasleft();
         anchor.postAnchor(e0, a0);
         gasPostAnchor = g - gasleft();
         assertEq(uint8(anchor.getAnchor(e0).state), uint8(IChainAnchor.State.POSTED), "e0 posted");
 
-        vm.warp(vm.getBlockTimestamp() + 1 hours);
+        // reveals land inside the 120-second anchor wait
         for (uint256 i; i < 3; ++i) {
             vm.startPrank(validators[i]);
             uint256 gr = gasleft();
@@ -795,53 +781,152 @@ contract BacForkLaunchTest is FlapBSCFixture {
         assertEq(agreeC, 3, "three agreeing witnesses");
         assertEq(agreeW, 3 * MIN_STAKE, "agreeing weight");
 
-        vm.warp(uint256(anchor.getAnchor(e0).postedAt) + 24 hours + 1);
+        vm.warp(uint256(anchor.getAnchor(e0).postedAt) + anchor.ANCHOR_WAIT());
         g = gasleft();
         anchor.finalize(e0);
         gasFinalize = g - gasleft();
         assertEq(uint8(anchor.getAnchor(e0).state), uint8(IChainAnchor.State.FINAL), "e0 final");
         assertEq(anchor.releaseBpsFor(e0), 500, "quorum of 3 -> 5% release");
 
-        // ── claimExit against the real FINAL anchor (single-leaf tree: empty proof) ──────
-        bytes32[] memory proof = new bytes32[](0);
-        g = gasleft();
-        uint256 lockedWei = bridge.claimExit(e0, exitId, agentId, exitTo, credits, proof);
-        gasClaimExit = g - gasleft();
-        assertGt(lockedWei, 0, "claimExit locked nothing");
-        assertEq(bridge.owedTotal(), lockedWei, "owedTotal");
-        assertTrue(bridge.exitClaimed(exitId), "exit marked claimed");
-
-        // ── epoch e0+1: post, reveal, finalize, then settle and collect ──────────────────
-        vm.warp(_max(vm.getBlockTimestamp() + 1, (uint256(e0) + 2) * E + 2 hours + 1));
+        // ---- epoch e0+1: post, reveal, finalize --------------------------------------
+        vm.warp(_max(vm.getBlockTimestamp() + 1, (uint256(e0) + 2) * E));
         vm.prank(relayer);
         anchor.postAnchor(e0 + 1, a1);
-        vm.warp(vm.getBlockTimestamp() + 1 hours);
         for (uint256 i; i < 3; ++i) {
             vm.prank(validators[i]);
             staking.revealAttestation(e0 + 1, a1.exitRoot, a1.l2BlockHash, a1.l2Block, ATT_SALT);
         }
-        vm.warp(uint256(anchor.getAnchor(e0 + 1).postedAt) + 24 hours + 1);
+        vm.warp(uint256(anchor.getAnchor(e0 + 1).postedAt) + anchor.ANCHOR_WAIT());
         anchor.finalize(e0 + 1);
         assertEq(uint8(anchor.getAnchor(e0 + 1).state), uint8(IChainAnchor.State.FINAL), "e0+1 final");
 
+        // ---- the buyback, on the live flap curve, with real tax BNB (decision #24) ----
+        //      A day of accrual is 20% of the BNB bucket; the fill has to clear the bridge's own
+        //      3% slippage floor, which is computed from the Portal's live price.
+        vm.warp(vm.getBlockTimestamp() + uint256(bridge.EPOCHS_PER_DAY()) * E);
+        IPortalTypes.TokenStateV8Safe memory st = portal.getTokenV8Safe(token);
+        assertEq(uint256(st.status), 1, "BAC must still be on the curve here");
+        // The pre-trade mid price and the token's own buy tax, read off the live Portal. Both are
+        // what the bridge itself reads inside `_venue`, so the floor recomputed here is the
+        // contract's real floor and not a test-local invention.
+        uint256 priceBefore = st.price; // quote (BNB) per BAC, 18 decimals
+        uint256 buyTaxBps = st.buyTaxRate;
+        assertEq(buyTaxBps, BUY_TAX, "live buy tax is not the 2% we launched with");
+
+        // Quoted BEFORE the buy, at a size small enough that its own price impact is negligible:
+        // this separates the venue's fixed cost from the impact of the bridge's own order.
+        uint256 dustKeptBps;
+        {
+            uint256 dust = 1e12; // 0.000001 BNB
+            uint256 dustOut = portal.quoteExactInput(IPortalTradeV2.QuoteExactInputParams(address(0), token, dust));
+            dustKeptBps = (dustOut * priceBefore * 10000) / (1e18 * dust);
+        }
+
+        uint256 bnbBefore = bridge.bnbBalance();
+        uint256 lockedBefore = bridge.lockedBac();
+        uint256 burnedBefore = bridge.totalBurned();
+        g = gasleft();
+        uint256 bought = bridge.buyback(0, 0);
+        gasBuyback = g - gasleft();
+        uint256 spentBnb = bnbBefore - bridge.bnbBalance();
+        assertGt(bought, 0, "the buyback bought no BAC on the live curve");
+        assertGt(spentBnb, 0, "the buyback spent no BNB");
+        assertLe(spentBnb, bridge.MAX_BUYBACK_BNB(), "single-call spend cap breached");
+        assertEq(bridge.buybackBac(), bought, "bought BAC must land in the payout bucket");
+        assertEq(bridge.lockedBac(), lockedBefore, "a buyback must never touch the deposit bucket");
+        assertEq(bridge.lockedBac(), lockAmount, "lockedBac drifted from what was deposited");
+        assertEq(bridge.totalBurned(), burnedBefore, "a buyback burns nothing");
+        assertEq(bridge.buybackBnbSpent(), spentBnb, "buybackBnbSpent != the BNB that left the book");
+        assertEq(bridge.buybackBacBought(), bought, "buybackBacBought != the BAC that arrived");
+        assertEq(
+            IERC20(token).balanceOf(address(bridge)),
+            bridge.lockedBac() + bridge.buybackBac() - bridge.totalBurned(),
+            "BAC books: balance != lockedBac + buybackBac - burned"
+        );
+        {
+            // ---- the slippage bound, recomputed from the live pre-trade price ---------------
+            uint256 grossAtMid = (spentBnb * 1e18) / priceBefore; // no tax, no slippage
+            uint256 floorOut = (grossAtMid * (10000 - buyTaxBps) * (10000 - bridge.MAX_BUY_SLIPPAGE_BPS())) / 1e8;
+            assertGe(bought, floorOut, "the fill breached MAX_BUY_SLIPPAGE_BPS");
+            assertLe(bought, grossAtMid, "the fill beat the pre-trade mid price, which is impossible");
+
+            // ---- how much of the spent BNB survives as BAC (decision #24b's honest cost) ----
+            //      Valued at the PRE-TRADE mid price, so the number is `1 - buyTax - slippage`.
+            uint256 survivalBps = (bought * priceBefore * 10000) / (1e18 * spentBnb);
+            uint256 floorBps = ((10000 - buyTaxBps) * (10000 - bridge.MAX_BUY_SLIPPAGE_BPS())) / 10000;
+            emit log_named_uint("buyback: BNB spent (wei)", spentBnb);
+            emit log_named_uint("buyback: BAC bought (wei)", bought);
+            emit log_named_uint("buyback: pre-trade mid price (wei BNB per BAC)", priceBefore);
+            emit log_named_uint("SURVIVAL curve: bps of spent BNB still BAC at the pre-trade mid", survivalBps);
+            emit log_named_uint("SURVIVAL curve: buy tax alone would leave (bps)", 10000 - buyTaxBps);
+            emit log_named_uint("SURVIVAL curve: everything beyond the buy tax (bps)", 10000 - buyTaxBps - survivalBps);
+            // `dustKeptBps` was quoted BEFORE the buy, at a size whose own impact is negligible,
+            // so it isolates the size-independent cost (buy tax + whatever the venue charges).
+            // The difference is the price impact of this particular buy.
+            emit log_named_uint("SURVIVAL curve: cost at ~zero size, quoted pre-trade (bps kept)", dustKeptBps);
+            emit log_named_uint("SURVIVAL curve: venue fee beyond the buy tax (bps)", 10000 - buyTaxBps - dustKeptBps);
+            emit log_named_uint("SURVIVAL curve: price impact of THIS buy alone (bps)", dustKeptBps - survivalBps);
+            emit log_named_uint("SURVIVAL curve: modeller predicted (STOCK/modest, 2.00% tax + 0.215% slip)", 9778);
+            emit log_named_uint("SURVIVAL curve: contract's own worst-case floor (bps)", floorBps);
+            assertGe(survivalBps, floorBps, "survival below the contract's own floor");
+            assertLe(survivalBps, 10000 - buyTaxBps, "survival above the no-slippage ceiling");
+        }
+
+        // ---- claimExit against the real FINAL anchor (single-leaf tree: empty proof) ---
+        bytes32[] memory proof = new bytes32[](0);
+        g = gasleft();
+        uint256 lockedBacAmt = bridge.claimExit(e0, exitId, agentId, exitTo, credits, proof);
+        gasClaimExit = g - gasleft();
+        assertGt(lockedBacAmt, 0, "claimExit locked nothing");
+        assertEq(bridge.owedTotal(), lockedBacAmt, "owedTotal");
+        assertTrue(bridge.exitClaimed(exitId), "exit marked claimed");
+        assertLe(bridge.owedTotal(), bridge.buybackBac(), "B1: solvency is structural now");
+        // The debt is a share of the BOUGHT stock only. It can never exceed what the buyback has
+        // actually accumulated, which is the whole point of the two buckets: an exit that could
+        // reach `lockedBac` would be able to claim more BAC than was ever bought.
+        assertLe(lockedBacAmt, bought, "an exit locked more BAC than the buyback ever bought");
+        assertEq(bridge.lockedBac(), lockAmount, "claimExit must not move lockedBac");
+        assertEq(bridge.buybackBac(), bought, "claimExit moves no BAC, it only locks a rate");
+
+        // ---- settle and collect: the exit is paid in BAC, out of the buyback bucket ----
         bridge.settleEpoch(e0 + 1);
         (uint256 pot,, uint16 bps) = bridge.lastEpochRelease();
         assertGt(pot, 0, "settleEpoch released nothing");
-        assertEq(bps, 500, "release bps");
+        assertEq(bps, 500, "release bps (a DAILY tier, divided by 144 inside the bridge)");
 
+        uint256 span = uint64(vm.getBlockTimestamp() / E) - bridge.lastCollectEpoch(exitTo);
+        if (span > bridge.MAX_CATCHUP_EPOCHS()) span = bridge.MAX_CATCHUP_EPOCHS();
+        uint256 buybackBeforePay = bridge.buybackBac();
+        uint256 bnbBeforePay = bridge.bnbBalance();
         vm.prank(exitTo);
         g = gasleft();
         uint256 paid = bridge.collect(exitTo);
         gasCollect = g - gasleft();
         assertGt(paid, 0, "collect paid nothing");
-        assertLe(paid, (pot * bridge.MAX_EXIT_SHARE_BPS()) / 10000, "B15: per-block cap");
-        assertEq(exitTo.balance, paid, "the exit address actually received BNB");
-        assertLe(bridge.owedTotal(), bridge.poolBalance(), "B1: solvency");
-        assertGe(address(bridge).balance, bridge.poolBalance(), "B2");
+        assertLe(paid, (pot * bridge.MAX_EXIT_SHARE_BPS() * span) / 10000, "B15: per-epoch cap");
+        assertEq(IERC20(token).balanceOf(exitTo), paid, "the exit address actually received BAC");
+        assertEq(exitTo.balance, 0, "an exit pays BAC, never BNB (decision #24)");
+        // ---- decision #24a ②: the payout came out of `buybackBac`, and ONLY out of it --------
+        assertEq(bridge.buybackBac(), buybackBeforePay - paid, "the payout did not come out of buybackBac");
+        assertEq(bridge.lockedBac(), lockAmount, "an exit touched lockedBac: the lock-forever promise is broken");
+        assertEq(bridge.totalBurned(), burnedBefore, "an exit must not burn from the deposit bucket");
+        assertEq(bridge.bnbBalance(), bnbBeforePay, "an exit moved BNB; exits are BAC-only");
+        assertLe(paid, bought, "paid out more BAC than the buyback ever bought");
+        assertLe(bridge.owedTotal(), bridge.buybackBac(), "B1: solvency");
+        assertGe(address(bridge).balance, bridge.bnbBalance(), "B2");
+        assertGe(IERC20(token).balanceOf(address(bridge)), bridge.bacAccounted(), "B2 (BAC side)");
+        assertEq(
+            IERC20(token).balanceOf(address(bridge)),
+            bridge.lockedBac() + bridge.buybackBac() - bridge.totalBurned(),
+            "BAC books after the payout: balance != lockedBac + buybackBac - burned"
+        );
+        // The deposit bucket is still whole and its only exit is still the dead address.
+        assertGe(IERC20(token).balanceOf(address(bridge)), bridge.lockedBac(), "lockedBac is no longer fully backed");
 
         emit log_named_uint("GAS bridge.lock", gasLock);
         emit log_named_uint("GAS bridge.claimExit (1-leaf proof)", gasClaimExit);
-        emit log_named_uint("GAS bridge.collect", gasCollect);
+        emit log_named_uint("GAS bridge.collect (pays BAC)", gasCollect);
+        emit log_named_uint("GAS bridge.buyback (flap curve)", gasBuyback);
         emit log_named_uint("GAS anchor.postAnchor", gasPostAnchor);
         emit log_named_uint("GAS anchor.finalize (3 witnesses)", gasFinalize);
         emit log_named_uint("GAS staking.commitAttestation", gasCommit);
@@ -861,12 +946,19 @@ contract BacForkLaunchTest is FlapBSCFixture {
     // ======================================================================================
 
     function test_fork_taxStillReachesTheVaultAfterGraduation() public {
+        // Venue BEFORE graduation, read from live chain state: 1 = the flap bonding curve.
+        assertEq(uint256(portal.getTokenV8Safe(token).status), 1, "BAC should start on the curve");
+        (,,, uint8 venue0) = bridge.buybackState();
+        assertEq(uint256(venue0), 1, "a curve-stage BAC must route to the flap curve");
+
         uint256 i;
         for (i = 0; i < 40 && portal.getTokenV8Safe(token).status == 1; ++i) {
             _buy(makeAddr(string.concat("whale", vm.toString(i))), 5 ether);
         }
         if (portal.getTokenV8Safe(token).status != 4) {
-            emit log_named_uint("token did NOT graduate within 40 x 5 BNB buys; status", portal.getTokenV8Safe(token).status);
+            emit log_named_uint(
+                "token did NOT graduate within 40 x 5 BNB buys; status", portal.getTokenV8Safe(token).status
+            );
             return;
         }
         emit log_named_uint("BNB spent to graduate the curve (whole BNB)", i * 5);
@@ -882,9 +974,63 @@ contract BacForkLaunchTest is FlapBSCFixture {
         uint256 got = _dispatch();
         assertGt(got, 0, "no DEX tax reached the vault after graduation");
         _settle();
-        assertGt(bridge.poolBalance(), 0, "bridge pool got nothing from DEX tax");
+        assertGt(bridge.bnbBalance(), 0, "bridge pool got nothing from DEX tax");
         assertGt(nodeFund.lifetimeReceived(), 0, "node fund got nothing from DEX tax");
         _assertSolvent();
         emit log_named_uint("post-graduation tax to the vault (wei)", got);
+
+        // decision #24: the buyback has to change venue by itself. Nothing is stored and nobody
+        // flips a flag - `getTokenV8Safe(BAC).status` went from 1 (curve) to 4 (DEX) and the
+        // bridge routes to PancakeSwap V2 from this block on.
+        vm.deal(address(this), address(this).balance + 3 ether);
+        bridge.acceptRelease{value: 2 ether}();
+        vm.warp(vm.getBlockTimestamp() + uint256(bridge.EPOCHS_PER_DAY()) * E);
+        (,,, uint8 venue) = bridge.buybackState();
+        assertEq(uint256(venue), 2, "a graduated BAC must route to PancakeSwap V2");
+
+        // The fresh pair is thin, so a full MAX_BUYBACK_BNB buy breaches the 3% slippage bound
+        // and the call reverts. That is the guard working: the keeper has to split.
+        vm.expectRevert(unicode"Buyback slippage too high / 回购滑点超过上限");
+        bridge.buyback(0, 0);
+
+        // The live PancakeSwap V2 mid price, taken the same way `_venue` takes it: a negligible
+        // reference trade through the real router, so this is the real pre-trade price.
+        address[] memory path = new address[](2);
+        path[0] = WBNB;
+        path[1] = token;
+        uint256 refOut = IPancakeV2Router(PANCAKE_V2_ROUTER).getAmountsOut(bridge.BUYBACK_QUOTE_REF(), path)[1];
+        uint256 buyTaxBps = portal.getTokenV8Safe(token).buyTaxRate;
+
+        uint256 bnbBefore2 = bridge.bnbBalance();
+        uint256 g = gasleft();
+        uint256 bought = bridge.buyback(0, 0.05 ether);
+        uint256 gasPcsBuyback = g - gasleft();
+        uint256 spentBnb = bnbBefore2 - bridge.bnbBalance();
+        emit log_named_uint("GAS bridge.buyback (PancakeSwap V2)", gasPcsBuyback);
+        assertGt(bought, 0, "the buyback bought no BAC on the live PancakeSwap pair");
+        assertEq(spentBnb, 0.05 ether, "maxSpend was not honoured");
+        assertEq(bridge.buybackBac(), bought, "bought BAC must land in the payout bucket");
+        assertEq(bridge.lockedBac(), 0, "a buyback must never touch the deposit bucket");
+        assertEq(
+            IERC20(token).balanceOf(address(bridge)),
+            bridge.lockedBac() + bridge.buybackBac() - bridge.totalBurned(),
+            "BAC books: balance != lockedBac + buybackBac - burned"
+        );
+        emit log_named_uint("post-graduation buyback: BAC bought (wei)", bought);
+
+        // Same slippage bound and same survival measure as on the curve, on the real V2 pair.
+        // NOTE the asymmetry: `getAmountsOut` already nets PancakeSwap's 0.25% LP fee, so this
+        // reference is fee-inclusive and the remainder below is price impact only. On the curve
+        // the reference is the Portal's raw mid `price`, which is NOT fee-inclusive, so there the
+        // same remainder also carries the venue fee.
+        uint256 grossAtMid = (spentBnb * refOut) / bridge.BUYBACK_QUOTE_REF();
+        uint256 floorOut = (grossAtMid * (10000 - buyTaxBps) * (10000 - bridge.MAX_BUY_SLIPPAGE_BPS())) / 1e8;
+        assertGe(bought, floorOut, "the V2 fill breached MAX_BUY_SLIPPAGE_BPS");
+        assertLe(bought, grossAtMid, "the V2 fill beat the pre-trade mid price, which is impossible");
+        uint256 survivalBps = (bought * 10000) / grossAtMid;
+        emit log_named_uint("SURVIVAL pancake: bps of spent BNB still BAC at the pre-trade mid", survivalBps);
+        emit log_named_uint("SURVIVAL pancake: buy tax alone would leave (bps)", 10000 - buyTaxBps);
+        emit log_named_uint("SURVIVAL pancake: slippage cost alone (bps)", 10000 - buyTaxBps - survivalBps);
+        emit log_named_uint("SURVIVAL pancake: modeller predicted (STOCK/viral, 2.00% tax + 0.597% slip)", 9740);
     }
 }

@@ -1,0 +1,18 @@
+{
+  "mode": "live",
+  "head": 17441,
+  "headDom": "17,441",
+  "blockStatus": "ok",
+  "blockCount": 20,
+  "blockRows": 14,
+  "firstBlock": 17441,
+  "source": "rpc",
+  "endpoint": "https://bnbagentchain-rpc.xyz/rpc",
+  "live": false,
+  "layerLive": true,
+  "domDemoVisible": false,
+  "overflow": 0,
+  "pass": true,
+  "errors": [],
+  "network": []
+}

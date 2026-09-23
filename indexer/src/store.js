@@ -1,7 +1,7 @@
 // src/store.js —— 把解码后的事件幂等地写进 §2 的表，并渲染一条 feed。
 // 幂等的两条底线：
 //   1. 每条日志有一个稳定的键 uniq = chain:txHash:logIndex，重启重放不会产生第二行；
-//   2. 所有域表的写入都是 upsert，且计数器（solved / deploys / announces / credited / exited）
+//   2. 所有域表的写入都是 upsert，且计数器（deploys / announces / credited / exited）
 //      只在「这条日志是第一次见」时才累加 —— 累加型字段是重放安全性最容易破的地方。
 import { AbiCoder, keccak256, getAddress } from "ethers";
 import { upsert, tx as withTx } from "./db.js";
@@ -89,6 +89,35 @@ function bumpAgentWei(db, agentId, col, deltaWeiStr) {
   db.prepare(`UPDATE agents SET "${col}" = ? WHERE agent_id = ?`).run(next, Number(agentId));
 }
 
+/**
+ * agents 表的一行 = 一个锁过桥的 ERC-8004 身份。已有就只把「第一次」往前推（重放 / 乱序安全），不覆盖别的列。
+ * 001 里那些旧注册表的列（agent_uri / endpoint_hash / model_fp / status ...）v2 没有来源：
+ * 写空串与 2（= 已经锁过桥），API 不再返回它们。
+ */
+function ensureAgent(db, agentId, { controller, wallet, ts, block }) {
+  if (agentId === null || agentId === undefined) return;
+  db.prepare(
+    `INSERT INTO agents (agent_id, controller, wallet, agent_uri, endpoint_hash, model_fp, status, registered_at, first_lock_block)
+     VALUES (?, ?, ?, '', '', '', 2, ?, ?)
+     ON CONFLICT(agent_id) DO UPDATE SET
+       registered_at = MIN(agents.registered_at, excluded.registered_at),
+       first_lock_block = CASE
+         WHEN agents.first_lock_block IS NULL OR agents.first_lock_block > excluded.first_lock_block
+         THEN excluded.first_lock_block ELSE agents.first_lock_block END`
+  ).run(Number(agentId), addr(controller), addr(wallet), Number(ts), Number(block));
+}
+
+/** 记下「这个地址以这个身份进过桥」。同一对只留最早那一笔。 */
+function noteAgentWallet(db, { wallet, agentId, depositId, block, ts }) {
+  db.prepare(
+    `INSERT INTO agent_wallets (wallet, agent_id, first_deposit_id, first_bsc_block, first_ts) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(wallet, agent_id) DO UPDATE SET
+       first_deposit_id = MIN(agent_wallets.first_deposit_id, excluded.first_deposit_id),
+       first_bsc_block = MIN(agent_wallets.first_bsc_block, excluded.first_bsc_block),
+       first_ts = MIN(agent_wallets.first_ts, excluded.first_ts)`
+  ).run(addr(wallet), Number(agentId), Number(depositId), Number(block), Number(ts));
+}
+
 function ensureEpoch(db, epoch) {
   db.prepare("INSERT INTO epochs (epoch, state) VALUES (?, 'NONE') ON CONFLICT(epoch) DO NOTHING").run(
     Number(epoch)
@@ -116,61 +145,13 @@ export function applyEvent(ctx, ev) {
   const key = `${ev.contract}.${ev.event}`;
 
   switch (key) {
-    // ===== AgentRegistry =====
-    case "AgentRegistry.Registered":
-      upsert(
-        db,
-        "agents",
-        {
-          agent_id: ev.agentId,
-          controller: a.controller,
-          wallet: a.agentWallet,
-          agent_uri: a.agentURI ?? "",
-          endpoint_hash: a.endpointHash ?? "",
-          model_fp: a.modelFingerprint ?? "",
-          status: 1, // Registered 之后是 CHALLENGED
-          registered_at: Number(ts),
-        },
-        ["agent_id"],
-        ["controller", "wallet", "agent_uri", "endpoint_hash", "model_fp", "registered_at"]
-      );
+    // ===== BacBridge（v2：ERC-8004 门禁 + UUPS 代理）=====
+    // 决策 #31：没有我们自己的注册表了。一个 agent = 一个锁过桥的 ERC-8004 身份 id，
+    // agents 表的行由它**第一次** Locked（或同一笔交易里先发出的 AgentControllerSet）建出来。
+    case "BacBridge.AgentControllerSet":
+      ensureAgent(db, ev.agentId, { controller: a.current, wallet: a.current, ts, block });
+      db.prepare("UPDATE agents SET controller = ? WHERE agent_id = ?").run(a.current, ev.agentId);
       break;
-    case "AgentRegistry.ChallengeSolved":
-      if (fresh) bumpAgent(db, ev.agentId, "solved", 1);
-      break;
-    case "AgentRegistry.Activated":
-      db.prepare("UPDATE agents SET status = 2, activated_at = ?, wallet = ? WHERE agent_id = ?").run(
-        Number(ts),
-        a.agentWallet,
-        ev.agentId
-      );
-      break;
-    case "AgentRegistry.Heartbeat":
-      db.prepare("UPDATE agents SET last_hb_epoch = ? WHERE agent_id = ?").run(
-        Number(a.epoch),
-        ev.agentId
-      );
-      break;
-    case "AgentRegistry.Dormant":
-      db.prepare("UPDATE agents SET status = 3, missed = missed + 1 WHERE agent_id = ?").run(ev.agentId);
-      break;
-    case "AgentRegistry.Banned":
-      db.prepare("UPDATE agents SET status = 4 WHERE agent_id = ?").run(ev.agentId);
-      break;
-    case "AgentRegistry.Retired":
-      db.prepare("UPDATE agents SET status = 5 WHERE agent_id = ?").run(ev.agentId);
-      break;
-    case "AgentRegistry.AgentWalletSet":
-      db.prepare("UPDATE agents SET wallet = ? WHERE agent_id = ?").run(a.wallet, ev.agentId);
-      break;
-    case "AgentRegistry.URIUpdated":
-      db.prepare("UPDATE agents SET agent_uri = ? WHERE agent_id = ?").run(a.newURI ?? "", ev.agentId);
-      break;
-    case "AgentRegistry.ControllerRotated":
-      db.prepare("UPDATE agents SET controller = ? WHERE agent_id = ?").run(a.to, ev.agentId);
-      break;
-
-    // ===== BacBridge =====
     case "BacBridge.Locked": {
       const bridge = (cfg && cfg.addresses && cfg.addresses.BacBridge) || addr(log.address);
       const layerKey = layerKeyFor(cfg ? cfg.bscChainId : 56, bridge, txh, log.logIndex);
@@ -191,14 +172,18 @@ export function applyEvent(ctx, ev) {
         ["deposit_id"],
         ["layer_key", "agent_id", "from_addr", "layer_wallet", "measured", "credits", "bsc_block", "bsc_tx"]
       );
+      // 第一次锁入时 controller = 调用者（BacBridge.lock 的 agentController 规则）；之后只由 AgentControllerSet 改。
+      ensureAgent(db, ev.agentId, { controller: a.from, wallet: a.layerWallet, ts, block });
+      noteAgentWallet(db, { wallet: a.layerWallet, agentId: ev.agentId, depositId: Number(a.depositId), block, ts });
       if (fresh) bumpAgentWei(db, ev.agentId, "credited", a.credits);
       break;
     }
     case "BacBridge.ExitClaimed": {
       const exitId = Number(a.exitId);
+      // v2（决策 #24）：退出锁定的是 BAC（回购来的），不是 BNB。列名 locked_wei 是 001 的历史名字，值是 BAC 的 wei。
       db.prepare(
         `UPDATE exits SET claimed_tx = ?, claimed_at = ?, locked_wei = ?, anchor_epoch = ? WHERE exit_id = ?`
-      ).run(txh, Number(ts), String(a.lockedWei), Number(a.anchorEpoch), exitId);
+      ).run(txh, Number(ts), String(a.lockedBacAmt), Number(a.anchorEpoch), exitId);
       if (fresh) bumpAgentWei(db, ev.agentId, "exited", a.credits);
       break;
     }
@@ -291,9 +276,8 @@ export function applyEvent(ctx, ev) {
         a.validator
       );
       break;
-    case "ValidatorStaking.RewardsSettled":
-      setEpoch(db, a.epoch, { reward_pot: String(a.pot), rate: String(a.rate) });
-      break;
+    // RewardsSettled 是按「天」结算的（参数名 day），不是按 10 分钟纪元，不能写进 epochs 表的 reward_pot。
+    // 它照样进 decoded_events 与 feed。
 
     // ===== 层内 =====
     case "L2Bridge.CreditsMinted": {
@@ -363,7 +347,7 @@ export function applyEvent(ctx, ev) {
 
   // 渲染 feed。锚定与否：层内事件在它所属纪元被 FINAL 之前一律 anchored = 0。
   const evEpoch = ev.epoch !== null ? ev.epoch : epochOf(ts);
-  const { kind, textZh } = renderEvent({ ...ev, agentId: ev.agentId });
+  const { kind, textZh } = renderEvent({ ...ev, agentId: ev.agentId }, { bacToken: cfg && cfg.addresses && cfg.addresses.BacToken });
   feedPush(db, {
     uniq,
     chain,
@@ -601,9 +585,18 @@ export function ingestLayerBlock(db, { block, receipts, cfg }) {
   return { number, txCount: block.transactions.length };
 }
 
-/** 由层内钱包地址反查 agentId（agents.wallet 是 BSC 侧登记的层内钱包）。 */
+/**
+ * 由层内地址反查 agentId。来源是 BacBridge.Locked 的 layerWallet（agent_wallets 表）。
+ * ERC-8004 下一个地址可以以多个身份进桥：这里取**最早**进桥的那个身份（depositId 最小），
+ * 与层内 L2Gate「一个地址一个 agent」的现状一致（L2Gate 的重新设计见合约头注释，尚未定稿）。
+ */
 export function agentIdOfWallet(db, wallet) {
-  const row = db.prepare("SELECT agent_id FROM agents WHERE wallet = ?").get(addr(wallet));
+  const a = addr(wallet);
+  const w = db
+    .prepare("SELECT agent_id FROM agent_wallets WHERE wallet = ? ORDER BY first_deposit_id ASC LIMIT 1")
+    .get(a);
+  if (w) return Number(w.agent_id);
+  const row = db.prepare("SELECT agent_id FROM agents WHERE wallet = ? ORDER BY agent_id ASC LIMIT 1").get(a);
   return row ? Number(row.agent_id) : null;
 }
 

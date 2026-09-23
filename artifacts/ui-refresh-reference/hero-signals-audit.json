@@ -1,0 +1,617 @@
+{
+  "base": "http://127.0.0.1:4187",
+  "dataMode": "explicit demo to isolate decorative feature requests",
+  "checks": [
+    {
+      "name": "1440: animation moves",
+      "pass": true,
+      "details": {
+        "initial": {
+          "signals": "running",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 40.8319,
+          "animationState": "running",
+          "currentTime": 2366.6049999649636,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        },
+        "moving": {
+          "signals": "running",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 35.1869,
+          "animationState": "running",
+          "currentTime": 2783.204999964964,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "1440: initial aria",
+      "pass": true,
+      "details": {
+        "signals": "running",
+        "pressed": "true",
+        "hidden": false,
+        "toggleDisplay": "grid",
+        "title": "暂停背景信号",
+        "dash": 40.8319,
+        "animationState": "running",
+        "currentTime": 2366.6049999649636,
+        "animationCount": 8,
+        "traceDisplay": "inline",
+        "networkDisplay": "block",
+        "networkLinks": 7,
+        "documentHidden": false,
+        "overflow": 0
+      }
+    },
+    {
+      "name": "1440: pause button and aria",
+      "pass": true,
+      "details": {
+        "pausedA": {
+          "signals": "paused",
+          "pressed": "false",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "播放背景信号",
+          "dash": 34.0568,
+          "animationState": "paused",
+          "currentTime": 2866.6049999649636,
+          "animationCount": 13,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        },
+        "pausedB": {
+          "signals": "paused",
+          "pressed": "false",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "播放背景信号",
+          "dash": 34.0568,
+          "animationState": "paused",
+          "currentTime": 2866.6049999649636,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "1440: resume button and aria",
+      "pass": true,
+      "details": {
+        "resumedA": {
+          "signals": "running",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 33.1539,
+          "animationState": "running",
+          "currentTime": 2933.243999925814,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        },
+        "resumedB": {
+          "signals": "running",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 28.185,
+          "animationState": "running",
+          "currentTime": 3299.9439999258143,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "1440: out of viewport pauses",
+      "pass": true,
+      "details": {
+        "outA": {
+          "signals": "paused",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 27.7338,
+          "animationState": "paused",
+          "currentTime": 3333.243999925814,
+          "animationCount": 13,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        },
+        "outB": {
+          "signals": "paused",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 27.7338,
+          "animationState": "paused",
+          "currentTime": 3333.243999925814,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "1440: viewport reentry resumes",
+      "pass": true,
+      "details": {
+        "signals": "running",
+        "pressed": "true",
+        "hidden": false,
+        "toggleDisplay": "grid",
+        "title": "暂停背景信号",
+        "dash": 26.1528,
+        "animationState": "running",
+        "currentTime": 3449.9209998733363,
+        "animationCount": 13,
+        "traceDisplay": "inline",
+        "networkDisplay": "block",
+        "networkLinks": 7,
+        "documentHidden": false,
+        "overflow": 0
+      }
+    },
+    {
+      "name": "1440: hidden visibility event pauses",
+      "pass": true,
+      "details": {
+        "method": "simulated document.hidden + visibilitychange",
+        "hiddenA": {
+          "signals": "paused",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 25.9279,
+          "animationState": "paused",
+          "currentTime": 3466.5209998733358,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": true,
+          "overflow": 0
+        },
+        "hiddenB": {
+          "signals": "paused",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 25.9279,
+          "animationState": "paused",
+          "currentTime": 3466.5209998733358,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": true,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "1440: visible event resumes",
+      "pass": true,
+      "details": {
+        "signals": "running",
+        "pressed": "true",
+        "hidden": false,
+        "toggleDisplay": "grid",
+        "title": "暂停背景信号",
+        "dash": 25.0246,
+        "animationState": "running",
+        "currentTime": 3533.187999862711,
+        "animationCount": 8,
+        "traceDisplay": "inline",
+        "networkDisplay": "block",
+        "networkLinks": 7,
+        "documentHidden": false,
+        "overflow": 0
+      }
+    },
+    {
+      "name": "1440: reduced motion stays static",
+      "pass": true,
+      "details": {
+        "signals": "paused",
+        "pressed": "false",
+        "hidden": true,
+        "toggleDisplay": "none",
+        "title": "播放背景信号",
+        "dash": 100,
+        "animationState": "running",
+        "currentTime": null,
+        "animationCount": 0,
+        "traceDisplay": "none",
+        "networkDisplay": "block",
+        "networkLinks": 7,
+        "documentHidden": false,
+        "overflow": 0
+      }
+    },
+    {
+      "name": "1440: no horizontal overflow",
+      "pass": true,
+      "details": 0
+    },
+    {
+      "name": "1440: foreground link clickable",
+      "pass": true,
+      "details": "#/blocks"
+    },
+    {
+      "name": "1440: no runtime network requests",
+      "pass": true,
+      "details": {
+        "initialAssetRequests": 34,
+        "requestsAfterLoad": [],
+        "externalRequests": [
+          "https://bnbagentchain-rpc.xyz/api/health",
+          "https://bnbagentchain-rpc.xyz/api/feed?limit=50",
+          "https://bnbagentchain-rpc.xyz/api/blocks?limit=20",
+          "https://bnbagentchain-rpc.xyz/api/summary",
+          "https://bnbagentchain-rpc.xyz/api/validators",
+          "https://bnbagentchain-rpc.xyz/api/epochs?limit=30",
+          "https://bnbagentchain-rpc.xyz/api/agents?page=1&pageSize=50&sort=newest",
+          "https://bnbagentchain-rpc.xyz/api/rate",
+          "https://bnbagentchain-rpc.xyz/rpc",
+          "https://bsc-rpc.publicnode.com/",
+          "https://bnbagentchain-rpc.xyz/api/block/17936",
+          "https://bnbagentchain-rpc.xyz/rpc",
+          "https://bnbagentchain-rpc.xyz/api/block/17935",
+          "https://bnbagentchain-rpc.xyz/rpc"
+        ]
+      }
+    },
+    {
+      "name": "390: animation moves",
+      "pass": true,
+      "details": {
+        "initial": {
+          "signals": "running",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 40.6068,
+          "animationState": "running",
+          "currentTime": 2383.2170000407846,
+          "animationCount": 3,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        },
+        "moving": {
+          "signals": "running",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 34.9618,
+          "animationState": "running",
+          "currentTime": 2799.8170000407845,
+          "animationCount": 3,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "390: initial aria",
+      "pass": true,
+      "details": {
+        "signals": "running",
+        "pressed": "true",
+        "hidden": false,
+        "toggleDisplay": "grid",
+        "title": "暂停背景信号",
+        "dash": 40.6068,
+        "animationState": "running",
+        "currentTime": 2383.2170000407846,
+        "animationCount": 3,
+        "traceDisplay": "inline",
+        "networkDisplay": "block",
+        "networkLinks": 7,
+        "documentHidden": false,
+        "overflow": 0
+      }
+    },
+    {
+      "name": "390: pause button and aria",
+      "pass": true,
+      "details": {
+        "pausedA": {
+          "signals": "paused",
+          "pressed": "false",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "播放背景信号",
+          "dash": 34.0567,
+          "animationState": "paused",
+          "currentTime": 2866.6170000407847,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        },
+        "pausedB": {
+          "signals": "paused",
+          "pressed": "false",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "播放背景信号",
+          "dash": 34.0567,
+          "animationState": "paused",
+          "currentTime": 2866.6170000407847,
+          "animationCount": 3,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "390: resume button and aria",
+      "pass": true,
+      "details": {
+        "resumedA": {
+          "signals": "running",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 33.1535,
+          "animationState": "running",
+          "currentTime": 2933.2680000774562,
+          "animationCount": 3,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        },
+        "resumedB": {
+          "signals": "running",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 28.411,
+          "animationState": "running",
+          "currentTime": 3283.2680000774562,
+          "animationCount": 3,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "390: out of viewport pauses",
+      "pass": true,
+      "details": {
+        "outA": {
+          "signals": "paused",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 27.9598,
+          "animationState": "paused",
+          "currentTime": 3316.568000077456,
+          "animationCount": 8,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        },
+        "outB": {
+          "signals": "paused",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 27.9598,
+          "animationState": "paused",
+          "currentTime": 3316.568000077456,
+          "animationCount": 3,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": false,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "390: viewport reentry resumes",
+      "pass": true,
+      "details": {
+        "signals": "running",
+        "pressed": "true",
+        "hidden": false,
+        "toggleDisplay": "grid",
+        "title": "暂停背景信号",
+        "dash": 26.6049,
+        "animationState": "running",
+        "currentTime": 3416.557000100799,
+        "animationCount": 8,
+        "traceDisplay": "inline",
+        "networkDisplay": "block",
+        "networkLinks": 7,
+        "documentHidden": false,
+        "overflow": 0
+      }
+    },
+    {
+      "name": "390: hidden visibility event pauses",
+      "pass": true,
+      "details": {
+        "method": "simulated document.hidden + visibilitychange",
+        "hiddenA": {
+          "signals": "paused",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 26.3786,
+          "animationState": "paused",
+          "currentTime": 3433.2570001007985,
+          "animationCount": 3,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": true,
+          "overflow": 0
+        },
+        "hiddenB": {
+          "signals": "paused",
+          "pressed": "true",
+          "hidden": false,
+          "toggleDisplay": "grid",
+          "title": "暂停背景信号",
+          "dash": 26.3786,
+          "animationState": "paused",
+          "currentTime": 3433.2570001007985,
+          "animationCount": 3,
+          "traceDisplay": "inline",
+          "networkDisplay": "block",
+          "networkLinks": 7,
+          "documentHidden": true,
+          "overflow": 0
+        }
+      }
+    },
+    {
+      "name": "390: visible event resumes",
+      "pass": true,
+      "details": {
+        "signals": "running",
+        "pressed": "true",
+        "hidden": false,
+        "toggleDisplay": "grid",
+        "title": "暂停背景信号",
+        "dash": 25.2493,
+        "animationState": "running",
+        "currentTime": 3516.602000118233,
+        "animationCount": 3,
+        "traceDisplay": "inline",
+        "networkDisplay": "block",
+        "networkLinks": 7,
+        "documentHidden": false,
+        "overflow": 0
+      }
+    },
+    {
+      "name": "390: reduced motion stays static",
+      "pass": true,
+      "details": {
+        "signals": "paused",
+        "pressed": "false",
+        "hidden": true,
+        "toggleDisplay": "none",
+        "title": "播放背景信号",
+        "dash": 100,
+        "animationState": "running",
+        "currentTime": null,
+        "animationCount": 0,
+        "traceDisplay": "none",
+        "networkDisplay": "block",
+        "networkLinks": 7,
+        "documentHidden": false,
+        "overflow": 0
+      }
+    },
+    {
+      "name": "390: no horizontal overflow",
+      "pass": true,
+      "details": 0
+    },
+    {
+      "name": "390: foreground link clickable",
+      "pass": true,
+      "details": "#/blocks"
+    },
+    {
+      "name": "390: no runtime network requests",
+      "pass": true,
+      "details": {
+        "initialAssetRequests": 33,
+        "requestsAfterLoad": [],
+        "externalRequests": [
+          "https://bnbagentchain-rpc.xyz/api/health",
+          "https://bnbagentchain-rpc.xyz/api/feed?limit=50",
+          "https://bnbagentchain-rpc.xyz/api/blocks?limit=20",
+          "https://bnbagentchain-rpc.xyz/api/summary",
+          "https://bnbagentchain-rpc.xyz/api/validators",
+          "https://bnbagentchain-rpc.xyz/api/epochs?limit=30",
+          "https://bnbagentchain-rpc.xyz/api/agents?page=1&pageSize=50&sort=newest",
+          "https://bnbagentchain-rpc.xyz/api/rate",
+          "https://bnbagentchain-rpc.xyz/rpc",
+          "https://bsc-rpc.publicnode.com/",
+          "https://bnbagentchain-rpc.xyz/api/block/17938",
+          "https://bnbagentchain-rpc.xyz/rpc",
+          "https://bnbagentchain-rpc.xyz/rpc"
+        ]
+      }
+    }
+  ],
+  "errors": [],
+  "visibilityMethod": "document.hidden getter + visibilitychange event simulation; native lifecycle freeze does not make headless Chromium hidden"
+}

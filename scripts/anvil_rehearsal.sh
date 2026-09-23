@@ -24,8 +24,15 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 PORT="${PORT:-18655}"
+# Forking needs an RPC that still serves the state of the block being forked. Of the free BSC
+# endpoints only blastapi worked on 2026-09-23: bsc-dataseed answers "missing trie node" within
+# seconds of the tip, and publicnode answers 403 "archive requests require a personal token".
+# blastapi also throws intermittent 502s under load — if a run dies with "HTTP error 502 with
+# empty body", it is the upstream provider, not this tooling. Just run it again.
 FORK_RPC="${FORK_RPC:-https://bsc-mainnet.public.blastapi.io}"
-FORK_BLOCK="${FORK_BLOCK:-123497440}"
+# Empty = fork the latest block (what free endpoints can serve). Pin one (e.g. 123497440, the
+# block this was first rehearsed at) only with an archive RPC, for a reproducible re-run.
+FORK_BLOCK="${FORK_BLOCK:-}"
 OUT_DIR="${OUT_DIR:-$(mktemp -d)}"
 KEEP="${KEEP:-0}"
 PYTHON="${PYTHON:-python}"
@@ -77,8 +84,13 @@ command -v anvil >/dev/null || die "anvil not on PATH"
 command -v cast  >/dev/null || die "cast not on PATH"
 command -v forge >/dev/null || die "forge not on PATH"
 
-say "anvil fork of BSC @ ${FORK_BLOCK} on ${LOCAL} (log: ${OUT_DIR}/anvil.log)"
-anvil --fork-url "$FORK_RPC" --fork-block-number "$FORK_BLOCK" --port "$PORT" --hardfork prague \
+say "anvil fork of BSC @ ${FORK_BLOCK:-latest} on ${LOCAL} (log: ${OUT_DIR}/anvil.log)"
+# FORK_BLOCK="" forks the latest block instead. Public full nodes drop old state within minutes
+# and some of them answer 403 "archive requests require a token" for anything but the tip, so a
+# pinned block needs an archive RPC. Pin it when you want a reproducible re-run.
+PIN=()
+[ -n "$FORK_BLOCK" ] && PIN=(--fork-block-number "$FORK_BLOCK")
+anvil --fork-url "$FORK_RPC" "${PIN[@]}" --port "$PORT" --hardfork prague \
   --retries 8 > "$OUT_DIR/anvil.log" 2>&1 &
 ANVIL_PID=$!
 cleanup() {

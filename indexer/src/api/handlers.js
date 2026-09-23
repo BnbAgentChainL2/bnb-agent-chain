@@ -1,10 +1,14 @@
 // src/api/handlers.js —— 03 §3 的每一个端点。
 // 每个 handler 都是纯函数：(ctx, params) -> { status, body }，不碰 socket，测试可以直接调。
 // 字段名逐字对齐 03 §3，一个字母都不许改。
-import { STATUS_NAME, STATUS_CODE, GENESIS_SUPPLY, FEE_SINK, FEE_SPLITTER, LAYER_SYSTEM_ADDRESSES } from "../abi.js";
+import { GENESIS_SUPPLY, FEE_SINK, FEE_SPLITTER, LAYER_SYSTEM_ADDRESSES, FLAP_TOKEN_STATUS } from "../abi.js";
+import { identityOf, IDENTITY_NOTE } from "../identity.js";
+import { renderEvent } from "../render.js";
 import { listWarnings } from "../warnings.js";
 import { root as exitRootOf, leafHash, proof as proofOf, ZERO_ROOT } from "../exit-tree.js";
 import { anchoredThrough } from "../store.js";
+import * as B from "./built.js";
+import { classifiedZh } from "../economy/constants.js";
 
 export class ApiError extends Error {
   constructor(code, message, status) {
@@ -31,12 +35,13 @@ const n = (v) => (v === null || v === undefined ? null : Number(v));
 
 // ===================== §3.1 /api/health =====================
 
-/** reconcile.howToCheck 必须原样返回：任何人用这七条 cast 就能自己复算 diff（03 §3.1）。 */
+/** reconcile.howToCheck 必须原样返回：任何人用这八条命令就能自己复算 diff（03 §3.1 + 创世分配项）。 */
 export function howToCheck(cfg) {
   const bridge = (cfg.addresses && cfg.addresses.BacBridge) || "<BacBridge>";
   const rpc = cfg.bscRpc;
   const layerRpc = `${cfg.apiBase}/rpc`;
   return [
+    `curl -s ${cfg.apiBase}/genesis.json   # genesisSupply = Σ alloc.balance；genesisAlloc = 其中 L2Bridge（0x…0101）以外的部分`,
     `cast call ${bridge} "totalCreditsIssued()(uint256)" --rpc-url ${rpc}`,
     `cast call ${bridge} "totalCreditsExited()(uint256)" --rpc-url ${rpc}`,
     `cast balance ${LAYER_SYSTEM_ADDRESSES.L2Bridge} --rpc-url ${layerRpc}`,
@@ -47,14 +52,25 @@ export function howToCheck(cfg) {
   ];
 }
 
+export const RECONCILE_FORMULA =
+  "diff = (bscTotalIssued - bscTotalExited + genesisAlloc) - (layerCirculating + feeSinkBalance + feeSplitterBalance + sum(validatorBalances))";
+
+export const GENESIS_ALLOC_NOTE =
+  "genesisAlloc 是创世文件里预置给 L2Bridge 以外地址的余额：这部分币从来没有经过 BSC 的桥，" +
+  "所以必须单独加进公式，否则 diff 永远等于它的相反数。它由哪些地址组成逐个列在 genesisAllocAccounts 里，" +
+  "任何人拿公开的 genesis.json 都能复核。演练链上它是唯一的预置测试账户（Hardhat 公开测试私钥，币没有任何价值）；" +
+  "正式链上它应当只有中继的运营浮存。";
+
 /**
- * diff 的公式只有这一个（03 §3.1）：
- *   diff = (bscTotalIssued − bscTotalExited)
+ * diff 的公式只有这一个（03 §3.1，加上创世分配项）：
+ *   diff = (bscTotalIssued − bscTotalExited + genesisAlloc)
  *        − (layerCirculating + balance(FeeSink) + balance(FeeSplitter) + Σ balance(everValidator))
  * 少掉后面几项它会从第一笔交易 / 第一笔归集起单调发散，那条 5 分钟告警就会被运维关掉，
  * 而那条告警是发现中继超发的唯一手段。
  * 决策 #17 之后：FeeSplitter（0x…0104）必须减；QBFT 下出块者可变，所以单个 signerBalance
  * 已换成 validatorBalances[] 数组，按 everValidator 累积表逐个读。
+ * genesisAlloc（2026-09-23）：创世时就不在 L2Bridge 里的余额。不加它，演练链上 diff 恒为 −1e24、
+ * 正式链上恒为 −1,000 BAC（中继浮存）—— 这正是线上 ok:false 的原因。它是公开的一项，不是被吸收掉的常量。
  */
 export function computeReconcile(r) {
   const issued = BigInt(r.bscTotalIssued ?? "0");
@@ -62,12 +78,13 @@ export function computeReconcile(r) {
   const circ = BigInt(r.layerCirculating ?? "0");
   const sink = BigInt(r.feeSinkBalance ?? "0");
   const splitter = BigInt(r.feeSplitterBalance ?? "0");
+  const genAlloc = BigInt(r.genesisAlloc ?? "0");
   const vals = (r.validatorBalances ?? []).map((v) => ({
     addr: v.addr,
     balance: BigInt(v.balance ?? "0").toString(),
   }));
   const vSum = vals.reduce((a, v) => a + BigInt(v.balance), 0n);
-  const diff = issued - exited - (circ + sink + splitter + vSum);
+  const diff = issued - exited + genAlloc - (circ + sink + splitter + vSum);
   return {
     bscTotalIssued: issued.toString(),
     bscTotalExited: exited.toString(),
@@ -75,15 +92,26 @@ export function computeReconcile(r) {
     feeSinkBalance: sink.toString(),
     feeSplitterBalance: splitter.toString(),
     validatorBalances: vals,
-    formula:
-      "diff = (bscTotalIssued - bscTotalExited) - (layerCirculating + feeSinkBalance + feeSplitterBalance + sum(validatorBalances))",
+    genesisSupply: String(r.genesisSupply ?? GENESIS_SUPPLY.toString()),
+    genesisAlloc: genAlloc.toString(),
+    genesisAllocAccounts: (r.genesisAllocAccounts ?? []).map((x) => ({ addr: x.addr, balance: String(x.balance) })),
+    genesisSource: r.genesisSource ?? null,
+    note:
+      r.genesisSource === null || r.genesisSource === undefined
+        ? GENESIS_ALLOC_NOTE + "（当前读不到创世文件：按设计值 1e27 全在 L2Bridge 计算，genesisAlloc 记 0。）"
+        : GENESIS_ALLOC_NOTE,
+    formula: RECONCILE_FORMULA,
     diff: diff.toString(),
     ok: diff === 0n,
   };
 }
 
-/** layerCirculating = 1e27 − B_bridge − B_sink − B_splitter − Σ B_validator（03 §1.3）。 */
+/**
+ * layerCirculating = genesisSupply − B_bridge − B_sink − B_splitter − Σ B_validator（03 §1.3）。
+ * genesisSupply 取创世文件里全部 alloc 的和；读不到文件才退回设计值 1e27。
+ */
 export function layerCirculating({
+  genesisSupply = GENESIS_SUPPLY,
   bridgeBalance,
   sinkBalance,
   splitterBalance = "0",
@@ -91,12 +119,155 @@ export function layerCirculating({
 }) {
   const vSum = validatorBalances.reduce((a, v) => a + BigInt(v.balance ?? v ?? "0"), 0n);
   return (
-    GENESIS_SUPPLY -
+    BigInt(genesisSupply) -
     BigInt(bridgeBalance ?? "0") -
     BigInt(sinkBalance ?? "0") -
     BigInt(splitterBalance ?? "0") -
     vSum
   ).toString();
+}
+
+// ===================== BSC 侧 v2 的几个块（/api/health）=====================
+// 形状固定：没部署 / 读不到的时候每个字段都在，值是 null —— 不是 0，也不是缺字段。
+
+const OWNER_POWER_NOTICE =
+  "项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。";
+
+/** health.bridge：桥代理的全部公开状态，外加 owner 的两项权力（决策 #29 / #29c / #33）。 */
+export function bridgeBlock(cfg, snap = {}) {
+  const b = (snap.bsc && snap.bsc.bridge) || {};
+  const deployed = snap.bsc ? snap.bsc.bridgeDeployed ?? null : null;
+  const v = (k) => (b[k] === undefined ? null : b[k]);
+  return {
+    address: (cfg.addresses && cfg.addresses.BacBridge) || null,
+    deployed,
+    proxy: "ERC1967 / UUPS",
+    owner: v("owner"),
+    pendingOwner: v("pendingOwner"),
+    implementation: v("implementation"),
+    upgradeCount: v("upgradeCount"),
+    lastUpgradeAt: v("lastUpgradeAt") || null,
+    emergencyCount: v("emergencyCount"),
+    lastEmergencyAt: v("lastEmergencyAt") || null,
+    emergencyBnbWithdrawn: v("emergencyBnbWithdrawn"),
+    emergencyBacWithdrawn: v("emergencyBacWithdrawn"),
+    shortfall: b.shortfall || { bnbShort: null, bacShort: null, source: null },
+    // 链上 OWNER_POWER_NOTICE 常量的原文（读不到是 null）；expected 是决策 #29a 逐字定下的那句，两者应当一致
+    ownerPowerNotice: v("ownerPowerNotice"),
+    ownerPowerNoticeExpected: OWNER_POWER_NOTICE,
+    bacToken: v("bacToken"),
+    identityRegistry: v("identityRegistry"),
+    // 账（决策 #24：进桥的是 BAC，桥池收的是税收 BNB，退出兑付的是回购来的 BAC）
+    bnbBalance: v("bnbBalance"),
+    bnbHeld: v("bnbHeld"),
+    lockedBac: v("lockedBac"),
+    totalBurned: v("totalBurned"),
+    buybackBac: v("buybackBac"),
+    buybackBudget: v("buybackBudget"),
+    buybackBacBought: v("buybackBacBought"),
+    buybackBnbSpent: v("buybackBnbSpent"),
+    currentRate: v("currentRate"),
+    totalCreditsIssued: v("totalCreditsIssued"),
+    totalCreditsExited: v("totalCreditsExited"),
+    // 刹车 / 停机 / 逃生（仍然保留，但 owner 的权力在它们之上 —— 决策 #29b）
+    paused: v("paused"),
+    pausedUntil: v("pausedUntil"),
+    pausedCumulativeSec: v("pausedCumulativeSec"),
+    maxPauseTotalSec: 21 * 86400,
+    halted: v("halted"),
+    haltCause: v("haltCause"),
+    pendingCause: v("pendingCause"),
+    escapeArmedAt: v("escapeArmedAt") || null,
+    armedCause: v("armedCause"),
+    lastSettledEpoch: v("lastSettledEpoch"),
+    skippedEpochs: v("skippedEpochs"),
+    lastPot: v("lastPot"),
+    releasedInWindow: v("releasedInWindow"),
+    owedTotal: v("owedTotal"),
+    reservedTotal: v("reservedTotal"),
+  };
+}
+
+/** health.router：BacTaxRouter（决策 #30 / #32：无 owner、不可升级、没有 description()）。 */
+export function routerBlock(cfg, snap = {}) {
+  const t = (snap.bsc && snap.bsc.router) || {};
+  const v = (k) => (t[k] === undefined ? null : t[k]);
+  return {
+    address: (cfg.addresses && cfg.addresses.BacTaxRouter) || null,
+    deployed: snap.bsc ? snap.bsc.routerDeployed ?? null : null,
+    owner: null,
+    ownerNote: "这个合约没有 owner、没有管理员、没有升级入口、没有紧急提取；分账比例写死在代码里。",
+    bridgeBps: v("bridgeBps"),
+    feeNote: "Flap 先抽走 10% 协议费，到这里的是税的约 0.90 倍；50/50 按这个税后基数分。",
+    balance: v("balance"),
+    accountedQuote: v("accountedQuote"),
+    unsplitRevenue: v("unsplitRevenue"),
+    stuck: t.stuck || { bridge: null, nodeFund: null },
+    lifetimeToBridge: v("lifetimeToBridge"),
+    lifetimeToNodeFund: v("lifetimeToNodeFund"),
+    totalRecognized: v("totalRecognized"),
+    solvency: t.solvency || { balance: null, accounted: null, buckets: null },
+    bridge: v("bridge"),
+    nodeFund: v("nodeFund"),
+    bacToken: v("bacToken"),
+  };
+}
+
+/** health.nodeFund：官方节点基金（决策 #10：owner 可以随时提取这一半）。 */
+export function nodeFundBlock(cfg, snap = {}) {
+  const f = (snap.bsc && snap.bsc.nodeFund) || {};
+  const v = (k) => (f[k] === undefined ? null : f[k]);
+  return {
+    address: (cfg.addresses && cfg.addresses.BacNodeFund) || null,
+    deployed: snap.bsc ? snap.bsc.nodeFundDeployed ?? null : null,
+    owner: v("owner"),
+    pendingOwner: v("pendingOwner"),
+    balance: v("balance"),
+    lifetimeReceived: v("lifetimeReceived"),
+    lifetimeWithdrawn: v("lifetimeWithdrawn"),
+  };
+}
+
+/** health.identityRegistry：入场门禁读的是哪个 ERC-8004 注册表（决策 #31 / #31a）。 */
+export function identityRegistryBlock(cfg, snap = {}) {
+  const expected = (cfg.addresses && cfg.addresses.IdentityRegistry) || null;
+  const onBridge = (snap.bsc && snap.bsc.bridge && snap.bsc.bridge.identityRegistry) || null;
+  return {
+    address: onBridge || expected,
+    source: onBridge ? "BacBridge.identityRegistry()" : expected ? "config" : null,
+    expected,
+    matchesExpected: onBridge && expected ? onBridge.toLowerCase() === expected.toLowerCase() : null,
+    standard: "ERC-8004",
+    note: IDENTITY_NOTE,
+  };
+}
+
+/** health.token：BAC 代币（决策 #35：地址已锁定；发射前这个地址上没有代码）。 */
+export function tokenBlock(cfg, snap = {}) {
+  const has = snap.bsc ? snap.bsc.tokenHasCode ?? null : null;
+  const t = (snap.bsc && snap.bsc.token) || {};
+  const v = (k) => (t[k] === undefined ? null : t[k]);
+  return {
+    address: (cfg.addresses && cfg.addresses.BacToken) || null,
+    hasCode: has,
+    launched: has,
+    portal: (cfg.addresses && cfg.addresses.FlapPortal) || null,
+    status: v("status"),
+    statusName: t.status === undefined || t.status === null ? null : FLAP_TOKEN_STATUS[t.status] || null,
+    price: v("price"),
+    buyTaxBps: v("buyTaxBps"),
+    sellTaxBps: v("sellTaxBps"),
+    pool: v("pool"),
+    progress: v("progress"),
+    taxProcessor: v("taxProcessor"),
+    marketAddress: v("marketAddress"),
+    note:
+      has === false
+        ? "代币尚未发射：这个地址上还没有代码，价格、税率、交易数据都不存在，发射后公布。"
+        : has === null
+          ? "还没读到代币地址上的状态。"
+          : "价格是 Flap Portal 的 getTokenV8Safe 读数（quote 单位，18 位小数），不是法币价格。",
+  };
 }
 
 export function health(ctx) {
@@ -118,7 +289,8 @@ export function health(ctx) {
       head: n(layer.head),
       headTs: n(layer.headTs),
       blockLagSec: n(layer.blockLagSec),
-      enode: s(layer.enode),
+      // enode 来自 BAC_LAYER_ENODE（与公开的 node.json 同一条）；genesisHash 是链自己第 0 块的 hash
+      enode: s(layer.enode) ?? cfg.layerEnode ?? null,
       genesisHash: s(layer.genesisHash),
       gasLimit: n(layer.gasLimit),
       baseFee: s(layer.baseFee),
@@ -143,32 +315,18 @@ export function health(ctx) {
     reconcile: { ...rec, howToCheck: howToCheck(cfg) },
     // 决策 #17 的对账三联：已收 / 已转入 / 差额。单位全部是层内 BAC wei，不是 BNB。
     gas: gasBlock(ctx, snap),
+    // BSC 侧处在哪个阶段：none | contracts_deployed | token_launched（读不到 BSC 是 null）
+    stage: snap.stage ?? null,
     flap: {
-      marketAddressOk: snap.flap ? !!snap.flap.marketAddressOk : null,
+      // 发射前 TaxProcessor 还不存在：这是 null（没法核对），不是 false（核对了但不对）
+      marketAddressOk: snap.flap && snap.flap.marketAddressOk !== undefined ? snap.flap.marketAddressOk : null,
       checkedAt: snap.flap ? n(snap.flap.checkedAt) : null,
     },
-    bridge: snap.bridge || {
-      paused: null,
-      pausedUntil: null,
-      pausedCumulativeSec: null,
-      maxPauseTotalSec: null,
-      halted: null,
-      haltCause: null,
-      escapeArmedAt: null,
-      armedCause: null,
-      lastSettledEpoch: null,
-      skippedEpochs: null,
-      lastPot: null,
-      releasedInWindow: null,
-      owedTotal: null,
-      reservedTotal: null,
-    },
-    vault: snap.vault || {
-      accountedQuote: null,
-      lastSettleAt: null,
-      settleOverdueEpochs: null,
-      nodeFundOwner: null,
-    },
+    token: tokenBlock(cfg, snap),
+    bridge: bridgeBlock(cfg, snap),
+    router: routerBlock(cfg, snap),
+    nodeFund: nodeFundBlock(cfg, snap),
+    identityRegistry: identityRegistryBlock(cfg, snap),
     anchorCommitWindowEndsAt: n(snap.anchorCommitWindowEndsAt),
     rpc: {
       rateLimited24h: n((snap.rpc || {}).rateLimited24h) ?? 0,
@@ -260,10 +418,12 @@ export function summary(ctx) {
   const contractsTotal = db.prepare("SELECT COUNT(*) AS c FROM contracts").get();
   const burned = db.prepare("SELECT fee_burned FROM txs").all();
   const burnedTotal = burned.reduce((acc, r) => acc + BigInt(r.fee_burned || "0"), 0n).toString();
-  const counts = Object.fromEntries(
-    db.prepare("SELECT status, COUNT(*) AS c FROM agents GROUP BY status").all().map((r) => [Number(r.status), Number(r.c)])
-  );
-  const totalAgents = Object.values(counts).reduce((a, b) => a + b, 0);
+  const totalAgents = Number(db.prepare("SELECT COUNT(*) AS c FROM agents").get().c);
+  const idRead = db
+    .prepare(
+      "SELECT COUNT(*) AS c, SUM(CASE WHEN exists_on_registry = 1 THEN 1 ELSE 0 END) AS live FROM agent_identity WHERE checked_at IS NOT NULL"
+    )
+    .get();
   const ep = db.prepare("SELECT MAX(epoch) AS e FROM epochs WHERE state = 'POSTED' OR state = 'FINAL'").get();
   const epFinal = db.prepare("SELECT MAX(epoch) AS e FROM epochs WHERE state = 'FINAL'").get();
   const lastPosted = ep && ep.e != null ? Number(ep.e) : null;
@@ -287,18 +447,18 @@ export function summary(ctx) {
       circulating: s((snapshot.reconcile || {}).layerCirculating),
       burnedTotal,
     },
+    // 决策 #31：一个 agent = 一个锁过桥的 ERC-8004 身份。没有状态机，所以只有「总数」和「身份读到了多少」。
     agents: {
       total: totalAgents,
-      challenged: counts[1] || 0,
-      active: counts[2] || 0,
-      dormant: counts[3] || 0,
-      banned: counts[4] || 0,
-      retired: counts[5] || 0,
+      identityRead: Number(idRead.c || 0),
+      identityPending: Math.max(0, totalAgents - Number(idRead.c || 0)),
+      identityMissing: Number(idRead.c || 0) - Number(idRead.live || 0),
+      note: IDENTITY_NOTE,
     },
     treasury: {
       taxFeeRateBps: n((snapshot.treasury || {}).taxFeeRateBps),
-      vaultBalance: t ? t.vault_balance : null,
-      vaultAccounted: t ? t.vault_accounted : null,
+      routerBalance: t ? t.router_balance : null,
+      routerAccounted: t ? t.router_accounted : null,
       lifetimeToBridge: t ? t.lifetime_to_bridge : null,
       lifetimeToNodeFund: t ? t.lifetime_to_node : null,
       poolBalance: t ? t.pool_balance : null,
@@ -309,11 +469,16 @@ export function summary(ctx) {
       totalLocked: t ? t.total_locked : null,
       totalIssued: t ? t.total_issued : null,
       totalExited: t ? t.total_exited : null,
+      buybackBac: t ? s(t.buyback_bac) : null,
+      owedTotal: t ? s(t.owed_total) : null,
+      emergencyBnbWithdrawn: t ? s(t.emergency_bnb_withdrawn) : null,
+      emergencyBacWithdrawn: t ? s(t.emergency_bac_withdrawn) : null,
       lastSettledEpoch: n((snapshot.bridge || {}).lastSettledEpoch),
       currentReleaseBps: n((snapshot.bridge || {}).currentReleaseBps),
       paused: (snapshot.bridge || {}).paused ?? null,
       halted: (snapshot.bridge || {}).halted ?? null,
     },
+    stage: snapshot.stage ?? null,
     validators: {
       nodes: validatorRows(db).length,
       totalStaked: validatorRows(db).reduce((a, v) => a + BigInt(v.staked || "0"), 0n).toString(),
@@ -324,6 +489,9 @@ export function summary(ctx) {
     // 决策 #17：层内 BAC 的 gas 费分账。**与上面的 treasury（BSC 上的 BNB 税收）单位不同、链不同、
     // 分法不同，网站上绝不允许相加成一个「总收入」**（03 §3.2 明令禁止）。
     gasFees: gasFeesSummary(db, t),
+    // 决策 #19（03 §7.7）：agent 造出来的东西。**只有计数，没有金额** ——
+    // 和 treasury / gasFees 一样，不得与任何 BAC / BNB 金额合并成一个「总量」。
+    built: B.builtSummary(ctx),
     epoch: {
       current: Math.floor(nowSec() / 86400),
       lastPosted,
@@ -439,31 +607,55 @@ const AGENT_SORTS = {
   newest: "agent_id DESC",
   actions: "announces DESC, agent_id DESC",
   deploys: "deploys DESC, agent_id DESC",
+  // credited 是旧名字，与 locked 同义（都按锁入的积分排）
+  locked: "CAST(credited AS INTEGER) DESC, agent_id DESC",
   credited: "CAST(credited AS INTEGER) DESC, agent_id DESC",
+  // 决策 #19（§7.7）：按「发了多少币」「做了多少笔成交」排。
+  // 这两个数不在 agents 表里，所以用子查询排 —— agents 表的列一个字都不动。
+  tokens:
+    "(SELECT COUNT(*) FROM tokens t WHERE t.creator_agent = agents.agent_id AND t.is_nft = 0 AND t.is_multi_token = 0) DESC, agent_id DESC",
+  swaps: "(SELECT COUNT(*) FROM swaps sw WHERE sw.agent_id = agents.agent_id) DESC, agent_id DESC",
 };
 
+function walletsOf(db, agentId) {
+  return db
+    .prepare("SELECT wallet FROM agent_wallets WHERE agent_id = ? ORDER BY first_deposit_id ASC")
+    .all(Number(agentId))
+    .map((w) => w.wallet);
+}
+
+/**
+ * /api/agents 的一行（决策 #31）：一个 agent = 一个锁过桥的 ERC-8004 身份 id。
+ * holder / agentWallet 是注册表的链上事实（读不到就是 null，identityCheckedAt 也是 null）；
+ * controller 是 BacBridge.agentController（第一次锁入的地址，逃生时能领钱的那个）；
+ * layerWallets 是以这个身份进过桥的层内地址（Locked.layerWallet）。
+ */
 function agentRow(db, r, snapshot) {
   const balances = (snapshot && snapshot.layerBalances) || {};
+  const idn = identityOf(db, Number(r.agent_id));
+  const wallets = walletsOf(db, r.agent_id);
+  const lockCount = Number(db.prepare("SELECT COUNT(*) AS c FROM deposits WHERE agent_id = ?").get(Number(r.agent_id)).c);
   return {
     agentId: Number(r.agent_id),
+    holder: idn.holder,
+    agentWallet: idn.agentWallet,
+    identityExists: idn.exists,
+    identityCheckedAt: idn.checkedAt,
+    registrationName: idn.registration.name,
+    selfReported: true,
     controller: r.controller,
-    wallet: r.wallet,
-    status: Number(r.status),
-    statusName: STATUS_NAME[Number(r.status)] || "NONE",
-    registeredAt: Number(r.registered_at),
-    activatedAt: n(r.activated_at),
-    solved: Number(r.solved),
-    lastHeartbeatEpoch: n(r.last_hb_epoch),
-    missed: Number(r.missed),
-    credited: r.credited,
-    exited: r.exited,
+    layerWallets: wallets.length ? wallets : [r.wallet],
+    firstLockAt: n(r.registered_at),
+    firstLockBlock: n(r.first_lock_block),
+    lockCount,
+    creditsLocked: r.credited,
+    creditsExited: r.exited,
     layerBalance: balances[r.wallet] ?? null,
     deploys: Number(r.deploys),
     announces: Number(r.announces),
     lastLayerBlock: n(r.last_layer_tx),
-    agentURI: r.agent_uri,
-    endpointHash: r.endpoint_hash,
-    modelFingerprint: r.model_fp,
+    // 决策 #19（§7.7）：三个计数。它们是「agent 造了什么 / 做了多少交易」的入口。
+    ...B.agentBuiltCounts(db, Number(r.agent_id)),
   };
 }
 
@@ -472,28 +664,24 @@ export function agents(ctx, q = {}) {
   const page = intParam(q.page, 1, { min: 1, name: "page" });
   const pageSize = intParam(q.pageSize, 50, { min: 1, max: 200, name: "pageSize" });
   const sort = q.sort || "newest";
-  if (!AGENT_SORTS[sort]) throw badRequest("sort 只能是 newest|actions|deploys|credited");
-  const where = [];
-  const args = [];
-  if (q.status) {
-    const code = STATUS_CODE[String(q.status).toLowerCase()];
-    if (code === undefined) throw badRequest("status 只能是 challenged|active|dormant|banned|retired");
-    where.push("status = ?");
-    args.push(code);
+  if (!AGENT_SORTS[sort]) throw badRequest("sort 只能是 newest|actions|deploys|locked|tokens|swaps");
+  if (q.status !== undefined && q.status !== "") {
+    // 决策 #31：状态机整个删掉了。与其静默忽略、让调用方以为过滤生效了，不如直接告诉它。
+    throw badRequest("status 参数已取消：决策 #31 之后没有 agent 状态机，agent 就是锁过桥的 ERC-8004 身份");
   }
-  const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
-  const total = Number(db.prepare(`SELECT COUNT(*) AS c FROM agents ${whereSql}`).get(...args).c);
+  const total = Number(db.prepare("SELECT COUNT(*) AS c FROM agents").get().c);
   const rows = db
-    .prepare(`SELECT * FROM agents ${whereSql} ORDER BY ${AGENT_SORTS[sort]} LIMIT ? OFFSET ?`)
-    .all(...args, pageSize, (page - 1) * pageSize);
+    .prepare(`SELECT * FROM agents ORDER BY ${AGENT_SORTS[sort]} LIMIT ? OFFSET ?`)
+    .all(pageSize, (page - 1) * pageSize);
   return {
     status: 200,
     body: {
-      schema: "bac/agents/1",
+      schema: "bac/agents/2",
       total,
       page,
       pageSize,
       items: rows.map((r) => agentRow(db, r, snapshot)),
+      note: IDENTITY_NOTE,
     },
   };
 }
@@ -510,7 +698,11 @@ export function agent(ctx, id) {
     .all(agentId)
     .map((d) => ({
       depositId: Number(d.deposit_id),
+      from: d.from_addr,
+      layerWallet: d.layer_wallet,
+      measured: d.measured,
       credits: d.credits,
+      bscBlock: Number(d.bsc_block),
       bscTx: d.bsc_tx,
       layerTx: s(d.layer_tx),
       lagSec: n(d.lag_sec),
@@ -525,8 +717,9 @@ export function agent(ctx, id) {
       anchorEpoch: n(e.anchor_epoch),
       layerTx: e.layer_tx,
       claimedTx: s(e.claimed_tx),
-      lockedWei: s(e.locked_wei),
-      collectedWei: e.collected_wei,
+      // v2（决策 #24）：claimExit 锁定的是回购来的 BAC，不是 BNB。单位 BAC 的 wei。
+      lockedBac: s(e.locked_wei),
+      collectedBac: e.collected_wei,
     }));
   const contracts = db
     .prepare("SELECT * FROM contracts WHERE agent_id = ? ORDER BY block DESC")
@@ -536,6 +729,10 @@ export function agent(ctx, id) {
       block: Number(c.block),
       codeSize: Number(c.code_size),
       callCount: Number(c.call_count),
+      // 决策 #19（§7.7）：这个合约是个什么。判不出来就是 null + 一句照实说的中文。
+      classified: B.classifiedOf(db, c.address),
+      classifiedZh: classifiedZh(B.classifiedOf(db, c.address)),
+      symbol: B.symbolOf(db, c.address),
     }));
   const actions = db
     .prepare("SELECT * FROM actions WHERE agent_id = ? ORDER BY seq DESC LIMIT 200")
@@ -550,29 +747,30 @@ export function agent(ctx, id) {
       tx: a.tx,
       ts: Number(a.ts),
     }));
-  const id_ = (snapshot && snapshot.identity && snapshot.identity[agentId]) || {};
+  const weight = BigInt(r.credited || "0") - BigInt(r.exited || "0");
   return {
     status: 200,
     body: {
-      schema: "bac/agent/1",
+      schema: "bac/agent/2",
       agent: agentRow(db, r, snapshot),
-      identity: {
-        agentURI: r.agent_uri,
-        uriReachable: id_.uriReachable ?? null,
-        uriCheckedAt: id_.uriCheckedAt ?? null,
-        registrationsBackref: id_.registrationsBackref ?? null,
-        endpointHashMatches: id_.endpointHashMatches ?? null,
-        note: "agentURI 的内容由 agent 自己提供，本站只做格式核对，不背书其中任何说法。",
-      },
+      // ERC-8004 身份（决策 #31）。registration 是持有人自己写的，selfReported 恒为 true。
+      identity: identityOf(db, agentId, (ctx.cfg && ctx.cfg.addresses && ctx.cfg.addresses.IdentityRegistry) || null),
       deposits,
       exits,
       contracts,
       actions,
       escape: {
-        halted: (snapshot && snapshot.bridge && snapshot.bridge.halted) ?? false,
-        weight: r.credited,
-        claimable: ((snapshot && snapshot.escape && snapshot.escape[agentId]) || "0"),
+        halted: (snapshot && snapshot.bridge && snapshot.bridge.halted) ?? null,
+        controller: r.controller,
+        // BacBridge.escapeClaimable 用的权重就是 credited − exitedCredits
+        weight: (weight > 0n ? weight : 0n).toString(),
+        // 逃生可领额只在停机后才有（escapeClaimable 在未停机时恒为 0,0）；索引器不代算，给 null
+        claimable: null,
       },
+      // 决策 #19（§7.7）：它造了什么、它交易了什么、它手上拿着什么。
+      // holdings 的金额是**每个代币自己的最小单位**，不是 BAC 的 wei，不得与上面的 credited / exited 相加。
+      ...B.agentBuilt(ctx, agentId),
+      detection: B.detection(ctx),
     },
   };
 }
@@ -635,7 +833,21 @@ export function block(ctx, num) {
   const b = db.prepare("SELECT * FROM blocks WHERE number = ?").get(number);
   if (!b) throw notFound(`没有区块 ${number}`);
   const txs = db.prepare("SELECT * FROM txs WHERE block = ? ORDER BY idx ASC").all(number);
-  return { status: 200, body: { schema: "bac/block/1", ...blockOut(b), txs: txs.map(txOut) } };
+  // 决策 #19（§7.7）：每条交易追加两个计数，让区块页能一眼看出「这个块里有交易发生」。
+  const countIn = (table, hash) =>
+    Number(db.prepare(`SELECT COUNT(*) AS c FROM "${table}" WHERE tx = ?`).get(hash).c);
+  return {
+    status: 200,
+    body: {
+      schema: "bac/block/1",
+      ...blockOut(b),
+      txs: txs.map((t) => ({
+        ...txOut(t),
+        swapCount: countIn("swaps", t.hash),
+        transferCount: countIn("token_transfers", t.hash),
+      })),
+    },
+  };
 }
 
 export function txByHash(ctx, hash) {
@@ -652,11 +864,41 @@ export function txByHash(ctx, hash) {
     .prepare("SELECT * FROM decoded_events WHERE tx = ? ORDER BY log_index ASC")
     .all(h)
     .map((d) => ({ event: d.event, args: JSON.parse(d.args) }));
+  // 决策 #19（§7.7）：这笔交易里所有已识别代币的转账与成交。
+  // 两者都可能为空数组；**空数组和 null 不是一回事，永远返回数组**。
+  const transfers = db
+    .prepare("SELECT * FROM token_transfers WHERE tx = ? ORDER BY log_index ASC")
+    .all(h)
+    .map(B.transferOut);
+  const swapRows = db
+    .prepare("SELECT * FROM swaps WHERE tx = ? ORDER BY log_index ASC")
+    .all(h)
+    .map((r) => B.swapOut(db, r));
   return {
     status: 200,
-    body: { schema: "bac/tx/1", tx: txOut(t), logs, decoded: dec.length ? dec : null },
+    body: {
+      schema: "bac/tx/1",
+      tx: txOut(t),
+      logs,
+      decoded: dec.length ? dec : null,
+      transfers,
+      swaps: swapRows,
+      detection: B.detection(ctx),
+    },
   };
 }
+
+/** 决策 #19（§7.6 末尾）：按分类过滤合约。判不出来的那一档写 none —— 它照样是 agent 造出来的东西。 */
+const CLASSIFIED_SQL = {
+  token:
+    "EXISTS (SELECT 1 FROM tokens t WHERE t.address = contracts.address AND t.is_nft = 0 AND t.is_multi_token = 0)",
+  pair: "EXISTS (SELECT 1 FROM pairs p WHERE p.address = contracts.address)",
+  factory: "EXISTS (SELECT 1 FROM amm_factories f WHERE f.address = contracts.address)",
+  nft:
+    "(EXISTS (SELECT 1 FROM contract_probes pr WHERE pr.address = contracts.address AND pr.state = 'nft') OR EXISTS (SELECT 1 FROM tokens t WHERE t.address = contracts.address AND t.is_nft = 1))",
+  multi_token:
+    "(EXISTS (SELECT 1 FROM contract_probes pr WHERE pr.address = contracts.address AND pr.state = 'multi_token') OR EXISTS (SELECT 1 FROM tokens t WHERE t.address = contracts.address AND t.is_multi_token = 1))",
+};
 
 export function contracts(ctx, q = {}) {
   const { db } = ctx;
@@ -667,6 +909,20 @@ export function contracts(ctx, q = {}) {
   if (q.agentId !== undefined) {
     where.push("agent_id = ?");
     args.push(intParam(q.agentId, null, { name: "agentId" }));
+  }
+  if (q.address !== undefined) {
+    where.push("address = ?");
+    args.push(B.addressParam(q.address, "address"));
+  }
+  if (q.classified !== undefined) {
+    const k = String(q.classified);
+    if (k === "none" || k === "null") {
+      where.push(`NOT (${Object.values(CLASSIFIED_SQL).join(" OR ")})`);
+    } else if (CLASSIFIED_SQL[k]) {
+      where.push(CLASSIFIED_SQL[k]);
+    } else {
+      throw badRequest("classified 只能是 token|pair|factory|multi_token|nft|none");
+    }
   }
   const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
   const total = Number(db.prepare(`SELECT COUNT(*) AS c FROM contracts ${whereSql}`).get(...args).c);
@@ -687,7 +943,11 @@ export function contracts(ctx, q = {}) {
         codeSize: Number(c.code_size),
         callCount: Number(c.call_count),
         lastCall: n(c.last_call),
+        classified: B.classifiedOf(db, c.address),
+        classifiedZh: classifiedZh(B.classifiedOf(db, c.address)),
+        symbol: B.symbolOf(db, c.address),
       })),
+      detection: B.detection(ctx),
     },
   };
 }
@@ -850,27 +1110,36 @@ export function epochProof(ctx, num, exitIdRaw) {
 
 // ===================== /api/rate =====================
 
+/**
+ * 决策 #24：退出兑付的是桥用 BNB 回购来的 BAC，所以汇率是「每 1 积分约多少 BAC」，不是 BNB。
+ * 与 BacBridge.currentRate() 同一个口径：(buybackBac − owedTotal) × 1e18 / (issued − exited)。
+ * 能读到链上 currentRate() 就用链上的；否则按同一公式用 treasury 最新一行现算。
+ */
 export function rate(ctx) {
   const { db, snapshot = {} } = ctx;
   const t = latestTreasury(db);
-  const pool = BigInt((t && t.pool_balance) || (snapshot.bridge && snapshot.bridge.poolBalance) || "0");
-  const owed = BigInt((snapshot.bridge && snapshot.bridge.owedTotal) || "0");
+  const br = snapshot.bridge || {};
+  const buyback = BigInt((t && t.buyback_bac) || br.buybackBac || "0");
+  const owed = BigInt((t && t.owed_total) || br.owedTotal || "0");
   const issued = BigInt((t && t.total_issued) || "0");
   const exited = BigInt((t && t.total_exited) || "0");
   const outstanding = issued > exited ? issued - exited : 0n;
-  const free = pool > owed ? pool - owed : 0n;
-  const weiPerCredit = outstanding > 0n ? ((free * 10n ** 18n) / outstanding).toString() : "0";
+  const free = buyback > owed ? buyback - owed : 0n;
+  const computed = outstanding > 0n ? ((free * 10n ** 18n) / outstanding).toString() : "0";
+  const onChain = br.currentRate ?? null;
   const lastPot = db.prepare("SELECT pot FROM epochs WHERE pot IS NOT NULL ORDER BY epoch DESC LIMIT 1").get();
   return {
     status: 200,
     body: {
-      schema: "bac/rate/1",
-      weiPerCredit,
-      poolBalance: pool.toString(),
+      schema: "bac/rate/2",
+      unit: "BAC",
+      bacPerCredit: onChain ?? computed,
+      source: onChain !== null ? "BacBridge.currentRate()" : "treasury 最新一行按 currentRate() 的公式现算",
+      buybackBac: buyback.toString(),
       owedTotal: owed.toString(),
       creditsOutstanding: outstanding.toString(),
       lastPot: lastPot ? lastPot.pot : "0",
-      note: "估算 · 不承诺任何金额",
+      note: "估算 · 不承诺任何金额 · 兑付的是回购来的 BAC，比直接拿 BNB 多损耗约 4%",
     },
   };
 }
@@ -984,12 +1253,20 @@ export function treasury(ctx, q = {}) {
       items: rows.map((r) => ({
         ts: Number(r.ts),
         bscBlock: Number(r.bsc_block),
-        vaultBalance: r.vault_balance,
-        vaultAccounted: r.vault_accounted,
-        vaultUnsplit: r.vault_unsplit,
+        routerBalance: r.router_balance,
+        routerAccounted: r.router_accounted,
+        routerUnsplit: r.router_unsplit,
+        routerStuckBridge: r.router_stuck_bridge,
+        routerStuckNodeFund: r.router_stuck_node,
         lifetimeToBridge: r.lifetime_to_bridge,
         lifetimeToNode: r.lifetime_to_node,
+        // 004 起：BacBridge.bnbBalance()（账上为回购留着的税收 BNB）；bridgeBnbHeld 是合约地址上实际的 BNB
         poolBalance: r.pool_balance,
+        bridgeBnbHeld: r.bridge_bnb_held,
+        buybackBac: r.buyback_bac,
+        owedTotal: r.owed_total,
+        emergencyBnbWithdrawn: r.emergency_bnb_withdrawn,
+        emergencyBacWithdrawn: r.emergency_bac_withdrawn,
         nodeFundBalance: r.node_fund_balance,
         nodeFundWithdrawn: r.node_fund_withdrawn,
         totalLocked: r.total_locked,
@@ -998,8 +1275,93 @@ export function treasury(ctx, q = {}) {
         rewardBalance: r.reward_balance,
         rewardFunded: r.reward_funded,
         rewardPaid: r.reward_paid,
-        marketAddressOk: !!r.market_address_ok,
+        // 发射前没法核对：null，不是 false
+        marketAddressOk: Number(r.market_checked) === 1 ? !!r.market_address_ok : null,
       })),
+    },
+  };
+}
+
+// ===================== /api/bridge/timeline（决策 #29c） =====================
+
+/** 进时间线的事件：桥的 owner 权力与刹车，外加节点基金的提取与 owner 变更（与 #29c 同一口径）。 */
+const TIMELINE_EVENTS = {
+  bridge: {
+    contract: "BacBridge",
+    events: [
+      "BridgeUpgraded", "Upgraded", "EmergencyWithdraw", "Initialized",
+      "OwnershipTransferStarted", "OwnershipTransferred",
+      "Paused", "Unpaused", "Halted", "EscapeArmed", "EscapeArmCancelled", "EpochOwedRevoked",
+    ],
+  },
+  nodeFund: {
+    contract: "BacNodeFund",
+    events: ["Withdrawn", "OwnershipTransferStarted", "OwnershipTransferred"],
+  },
+};
+
+/**
+ * GET /api/bridge/timeline?scope=bridge|nodeFund|all&limit=
+ * 每一次升级、每一次紧急提取、每一次 owner 变更都按时间倒序列出，并给出累计数（决策 #29c：至少让人**看见**）。
+ * 合约部署了但什么都没发生时，items 是空数组、计数是 0 —— 那是真的。
+ */
+export function bridgeTimeline(ctx, q = {}) {
+  const { db, cfg } = ctx;
+  const scope = q.scope || "all";
+  if (!["bridge", "nodeFund", "all"].includes(scope)) throw badRequest("scope 只能是 bridge|nodeFund|all");
+  const limit = intParam(q.limit, 200, { min: 1, max: 1000, name: "limit" });
+  const groups = scope === "all" ? Object.values(TIMELINE_EVENTS) : [TIMELINE_EVENTS[scope]];
+  const where = groups
+    .map((g) => `(contract = '${g.contract}' AND event IN (${g.events.map((e) => `'${e}'`).join(",")}))`)
+    .join(" OR ");
+  const rows = db
+    .prepare(`SELECT * FROM decoded_events WHERE chain = 'bsc' AND (${where}) ORDER BY block DESC, log_index DESC LIMIT ?`)
+    .all(limit);
+  const bacToken = cfg && cfg.addresses && cfg.addresses.BacToken;
+  const items = rows.map((r) => {
+    const args = JSON.parse(r.args);
+    return {
+      contract: r.contract,
+      event: r.event,
+      ts: Number(r.ts),
+      block: Number(r.block),
+      tx: r.tx,
+      logIndex: Number(r.log_index),
+      args,
+      textZh: renderEvent({ contract: r.contract, event: r.event, args, agentId: n(r.agent_id) }, { bacToken }).textZh,
+    };
+  });
+  // 累计数从全部事件算，不受 limit 影响
+  const all = (contract, event) =>
+    db
+      .prepare("SELECT args FROM decoded_events WHERE chain = 'bsc' AND contract = ? AND event = ?")
+      .all(contract, event)
+      .map((r) => JSON.parse(r.args));
+  const ew = all("BacBridge", "EmergencyWithdraw");
+  const isBnb = (a) => /^0x0{40}$/i.test(String(a.token));
+  const isBac = (a) => !!bacToken && String(a.token).toLowerCase() === String(bacToken).toLowerCase();
+  const sum = (xs) => xs.reduce((acc, a) => acc + BigInt(a.amount || "0"), 0n).toString();
+  const nfw = all("BacNodeFund", "Withdrawn");
+  return {
+    status: 200,
+    body: {
+      schema: "bac/bridge-timeline/1",
+      scope,
+      bridge: (cfg && cfg.addresses && cfg.addresses.BacBridge) || null,
+      nodeFund: (cfg && cfg.addresses && cfg.addresses.BacNodeFund) || null,
+      totals: {
+        upgrades: all("BacBridge", "BridgeUpgraded").length,
+        emergencyWithdrawals: ew.length,
+        emergencyBnb: sum(ew.filter(isBnb)),
+        emergencyBac: sum(ew.filter(isBac)),
+        emergencyOtherTokens: ew.filter((a) => !isBnb(a) && !isBac(a)).length,
+        ownerChanges: all("BacBridge", "OwnershipTransferred").length,
+        nodeFundWithdrawals: nfw.length,
+        nodeFundWithdrawn: sum(nfw),
+      },
+      items,
+      note: OWNER_POWER_NOTICE,
+      updatedAt: nowSec(),
     },
   };
 }

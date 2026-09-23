@@ -62,3 +62,8 @@ artifacts/sim/_spec_section.md
 # Screenshot tooling: hardcoded local Playwright paths, not runnable elsewhere.
 artifacts/**/shoot*.mjs
 artifacts/**/shots.mjs
+
+.claude/settings.local.json
+# Session handoff notes: carry live server ops detail (login, key filename,
+# sudo policy, co-tenant workloads). Local only.
+HANDOFF.md

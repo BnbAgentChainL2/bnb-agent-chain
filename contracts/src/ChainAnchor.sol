@@ -6,9 +6,9 @@ import {IBacBridge} from "./interfaces/IBacBridge.sol";
 import {IValidatorStaking} from "./interfaces/IValidatorStaking.sol";
 
 /// @title ChainAnchor
-/// @notice The clock of BNB Agent Chain: one anchor per UTC day, posted by the relayer,
-///         challengeable for 24h, finalized by anyone. It holds no funds at all
-///         (no `receive()`, no `payable` function, invariant C1).
+/// @notice The clock of BNB Agent Chain: one anchor every 600 seconds, posted by the
+///         relayer, held for a 120-second ANCHOR WAIT, finalized by anyone. It holds no
+///         funds at all (no `receive()`, no `payable` function, invariant C1).
 ///
 /// @dev Implements docs/01-CONTRACT-SPEC.md §6 including every entry of the revision
 ///      record that touches it:
@@ -17,11 +17,33 @@ import {IValidatorStaking} from "./interfaces/IValidatorStaking.sol";
 ///               `IBacBridge.totalCreditsIssued()` only. `initialCirculating` is a
 ///               constructor parameter so that C5 holds from block 0.
 ///        - #32: check #5 is `>=`, so an epoch with zero layer blocks (a signer outage
-///               that crosses a UTC day) can still be anchored (C8).
+///               that crosses an epoch boundary) can still be anchored (C8).
 ///        - #34: check #4 forces the relayer to wait `COMMIT_WINDOW` after the epoch
-///               ends, so witnesses always have 2 hours to commit.
-///        - #35: veto / dispute counting is a 30-epoch sliding window bitmap (uint32,
-///               O(1), no loops), not a "consecutive + reset on FINAL" streak.
+///               ends. `COMMIT_WINDOW` is now 0, so the rule degenerates to "the epoch
+///               must actually be over" - which is still the whole point of the check:
+///               the relayer can never post an anchor for an epoch that has not ended.
+///        - #35: veto / dispute counting is a sliding-window bitmap (O(1), no loops).
+///
+///      Decisions #20 / #25 (2026-09-23) rewrote the clock:
+///        - EPOCH 86400 -> 600 seconds.
+///        - CHALLENGE_WINDOW 24 hours -> ANCHOR_WAIT 120 seconds, and per decision #18
+///          the name 「挑战窗口」 is gone from the code, the events and the require
+///          strings; it is 「锚点等待」 everywhere.
+///        - COMMIT_WINDOW 2 hours -> 0. Its stated purpose was to give witnesses two
+///          hours to commit before the anchor was posted; attestation is now post-hoc
+///          and batched (one round per day, §7), so that purpose is gone, and the two
+///          hours would otherwise be 90% of the advertised 12-13 minute exit.
+///        - Everything whose intent was a DURATION is still written as a duration
+///          (`HALT_TIMEOUT = 90 days`, `STREAK_WINDOW = 30 days`). Nothing in this
+///          contract counts epochs where it meant time: at 144 epochs per day that
+///          would silently divide every window by 144.
+///        - `releaseBpsFor` no longer reads this epoch's `agreeingCount`. A daily
+///          attestation batch lands up to two days after `settleEpoch` runs (which is
+///          two minutes after the anchor finalizes), so per-epoch counting would report
+///          zero witnesses forever and pin the release tier at its lowest step. It now
+///          reads the rolling witness roster out of `ValidatorStaking`.
+///        - The returned bps is a PER-DAY rate. The bridge divides it by
+///          `EPOCHS_PER_DAY`; 200/350/500 per epoch would be 288%-720% per day.
 contract ChainAnchor {
     // `State` and `Anchor` are the shared definitions in `IChainAnchor`, so the bridge,
     // the staking contract and the tests all speak one type. The external ABI of
@@ -31,22 +53,67 @@ contract ChainAnchor {
     // constants (§6.1, verbatim)
     // ---------------------------------------------------------------------
 
-    uint64 public constant EPOCH = 86400;
-    uint64 public constant COMMIT_WINDOW = 2 hours; // relayer must wait this long after the epoch ends
-    uint64 public constant CHALLENGE_WINDOW = 24 hours;
+    /// @notice 600 seconds (decision #20). 144 of them per day.
+    uint64 public constant EPOCH = 600;
+
+    /// @notice Only ever used as a divisor / bucket size. The release tier is quoted per
+    ///         DAY and cannot be expressed as an integer bps per epoch (2%/day is
+    ///         1.3889 bps per epoch), so the division has to happen at the consumer.
+    uint64 public constant EPOCHS_PER_DAY = 144;
+
+    /// @notice EPOCH * EPOCHS_PER_DAY. Every "30 days" window below is measured in these.
+    uint64 public constant DAY = 86400;
+
+    /// @notice 0 (decision #25 / §7 batched attestation). The relayer must still wait
+    ///         for the epoch to be over; it just no longer waits on top of that.
+    uint64 public constant COMMIT_WINDOW = 0;
+
+    /// @notice 「锚点等待」 - 120 seconds between POSTED and FINAL (decision #25).
+    ///         Renamed from CHALLENGE_WINDOW per decision #18: 「挑战」 was being used
+    ///         for two unrelated things (this wait, and an agent's entry verification).
+    ///         2 minutes is not a human reaction window. It is a window for an automated
+    ///         watchdog, and that is what the docs and the site have to say.
+    uint64 public constant ANCHOR_WAIT = 120;
+
+    /// @notice A duration, not an epoch count (12,960 epochs would be the same thing
+    ///         today and the wrong thing the next time EPOCH moves).
     uint64 public constant HALT_TIMEOUT = 90 days;
-    uint8 public constant VETO_LIMIT_PER_WINDOW = 7; // inside any STREAK_WINDOW consecutive epochs
+
+    /// @notice 7 vetoes inside any 30-DAY window. Before decision #20 the window was
+    ///         "30 epochs", which was 30 days; left as 30 epochs it would now be 5
+    ///         hours, and a thief could post a bad root every 5 hours forever without
+    ///         ever tripping the limit while a watchdog vetoing 7 bad roots in one
+    ///         afternoon would force-arm the escape hatch. The count is per VETO, not
+    ///         per day: 7 vetoes on one day still reach the limit.
+    uint8 public constant VETO_LIMIT_PER_WINDOW = 7;
     uint8 public constant DISPUTE_LIMIT_PER_WINDOW = 3;
-    uint8 public constant STREAK_WINDOW = 30; // sliding window length in epochs (uint32 bitmap)
+
+    /// @notice Sliding window length for the two counters above, in DAYS.
+    uint8 public constant STREAK_WINDOW_DAYS = 30;
+
     uint8 public constant QUORUM = 3;
     uint16 public constant DISPUTE_MIN_BPS = 3333; // dispute weight must also be >= 1/3 of total stake
     uint64 public constant ADMIN_TIMELOCK = 48 hours;
+
+    /// @notice Release tiers, PER DAY, by the rolling witness roster (0 / 1-2 / >=3).
+    ///         Re-verified at the new cadence by artifacts/sim (RESULTS-buyback.md §2):
+    ///         40 sybils dumping everything at epoch 0 extract 13.60% in 3 days
+    ///         (budget 15%) and 71.53% in 30 days (budget 80%). 300/500/800 reaches
+    ///         20.84% in 3 days and was rejected; 500/750/1000 reaches 25.33%.
+    uint16 public constant RELEASE_DAILY_BPS_NONE = 200;
+    uint16 public constant RELEASE_DAILY_BPS_FEW = 350;
+    uint16 public constant RELEASE_DAILY_BPS_QUORUM = 500;
 
     // ---------------------------------------------------------------------
     // immutables / roles
     // ---------------------------------------------------------------------
 
-    address public immutable bridge; // read-only: totalCreditsIssued()
+    /// @notice The `BacBridge` PROXY (decision #29), read-only: `totalCreditsIssued()`.
+    /// @dev Never the implementation: its storage is empty, `totalCreditsIssued()` would read 0
+    ///      and check #7 would reject every anchor that credits anything. And since the owner
+    ///      can upgrade the bridge at any time, check #7 is exactly as strong as the bridge's
+    ///      owner key — an upgrade can change the number it reads.
+    address public immutable bridge;
     uint128 public immutable initialCirculating; // = OPERATOR_FLOAT (1,000e18)
     uint64 public immutable firstEpoch; // the first anchorable epoch (deployment epoch)
     address public immutable deployer; // may call setValidatorStaking once, nothing else
@@ -72,11 +139,23 @@ contract ChainAnchor {
     uint256 public cumulativeExit;
     uint256 public lastFinalCirculating;
 
-    // sliding windows: bit k of `_bits` is the epoch `_markEpoch - k` (revision 35)
-    uint32 private _vetoBits;
-    uint64 private _vetoMarkEpoch;
-    uint32 private _disputeBits;
-    uint64 private _disputeMarkEpoch;
+    /// @notice Running hash chain over every FINAL anchor, in order. This is what a
+    ///         validator's daily batch attests to: one word instead of 144 anchor
+    ///         reads, which is what makes 100% epoch coverage cost one transaction a
+    ///         day instead of 288 (§7 / decision #20a).
+    bytes32 public finalHead;
+
+    /// @notice `finalHead` as of the last FINAL anchor of that day.
+    mapping(uint64 => bytes32) private _dayHead;
+
+    // sliding windows over DAYS: lane k of `_lanes` is the day `_markDay - k`,
+    // one saturating uint8 counter per lane, 30 lanes in one word (revision 35).
+    uint256 private _vetoLanes;
+    uint64 private _vetoMarkDay;
+    uint256 private _disputeLanes;
+    uint64 private _disputeMarkDay;
+
+    uint256 private constant LANE_MASK = (uint256(1) << 240) - 1; // 30 lanes * 8 bits
 
     // ---------------------------------------------------------------------
     // events (§6.1, verbatim)
@@ -111,7 +190,7 @@ contract ChainAnchor {
     // constructor
     // ---------------------------------------------------------------------
 
-    /// @param bridge_ BacBridge (CREATE-predicted at deploy time, see §9 step 4)
+    /// @param bridge_ the BacBridge ERC1967 proxy (CREATE-predicted at deploy time, see §9 step 4)
     /// @param relayer_ the official relayer key
     /// @param admin_ cold key: relayer rotation (48h timelock)
     /// @param vetoKey_ cold key: veto, and cancelling a queued rotation
@@ -135,8 +214,10 @@ contract ChainAnchor {
         uint64 e0 = uint64(block.timestamp / EPOCH);
         firstEpoch = e0;
         lastPostedEpoch = e0 - 1; // so that check #2 accepts `firstEpoch` first
-        _vetoMarkEpoch = e0;
-        _disputeMarkEpoch = e0;
+
+        uint64 d0 = uint64(block.timestamp / DAY);
+        _vetoMarkDay = d0;
+        _disputeMarkDay = d0;
 
         // halt cause 1 is "no new FINAL anchor for HALT_TIMEOUT"; the clock has to start
         // at deployment, otherwise `haltReason()` returns 1 in the very first block.
@@ -163,10 +244,11 @@ contract ChainAnchor {
                 unicode"Previous epoch not resolved / 上一个纪元尚未定案"
             );
         }
-        // 4 - the commit window is written into the contract, the relayer cannot squeeze it
+        // 4 - the epoch has to be over. COMMIT_WINDOW is 0 now, but the term stays in
+        //     the expression so that the rule and the constant cannot drift apart.
         require(
             block.timestamp >= (uint256(epoch) + 1) * EPOCH + COMMIT_WINDOW,
-            unicode"Commit window not closed / 承诺窗口未结束"
+            unicode"Epoch not over yet / 本纪元尚未结束"
         );
         // 5 - `>=`, not `>`: an epoch with zero layer blocks must stay anchorable (C8)
         require(
@@ -225,8 +307,7 @@ contract ChainAnchor {
         IChainAnchor.Anchor storage s = _anchors[epoch];
         require(s.state == IChainAnchor.State.POSTED, unicode"Anchor not posted / 锚点不处于已提交状态");
         require(
-            block.timestamp >= uint256(s.postedAt) + CHALLENGE_WINDOW,
-            unicode"Challenge window not closed / 挑战窗口未结束"
+            block.timestamp >= uint256(s.postedAt) + ANCHOR_WAIT, unicode"Anchor wait not over / 锚点等待未结束"
         );
 
         uint256 agreeingWeight;
@@ -249,7 +330,7 @@ contract ChainAnchor {
                 && disputingWeight * 10000 >= totalStaked_ * DISPUTE_MIN_BPS && disputingCount >= QUORUM
         ) {
             s.state = IChainAnchor.State.DISPUTED;
-            (_disputeBits, _disputeMarkEpoch) = _mark(_disputeBits, _disputeMarkEpoch, epoch);
+            (_disputeLanes, _disputeMarkDay) = _mark(_disputeLanes, _disputeMarkDay, epoch / EPOCHS_PER_DAY);
             emit AnchorDisputed(epoch, agreeingWeight, disputingWeight, disputingCount, disputeCountInWindow());
             return;
         }
@@ -263,6 +344,11 @@ contract ChainAnchor {
         lastFinalCirculating = s.circulating; // informational, never validated
         lastFinalEpoch = epoch;
         lastFinalAt = uint64(block.timestamp);
+
+        // extend the hash chain the daily batch attestation checks itself against
+        bytes32 h = keccak256(abi.encode(finalHead, epoch, s.exitRoot, s.l2BlockHash, s.l2Block));
+        finalHead = h;
+        _dayHead[epoch / EPOCHS_PER_DAY] = h;
 
         emit AnchorFinalized(epoch, agreeingCount, releaseBpsFor(epoch));
     }
@@ -278,15 +364,14 @@ contract ChainAnchor {
         IChainAnchor.Anchor storage s = _anchors[epoch];
         require(s.state == IChainAnchor.State.POSTED, unicode"Anchor not posted / 锚点不处于已提交状态");
         require(
-            block.timestamp < uint256(s.postedAt) + CHALLENGE_WINDOW,
-            unicode"Challenge window closed / 挑战窗口已结束"
+            block.timestamp < uint256(s.postedAt) + ANCHOR_WAIT, unicode"Anchor wait is over / 锚点等待已结束"
         );
 
         s.state = IChainAnchor.State.VETOED;
-        (_vetoBits, _vetoMarkEpoch) = _mark(_vetoBits, _vetoMarkEpoch, epoch);
+        (_vetoLanes, _vetoMarkDay) = _mark(_vetoLanes, _vetoMarkDay, epoch / EPOCHS_PER_DAY);
 
         uint8 count = vetoCountInWindow();
-        // the 8th veto inside any 30-epoch window reverts; the 7th arms escape (haltReason 2)
+        // the 8th veto inside any 30-day window reverts; the 7th arms escape (haltReason 2)
         require(count <= VETO_LIMIT_PER_WINDOW, unicode"Veto limit reached / 否决次数已用尽");
 
         emit AnchorVetoed(epoch, msg.sender, reasonHash, count);
@@ -350,12 +435,44 @@ contract ChainAnchor {
         return _anchors[epoch].l2Block;
     }
 
-    /// @notice 200 / 350 / 500 bps by the number of independent witnesses that agreed.
+    /// @notice The day a given epoch belongs to.
+    function dayOf(uint64 epoch) public pure returns (uint64) {
+        return epoch / EPOCHS_PER_DAY;
+    }
+
+    /// @notice The hash chain head as of the last FINAL anchor of `day`, and whether it
+    ///         can still change. A day is sealed once an epoch beyond it has been
+    ///         posted: check #2 and check #3 of `postAnchor` together mean every epoch
+    ///         of that day is already FINAL, VETOED or DISPUTED, so nothing can extend
+    ///         the chain inside it any more.
+    /// @dev This is the entire on-chain cost of a validator's daily batch: one word to
+    ///      compare instead of 144 `getAnchor` reads.
+    function dayHeadOf(uint64 day) public view returns (bytes32 head, bool sealedDay) {
+        uint64 lastEpochOfDay = (day + 1) * EPOCHS_PER_DAY - 1;
+        return (_dayHead[day], lastPostedEpoch > lastEpochOfDay);
+    }
+
+    /// @notice The rolling witness roster: how many distinct validator addresses have
+    ///         filed an attestation recently. 0 when no staking contract is bound.
+    function witnessCount() public view returns (uint32) {
+        address vs = validatorStaking;
+        if (vs == address(0)) return 0;
+        return IValidatorStaking(vs).witnessRoster();
+    }
+
+    /// @notice 200 / 350 / 500 bps PER DAY by the rolling witness roster.
+    /// @dev The `epoch` argument is kept for ABI compatibility with `BacBridge` and the
+    ///      explorer, but the tier is deliberately NOT a function of that epoch any
+    ///      more (RESULTS-buyback.md §4.1 B5): a daily batch lands long after
+    ///      `settleEpoch` runs, so reading `_anchors[epoch].agreeingCount` at settle
+    ///      time reports 0 witnesses for every epoch, forever.
+    ///      The consumer must divide by `EPOCHS_PER_DAY`; this is a daily rate.
     function releaseBpsFor(uint64 epoch) public view returns (uint16) {
-        uint32 n = _anchors[epoch].agreeingCount;
-        if (n == 0) return 200;
-        if (n < QUORUM) return 350;
-        return 500;
+        epoch; // silence the unused-parameter warning without changing the ABI
+        uint32 n = witnessCount();
+        if (n == 0) return RELEASE_DAILY_BPS_NONE;
+        if (n < QUORUM) return RELEASE_DAILY_BPS_FEW;
+        return RELEASE_DAILY_BPS_QUORUM;
     }
 
     /// @notice 0 = no halt condition; 1 = no FINAL anchor for HALT_TIMEOUT;
@@ -370,46 +487,52 @@ contract ChainAnchor {
     }
 
     function vetoCountInWindow() public view returns (uint8) {
-        return _countInWindow(_vetoBits, _vetoMarkEpoch);
+        return _countInWindow(_vetoLanes, _vetoMarkDay);
     }
 
     function disputeCountInWindow() public view returns (uint8) {
-        return _countInWindow(_disputeBits, _disputeMarkEpoch);
+        return _countInWindow(_disputeLanes, _disputeMarkDay);
     }
 
     // ---------------------------------------------------------------------
-    // sliding window bitmap (revision 35) - O(1), no loops
+    // sliding window over 30 DAYS (revision 35, re-based by decision #20)
     // ---------------------------------------------------------------------
+    //
+    // One word, 30 lanes of 8 bits. Lane k counts the events of day `markDay - k`, so
+    // the window slides by shifting left. Counting events (not days) keeps the original
+    // meaning of "7 vetoes per window": a day-bitmap would collapse seven vetoes in one
+    // afternoon into a single bit.
 
-    /// @dev bit k of `bits` represents the epoch `markEpoch - k`.
-    function _mark(uint32 bits, uint64 markEpoch, uint64 epoch) private pure returns (uint32, uint64) {
-        if (epoch >= markEpoch) {
-            uint64 shift = epoch - markEpoch;
-            bits = shift >= 32 ? 0 : (bits << uint32(shift));
-            bits |= 1;
-            return (bits, epoch);
+    function _mark(uint256 lanes, uint64 markDay, uint64 day) private pure returns (uint256, uint64) {
+        if (day >= markDay) {
+            uint64 shift = day - markDay;
+            lanes = shift >= STREAK_WINDOW_DAYS ? 0 : ((lanes << (uint256(shift) * 8)) & LANE_MASK);
+            uint256 c = lanes & 0xff;
+            if (c < 255) lanes = (lanes & ~uint256(0xff)) | (c + 1);
+            return (lanes, day);
         }
-        uint64 back = markEpoch - epoch;
-        if (back < 32) bits |= uint32(1) << uint32(back);
-        return (bits, markEpoch);
+        uint64 back = markDay - day;
+        if (back < STREAK_WINDOW_DAYS) {
+            uint256 sh = uint256(back) * 8;
+            uint256 c = (lanes >> sh) & 0xff;
+            if (c < 255) lanes = (lanes & ~(uint256(0xff) << sh)) | ((c + 1) << sh);
+        }
+        return (lanes, markDay);
     }
 
-    /// @dev Counts the marks that fall inside the last STREAK_WINDOW epochs measured
-    ///      from the *current* epoch, so an old burst ages out on its own.
-    function _countInWindow(uint32 bits, uint64 markEpoch) private view returns (uint8) {
-        uint64 cur = uint64(block.timestamp / EPOCH);
-        uint64 age = cur > markEpoch ? cur - markEpoch : 0;
-        if (age >= STREAK_WINDOW) return 0;
-        uint32 mask = uint32((uint256(1) << (uint256(STREAK_WINDOW) - age)) - 1);
-        return _popcount(bits & mask);
-    }
-
-    function _popcount(uint32 x) private pure returns (uint8) {
-        unchecked {
-            x = x - ((x >> 1) & 0x55555555);
-            x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
-            x = (x + (x >> 4)) & 0x0f0f0f0f;
-            return uint8((x * 0x01010101) >> 24);
+    /// @dev Counts the events that fall inside the last STREAK_WINDOW_DAYS days measured
+    ///      from the *current* day, so an old burst ages out on its own. One SLOAD plus
+    ///      at most 30 register-only iterations; no storage reads inside the loop.
+    function _countInWindow(uint256 lanes, uint64 markDay) private view returns (uint8) {
+        uint64 cur = uint64(block.timestamp / DAY);
+        uint64 age = cur > markDay ? cur - markDay : 0;
+        if (age >= STREAK_WINDOW_DAYS) return 0;
+        uint256 keep = uint256(STREAK_WINDOW_DAYS) - uint256(age);
+        uint256 total;
+        for (uint256 i; i < keep; ++i) {
+            total += (lanes >> (i * 8)) & 0xff;
+            if (total >= 255) return 255;
         }
+        return uint8(total);
     }
 }

@@ -6,13 +6,15 @@ pragma solidity 0.8.26;
 ///         tax revenue that the project address may withdraw, held in its own non-upgradeable
 ///         contract so the disclosure is a public on-chain fact.
 ///
-///         Only `owner` can withdraw. The Flap Guardian cannot — this is not a Flap vault and is
-///         not governed by Flap rule 001. There is no proxy, no upgrade path, no token-rescue
-///         function and no second way out. This contract holds no BAC: `bacToken` exists solely
-///         so `BacVaultFactory.newVault` can cross-check the token binding at launch (G2).
+///         Only `owner` can withdraw. The Flap Guardian has no role here: since decision #30 no
+///         Flap vault sits anywhere in the BAC money path. There is no proxy, no upgrade path, no
+///         token-rescue function and no second way out. This contract holds no BAC: `bacToken`
+///         exists solely so `BacTaxRouter`'s constructor can cross-check the token binding before
+///         launch (G2) — the router is the Flap beneficiary and cannot be repointed afterwards.
 ///
 ///         N2: there is no path from this contract to `BacBridge`'s pool. The bridge-pool half of
-///         the revenue is pushed straight to `BacBridge` by the vault and never passes through here.
+///         the revenue is pushed straight to `BacBridge` by `BacTaxRouter` and never passes
+///         through here.
 contract BacNodeFund {
     address public immutable bacToken;
 
@@ -35,7 +37,8 @@ contract BacNodeFund {
         emit OwnershipTransferred(address(0), owner_);
     }
 
-    /// @notice Permissionless: the vault pushes the node-fund half here; anyone may donate.
+    /// @notice Permissionless: `BacTaxRouter.settle()` pushes the node-fund half here; anyone
+    ///         may donate.
     /// @dev Deliberately the only payable entry point — there is no `receive()`, so a plain send
     ///      reverts instead of quietly landing outside `lifetimeReceived`.
     function acceptRelease() external payable {
@@ -59,7 +62,8 @@ contract BacNodeFund {
     }
 
     /// @notice Step 1 of the two-step transfer. Every change is indexed and shown on the site,
-    ///         because the vault's `description()` renders this address at runtime.
+    ///         because the site names `owner()` — read from the chain, never typed in — as the
+    ///         address that can withdraw this half (decision #10).
     function transferOwnership(address newOwner) external {
         require(msg.sender == owner, unicode"Only owner / 仅限 owner");
         require(newOwner != address(0), unicode"Zero owner / owner 地址为零");

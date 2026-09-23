@@ -15,17 +15,35 @@
     ERR: '读取失败 · 重试中',
     LOADING: '读取中…',
     NO_INDEXER: '索引器读不到：层内数据暂时不可用，BSC 侧数字仍然是实时的',
+    RPC_DIRECT: '索引器读不到：区块与交易改由本站直接读层内节点，历史与搜索暂时不可用',
     NOT_ANCHORED: '未锚定 · 仅来自官方节点',
     ANCHORED: '已锚定',
-    NO_SOURCE: '这一项还没有数据来源'
+    NO_SOURCE: '这一项还没有数据来源',
+    /* 面板小标上的「这个数字是谁给的」 */
+    SRC_RPC: '直读层内 RPC · 索引器未上线',
+    SRC_IDX: '索引器 API',
+    NO_IDX: '索引器未上线',
+    /* 只有索引器算得出的那些聚合数：它没上线时，数字写「—」，原因写在这里 */
+    NEED_IDX: '这个数要索引器把全链扫一遍才算得出来，索引器还没上线。',
+    /* BSC 侧还不存在的合约 */
+    NEED_BSC: '这一项在 BSC 上，代币还没发射，合约还没部署。'
   };
 
-  /** 一段的状态 → 该显示什么。数值是 null 但整段 ok 时显示「—」（不知道 ≠ 0）。 */
+  /** 一段的状态 → 该显示什么。数值是 null 但整段 ok 时显示「—」（不知道 ≠ 0）。
+      'noidx' = 这一项只有索引器算得出、索引器还没上线：显示「—」，**不显示「发射后公布」**
+      （那是骗人的：链现在就在跑，只是这个聚合数没人算）。 */
   function miss(status) {
     if (status === 'pre') return TEXT.PRE;
     if (status === 'error') return TEXT.ERR;
     if (status === 'loading') return TEXT.LOADING;
     return DASH;
+  }
+
+  /** 面板小标：这一段的数字现在是谁给的。 */
+  function srcLabel(source) {
+    if (source === 'indexer') return TEXT.SRC_IDX;
+    if (source === 'rpc') return TEXT.SRC_RPC;
+    return TEXT.NO_IDX;
   }
 
   /** 有值就格式化，没值就按状态显示占位。**永远不把 null 当 0。** */
@@ -154,8 +172,12 @@
 
   UI.util = true;
   UI.TEXT = TEXT;
+  /* 演练链的节点配置（创世哈希、enode、一条能直接复制的 docker run）：与 index.html #verify 里写的是同一个地址。
+     这里只是给人看的文字，本站从不请求它。 */
+  UI.NODE_JSON = 'https://bnbagentchain-rpc.xyz/node.json';
   UI.DASH = DASH;
   UI.miss = miss;
+  UI.srcLabel = srcLabel;
   UI.val = val;
   UI.esc = esc;
   UI.comma = comma;

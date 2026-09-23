@@ -1,0 +1,16 @@
+import { chromium } from '../site-shots/node_modules/playwright/index.mjs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const out = path.dirname(fileURLToPath(import.meta.url));
+const css = await fs.readFile(path.join(out, 'official-0.css'), 'utf8');
+const bsc = await fs.readFile(path.join(out, 'bscscan.min.css'), 'utf8');
+const swatches = [['Body text','#212529'],['Secondary text','#6C757D'],['Card surface','#FFFFFF'],['Page surface','#F8F9FA'],['Content top','#FAFBFD'],['Border','#E9ECEF'],['Interactive link','#0784C3'],['BSC dark','#131313']];
+const html = `<!doctype html><html data-bs-theme="light"><head><meta charset="utf-8"><style>${css}\n${bsc}</style></head><body><header class="border-bottom py-4"><div class="container"><div class="h4 fw-bold mb-1">BscScan official CSS reference</div><div class="text-muted">Local token sample from official stylesheets, 2026-09-23 — not a homepage screenshot.</div></div></header><main class="main-content py-5"><div class="container"><div class="row g-3 mb-4">${swatches.map(([label,color])=>`<div class="col-3"><div class="card"><div style="height:72px;background:${color};border-radius:11px 11px 0 0;border-bottom:1px solid #e9ecef"></div><div class="card-body"><div class="fw-medium">${label}</div><code>${color}</code></div></div></div>`).join('')}</div><div class="row g-3"><div class="col-7"><div class="card"><div class="card-header fw-medium">Component hierarchy</div><div class="card-body"><h1>Primary heading</h1><p>Roboto / system fallback. Body and navigation: 14.4992px.</p><div class="border-top py-3 d-flex justify-content-between"><span class="text-muted">Address / transaction link</span><a href="#">0x1234…abcd</a></div><div class="border-top pt-3 d-flex justify-content-between"><span>Primary action</span><button class="btn btn-primary">Search</button></div></div></div></div><div class="col-5"><div class="card"><div class="card-header fw-medium">Surface and spacing</div><div class="card-body"><p>White cards on a very pale background.</p><p class="text-muted">1px borders · 12px card radius · 16px card padding.</p><p class="mb-0">Gold brand assets remain separate from the blue interface links.</p></div></div></div></div></div></main></body></html>`;
+await fs.writeFile(path.join(out,'bscscan-css-reference.html'),html);
+const browser = await chromium.launch({headless:true});
+const page = await browser.newPage({viewport:{width:1320,height:860},deviceScaleFactor:1});
+await page.setContent(html);
+await page.screenshot({path:path.join(out,'bscscan-official-css-reference.png'),fullPage:true});
+await browser.close();
+console.log(path.join(out,'bscscan-official-css-reference.png'));

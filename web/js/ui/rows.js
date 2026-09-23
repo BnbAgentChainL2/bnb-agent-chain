@@ -47,8 +47,11 @@
     if (t.toLabelKind === 'agent' && t.toAgentId) {
       return '<code>' + esc(sa(t.to)) + '</code><span class="sub">agent #' + t.toAgentId + '</span>';
     }
-    if (t.toLabelKind === 'system') {
-      return '<code>' + esc(sa(t.to)) + '</code><span class="sub">层内系统合约</span>';
+    /* 系统地址：显示它**准确的名字**（bind.js 从创世常量表里带过来的），
+       不要一律写成「层内系统合约」—— 0x…dEaD 根本不是合约，它是黑洞地址。 */
+    if (t.toLabelKind === 'system' || t.toLabelKind === 'sink') {
+      return '<code>' + esc(sa(t.to)) + '</code><span class="sub">' +
+        esc(t.toLabel || (t.toLabelKind === 'sink' ? '黑洞地址 · 打进去的 BAC 永久销毁' : '层内系统合约')) + '</span>';
     }
     return '<code>' + esc(sa(t.to)) + '</code>';
   }
@@ -206,10 +209,13 @@
       '</tr>';
   }
 
-  /* ── 金库事件行 ───────────────────────────────────────── */
+  /* ── 税收路由 / 桥池 / 节点基金事件行 ─────────────────────
+     钱离开的事件（节点基金提取、桥的紧急提取）和规则被改的事件（桥合约升级）用同一个醒目色，
+     决策 #29c 要求它们在时间线上一眼可见。 */
   function treasuryRow(ev) {
+    var out = /Withdraw|Upgraded/.test(String(ev.name || ''));
     return '<tr><td class="l n">' + esc(UI.ymd(ev.ts)) + ' ' + esc(UI.hms(ev.ts)) + '</td>' +
-      '<td class="l"><span class="tag ' + (ev.name === 'Withdrawn' ? 'bri' : 'dep') + '">' + esc(ev.name) + '</span></td>' +
+      '<td class="l"><span class="tag ' + (out ? 'bri' : 'dep') + '">' + esc(ev.name) + '</span></td>' +
       '<td class="r n">' + val('ok', ev.amount, UI.bnb) + '<u>BNB</u></td>' +
       '<td class="l">' + esc(ev.note || '') + '</td>' +
       '<td class="r n">' + (ev.tx ? '<code>' + esc(sa(ev.tx)) + '</code>' : '—') + '</td></tr>';

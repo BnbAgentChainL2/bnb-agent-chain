@@ -1,0 +1,383 @@
+{
+  "results": [
+    {
+      "width": 390,
+      "route": "overview",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "blocks",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "txs",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "agents",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "epochs",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "treasury",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "validators",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "tokens",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "pairs",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "swaps",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "search/0x",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "block/1234567",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "tx/0xdb822a5a5a3e338dddf81d516950f45b1c373bc934ca311df3efd211ae0608d3",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "agent/1",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "epoch/20719",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "contract/0x8925455e9a583669ac16fb0c7461573372be4b38",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "token/0x1234567890123456789012345678901234567890",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 390,
+      "route": "pair/0x1234567890123456789012345678901234567890",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "overview",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "blocks",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "txs",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "agents",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "epochs",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "treasury",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "validators",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "tokens",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "pairs",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "swaps",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "search/0x",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "block/1234567",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "tx/0xdb822a5a5a3e338dddf81d516950f45b1c373bc934ca311df3efd211ae0608d3",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "agent/1",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "epoch/20719",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "contract/0x8925455e9a583669ac16fb0c7461573372be4b38",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "token/0x1234567890123456789012345678901234567890",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1024,
+      "route": "pair/0x1234567890123456789012345678901234567890",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "overview",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "blocks",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "txs",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "agents",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "epochs",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "treasury",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "validators",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "tokens",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "pairs",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "swaps",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "search/0x",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "block/1234567",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "tx/0xdb822a5a5a3e338dddf81d516950f45b1c373bc934ca311df3efd211ae0608d3",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "agent/1",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "epoch/20719",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "contract/0x8925455e9a583669ac16fb0c7461573372be4b38",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "token/0x1234567890123456789012345678901234567890",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    },
+    {
+      "width": 1440,
+      "route": "pair/0x1234567890123456789012345678901234567890",
+      "overflow": 0,
+      "clipped": [],
+      "untranslated": []
+    }
+  ],
+  "errors": []
+}

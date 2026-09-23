@@ -163,6 +163,10 @@ abstract contract FlapBSCFixture is Test, VanityHelper {
     /// @dev This is distinct from Portal. VaultPortal wraps Portal to attach a vault to each token.
     address payable internal constant VAULT_PORTAL = payable(0x90497450f2a706f1951b5bdda52B4E5d16f34C06);
 
+    /// @notice PancakeSwap V2 router on BSC mainnet. `BacBridge` uses it for the buyback once
+    ///         BAC has graduated off the curve (a TAX token always migrates with a V2 migrator).
+    address internal constant PANCAKE_V2_ROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+
     /// @notice Flap General Oracle for off-chain signature verification (e.g., social proofs).
     address internal constant FLAP_ORACLE = 0x6C88a672086f4A5dD8D73A93193c78a68cE4bDbe;
 

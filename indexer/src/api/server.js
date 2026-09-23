@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { readFileSync, statSync } from "node:fs";
 import { keccak256, toUtf8Bytes } from "ethers";
 import * as H from "./handlers.js";
+import * as B from "./built.js";
 import { RPC_WHITELIST, rpcGuard } from "./rpcguard.js";
 
 /** 03 §3 开头写死的公共响应头。 */
@@ -44,8 +45,10 @@ export class RateLimiter {
   }
 }
 
-function errBody(code, message) {
-  return { error: { code, message } };
+function errBody(code, message, extra = null) {
+  // 统一错误形状。extra 只在「地址合法但没被识别成代币」这类需要把人接到别处去的 404 上出现
+  // （03 §7.6：不要只回一个空的 404）。
+  return extra ? { error: { code, message }, ...extra } : { error: { code, message } };
 }
 
 /**
@@ -65,10 +68,15 @@ export function route(ctx, method, pathname, query) {
   if (pathname === "/api/rate") return H.rate(ctx);
   if (pathname === "/api/validators") return H.validators(ctx);
   if (pathname === "/api/treasury") return H.treasury(ctx, query);
+  if (pathname === "/api/bridge/timeline") return H.bridgeTimeline(ctx, query);
   if (pathname === "/api/genesis") return genesis(ctx);
   // 决策 #17：gas 费分账（03 §3.7）
   if (pathname === "/api/fees") return H.fees(ctx);
   if (pathname === "/api/proposers") return H.proposers(ctx, query);
+  // 决策 #19：agent 造出来的东西（03 §7.6）。全部只读，全部带 detection 块。
+  if (pathname === "/api/tokens") return B.tokens(ctx, query);
+  if (pathname === "/api/pairs") return B.pairs(ctx, query);
+  if (pathname === "/api/swaps") return B.swaps(ctx, query);
 
   let m;
   if ((m = pathname.match(/^\/api\/agent\/([^/]+)$/))) return H.agent(ctx, m[1]);
@@ -78,6 +86,11 @@ export function route(ctx, method, pathname, query) {
   if ((m = pathname.match(/^\/api\/epoch\/([^/]+)\/proof\/([^/]+)$/)))
     return H.epochProof(ctx, m[1], m[2]);
   if ((m = pathname.match(/^\/api\/fees\/([^/]+)$/))) return H.feeEpoch(ctx, m[1]);
+  if ((m = pathname.match(/^\/api\/token\/([^/]+)\/holders$/))) return B.tokenHolders(ctx, m[1], query);
+  if ((m = pathname.match(/^\/api\/token\/([^/]+)\/transfers$/))) return B.tokenTransfers(ctx, m[1], query);
+  if ((m = pathname.match(/^\/api\/token\/([^/]+)$/))) return B.token(ctx, m[1]);
+  if ((m = pathname.match(/^\/api\/pair\/([^/]+)$/))) return B.pair(ctx, m[1]);
+  if ((m = pathname.match(/^\/api\/contract\/([^/]+)$/))) return B.contract(ctx, m[1]);
   if ((m = pathname.match(/^\/api\/epoch\/([^/]+)$/))) return H.epoch(ctx, m[1]);
 
   throw new H.ApiError("not_found", `没有这个端点：${pathname}`, 404);
@@ -148,7 +161,7 @@ export function createApiServer(ctx, { limiter = new RateLimiter(ctx.cfg) } = {}
       else send(out.status, out.body, out.headers || {});
     } catch (e) {
       if (e && e.code && e.status) {
-        send(e.status, errBody(e.code, e.message));
+        send(e.status, errBody(e.code, e.message, e.extra || null));
         return;
       }
       send(500, errBody("internal", "服务器内部错误"));

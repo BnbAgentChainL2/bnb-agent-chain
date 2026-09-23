@@ -6,10 +6,22 @@ evm_version = "cancun"
 solc_version = "0.8.26"
 optimizer = true
 optimizer_runs = 200
-# via-IR is required: AgentRegistry compiles to 22,358 bytes of runtime code, leaving 2,218
-# bytes under the EIP-170 limit of 24,576. Without via-IR it does not fit.
+# via-IR is required by BacBridge, the largest contract here. Re-measured 2026-09-23 at
+# optimizer_runs = 200: the v2 (UUPS) BacBridge under construction is 29,045 bytes of runtime
+# code with via-IR and 33,333 without, i.e. legacy codegen costs it ~4.3 KB more against the
+# EIP-170 limit of 24,576; the pre-v2 BacBridge did not compile at all without via-IR (stack
+# too deep). Every other contract fits either way (ValidatorStaking 16,925 / 19,383 bytes).
+# The contract this comment used to cite was deleted by decision #31.
 via_ir = true
 fs_permissions = [{ access = "read", path = "./" }]
+# Raises forge's per-call test gas cap (default 2**30); nothing here is a real transaction limit.
+# It was set for a proof-of-work loop in the fork suite that decision #31 deleted. What is left,
+# re-measured 2026-09-23: the fork setUp mines the ...7777 vanity salt in-EVM at ~634 gas per
+# try, 65,536 tries expected (~42M gas), so hitting 2**30 would take ~1.69M tries (p ~ 6e-12);
+# the heaviest unit test body is ~22M gas (ValidatorStaking). BacBridge.t.sol's 30-day loops
+# (4,320 settleEpoch calls each) could not be re-measured while BacBridge is being rewritten.
+# Kept until they have been; if they stay under 2**30 this line can go.
+gas_limit = "max"
 
 [profile.default.fuzz]
 runs = 256

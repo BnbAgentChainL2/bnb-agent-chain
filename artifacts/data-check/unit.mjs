@@ -1,4 +1,4 @@
-/* 网站数据层的离线单测：node artifacts/data-check/unit.mjs [--only=shape|fmt|rpc|multicall|bsc|api|degraded]
+/* 网站数据层的离线单测：node artifacts/data-check/unit.mjs [--only=shape|fmt|rpc|multicall|bsc|api|layer|degraded]
    规矩：
    - 不连服务器、不连主网、不需要任何私钥；ethers 与 fetch 全部是假的；
    - 把 web/site.config.js + web/js/data/*.js 放进 node:vm 的假 window 里跑；
@@ -120,7 +120,7 @@ function makeEthers(chain, behaviour = {}) {
    假环境
    ══════════════════════════════════════════════════════ */
 
-const FILES = ['site.config.js', 'js/data/bac-core.js', 'js/data/bac-chain.js', 'js/data/bac-api.js', 'js/data/bac-view.js'];
+const FILES = ['site.config.js', 'js/data/bac-core.js', 'js/data/bac-chain.js', 'js/data/bac-layer.js', 'js/data/bac-api.js', 'js/data/bac-view.js'];
 const SRC = Object.fromEntries(FILES.map(f => [f, readFileSync(join(WEB, f.split('/').join('/')), 'utf8')]));
 
 function domTrap(name, hits) {
@@ -295,12 +295,102 @@ const API_BODY = {
   '/api/rate': { schema: 'bac/rate/1', weiPerCredit: '1800000000000', poolBalance: '9000000000000000000', owedTotal: '4000000000000000000', creditsOutstanding: '4880000000000000000000000', lastPot: '1000000000000000000', note: '估算 · 不承诺任何金额' }
 };
 
-function makeFetch({ fail = false, only404 = [], layerRpcOk = true, log = [] } = {}) {
+/* ── 假的层内 Besu 节点（真节点实测字段：miner 有值、baseFeePerGas 0x0、
+      txpool_status 是 -32601 Method not found、批量数组体可用）────────── */
+const NODE_MINER = '0x729d90c32ff111d9686fe04b201ecac7a7f7cf05';
+
+function makeNode(opts = {}) {
+  const head = opts.head ?? 0x12d687;          // 1234567
+  const ts0 = opts.ts0 ?? 1789999998;
+  const interval = opts.interval ?? 3;
+  const txEvery = opts.txEvery ?? 7;           // 每 7 块有一笔交易（真链约 20 秒一笔）
+  const log = { calls: [], methods: {}, requests: 0, byUrl: {} };
+  const h64 = (n, tail = '0') => '0x' + n.toString(16).padStart(63, '0') + tail;
+
+  function txAt(n, blockHash) {
+    return {
+      hash: h64(n, 'f'), blockHash, blockNumber: '0x' + n.toString(16), chainId: '0xddc9',
+      from: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8',
+      to: '0x000000000000000000000000000000000000dead',
+      gas: '0x5208', gasPrice: '0x3b9aca00', input: '0x', nonce: '0x890',
+      transactionIndex: '0x0', type: '0x0', value: '0xe8d4a51000'
+    };
+  }
+  function blockAt(n) {
+    if (n < 0 || n > head) return null;
+    const hash = h64(n, '0');
+    const hasTx = n % txEvery === 0;
+    return {
+      number: '0x' + n.toString(16), hash, parentHash: h64(Math.max(0, n - 1), '0'),
+      miner: NODE_MINER, timestamp: '0x' + (ts0 - (head - n) * interval).toString(16),
+      gasLimit: '0x1312d00', gasUsed: hasTx ? '0x5208' : '0x0', baseFeePerGas: '0x0',
+      size: '0x2f3', stateRoot: h64(1, '0'), extraData: '0xf87ea0',
+      transactions: hasTx ? [txAt(n, hash)] : []
+    };
+  }
+  function receiptFor(t, b) {
+    return {
+      transactionHash: t.hash, transactionIndex: '0x0', blockHash: b.hash, blockNumber: b.number,
+      from: t.from, to: t.to, contractAddress: null, gasUsed: '0x5208',
+      cumulativeGasUsed: '0x5208', effectiveGasPrice: '0x3b9aca00', status: '0x1', logs: [], type: '0x0'
+    };
+  }
+  function nOf(p) { return p === 'latest' ? head : Number(BigInt(p)); }
+  function nFromTxHash(hx) { return Number(BigInt('0x' + String(hx).slice(2, -1))); }
+  function nFromBlockHash(hx) { return Number(BigInt(hx)); }
+
+  function one(q) {
+    log.calls.push(q.method);
+    log.methods[q.method] = (log.methods[q.method] || 0) + 1;
+    const R = (result) => ({ jsonrpc: '2.0', id: q.id, result });
+    const E = (code, message) => ({ jsonrpc: '2.0', id: q.id, error: { code, message } });
+    const strip = (b) => ({ ...b, transactions: b.transactions.map(t => t.hash) });
+    switch (q.method) {
+      case 'eth_chainId': return R('0xddc9');
+      case 'eth_blockNumber': return R('0x' + head.toString(16));
+      case 'eth_gasPrice': return R('0x3b9aca00');
+      case 'net_peerCount': return R('0x0');
+      case 'txpool_status': return opts.txpool ? R({ pending: '0x1', queued: '0x0' }) : E(-32601, 'Method not found');
+      case 'eth_getBlockByNumber': {
+        const b = blockAt(nOf(q.params[0]));
+        return R(b ? (q.params[1] ? b : strip(b)) : null);
+      }
+      case 'eth_getBlockByHash': {
+        const b = blockAt(nFromBlockHash(q.params[0]));
+        return R(b ? (q.params[1] ? b : strip(b)) : null);
+      }
+      case 'eth_getBlockReceipts': {
+        if (opts.noReceipts) return E(-32601, 'Method not found');
+        const b = blockAt(nOf(q.params[0]));
+        return R(b ? b.transactions.map(t => receiptFor(t, b)) : null);
+      }
+      case 'eth_getTransactionByHash': {
+        const b = blockAt(nFromTxHash(q.params[0]));
+        return R(b && b.transactions.length ? b.transactions[0] : null);
+      }
+      case 'eth_getTransactionReceipt': {
+        const b = blockAt(nFromTxHash(q.params[0]));
+        return R(b && b.transactions.length ? receiptFor(b.transactions[0], b) : null);
+      }
+      default: return E(-32601, 'Method not found');
+    }
+  }
+  return {
+    head, log,
+    handle(body) { return Array.isArray(body) ? body.map(one) : one(body); }
+  };
+}
+
+function makeFetch({ fail = false, only404 = [], layerRpcOk = true, node = null, rpcFail = {}, log = [] } = {}) {
+  const N = node || makeNode();
   return async function (url, opts = {}) {
     log.push(url);
-    if (String(url).endsWith('/rpc')) {
-      if (!layerRpcOk) throw new Error('Failed to fetch');
-      return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x12d687' }) };
+    const u = String(url);
+    if (u.endsWith('/rpc')) {
+      N.log.requests++;
+      N.log.byUrl[u] = (N.log.byUrl[u] || 0) + 1;
+      if (!layerRpcOk || rpcFail[u]) throw new Error('Failed to fetch');
+      return { ok: true, status: 200, json: async () => N.handle(JSON.parse(opts.body || '{}')) };
     }
     if (fail) throw new Error('Failed to fetch');
     const path = String(url).replace('https://indexer.test', '').split('?')[0];
@@ -342,11 +432,18 @@ await group('shape', async () => {
     ok('BAC.api.' + k, B.api[k] !== undefined);
   for (const k of ['chainStats', 'feed', 'blocks', 'txs', 'agents', 'treasury', 'bridge', 'validators', 'epoch', 'overview'])
     ok('BAC.view.' + k, typeof B.view[k] === 'function');
+  for (const k of ['head', 'latestBlocks', 'latestTxs', 'block', 'tx', 'gasPrice', 'peers', 'txpool',
+    'send', 'call', 'endpoint', 'run', 'start', 'stop', 'period', 'stats', 'endpoints'])
+    ok('BAC.layer.' + k, B.layer[k] !== undefined);
+  eq('BAC.LAYER_LIVE 初始为 false', B.LAYER_LIVE, false);
+  eq('BAC.HAS_LAYER_RPC', B.HAS_LAYER_RPC, true);
+  ok('state.layer.sections 三段', B.state.layer.sections && B.state.layer.sections.head === 'loading');
   for (const k of ['live', 'prelaunch', 'ready', 'loading', 'hidden', 'error', 'warnings', 'bsc', 'indexer', 'layer',
     'feed', 'blocks', 'txs', 'agentList', 'validators', 'epochs', 'rate'])
     ok('BAC.state.' + k, B.state[k] !== undefined);
 
   eq('必须逐字的发射前文案', B.TEXT.PRE, '发射后公布');
+  eq('索引器挂但链还活着的文案', B.TEXT.RPC_DIRECT, '索引器读不到：区块与交易改由本站直接读层内节点，历史与搜索暂时不可用');
   eq('必须逐字的读取失败文案', B.TEXT.ERR, '读取失败 · 重试中');
   eq('未锚定文案', B.TEXT.NOT_ANCHORED, '未锚定 · 仅来自官方节点');
   eq('层内 FeeSplitter 地址', B.LAYER.FEE_SPLITTER, '0x0000000000000000000000000000000000000104');
@@ -544,9 +641,10 @@ await group('bsc', async () => {
   eq('纪元 · 上报到', ep.lastPosted, 20717);
   eq('纪元 · 定案到', ep.lastFinal, 20716);
   eq('纪元 · 锚点状态', ep.state, 'POSTED');
-  eq('纪元 · 中文状态', ep.stateZh, '已上报 · 挑战窗口内');
+  eq('纪元 · 中文状态', ep.stateZh, '已上报 · 锚点等待中');
   eq('纪元 · 承诺窗口 2 小时', ep.commitWindowSec, 7200);
-  eq('纪元 · 挑战窗口 24 小时', ep.challengeWindowSec, 86400);
+  eq('纪元 · 锚点等待 2 分钟', ep.anchorWaitSec, 120);
+  eq('纪元 · 锚点等待（兼容字段名）', ep.challengeWindowSec, 120);
   eq('锚点 · exitCount', ep.anchor.exitCount, 7);
   eq('锚点 · 该纪元 gas 费', ep.anchor.gasFeesInEpoch, 54n * E18);
   eq('锚点 · 该纪元已归集', ep.anchor.remittedInEpoch, 50n * E18);
@@ -635,7 +733,7 @@ await group('api', async () => {
   const eps = B.view.epoch();
   eq('纪元历史条数', eps.history.length, 1);
   eq('纪元历史 · gasFees', eps.history[0].gasFees, 54n * E18);
-  eq('纪元历史 · 中文状态', eps.history[0].stateZh, '已上报 · 挑战窗口内');
+  eq('纪元历史 · 中文状态', eps.history[0].stateZh, '已上报 · 锚点等待中');
 
   eq('兑付率', B.state.rate.weiPerCredit, 1800000000000n);
   ok('兑付率带免责', /不承诺任何金额/.test(B.state.rate.note));
@@ -646,6 +744,252 @@ await group('api', async () => {
   eq('404 的段报错', env2.BAC.state.validators.error, '读取失败 · 重试中');
   eq('其它段照常', env2.BAC.state.feed.ready, true);
   eq('整体没有降级', env2.BAC.state.indexer.degraded, false);
+});
+
+/* ======================================================
+   层内直读（bac-layer.js）：形状 / 换端点 / 请求数上限 / 后台退避 / 全挂时不编数
+   ====================================================== */
+
+/* 发射前的真实形态：BSC 一个合约都没有（vault = 0x0），但层内那条链在出块。 */
+const LAYER_ONLY_CONFIG = {
+  indexerBase: '', fallbackApi: '',                  // 索引器还没部署（主用和兜底都没有）
+  layerRpc: 'https://layer.test/rpc',
+  fallbackRpc: 'https://fallback.test/rpc',
+  rpcs: ['https://rpc-a.test'], logRpcs: ['https://rpc-a.test'],
+  pollMs: 999999, prelaunchPollMs: 999999, apiPollMs: 999999
+};
+
+await group('layer', async () => {
+  /* -- 1. 形状：块 / 交易 / 链头 -------------------------- */
+  const node = makeNode();
+  const env = makeEnv({
+    ethers: makeEthers(makeChain(FIXTURES)),
+    fetchImpl: makeFetch({ node }), config: LAYER_ONLY_CONFIG
+  });
+  const B = env.BAC;
+
+  eq('发射前 BAC.LIVE 仍然是 false', B.LIVE, false);
+  eq('没配索引器', B.HAS_INDEXER, false);
+  eq('配了层内 RPC', B.HAS_LAYER_RPC, true);
+
+  const h = await B.layer.head();
+  eq('head · chainId', h.chainId, 56777);
+  eq('head · 块高', h.number, 0x12d687);
+  eq('head · 时间戳', h.timestamp, 1789999998);
+  eq('head · gasLimit', h.gasLimit, 20000000);
+  eq('head · baseFee 是 0（zeroBaseFee）', h.baseFeePerGas, 0n);
+  eq('head · 出块间隔是实测的', h.blockIntervalSec, 3);
+  eq('head · gasPrice 1 gwei', h.gasPrice, 1000000000n);
+  eq('head · peers', h.peers, 0);
+  eq('head · txpool 关着就是 null（不报错）', h.txpool, null);
+  eq('head · 提案人就是 miner', h.miner, NODE_MINER);
+  eq('head 只打 2 个请求', node.log.requests, 2);
+
+  node.log.requests = 0;
+  const bl = await B.layer.latestBlocks(10);
+  eq('latestBlocks 条数', bl.length, 10);
+  eq('latestBlocks 倒序', bl[0].number > bl[1].number, true);
+  eq('区块 · 号', bl[0].number, 0x12d687);
+  eq('区块 · 时间戳', bl[0].ts, 1789999998);
+  eq('区块 · 出块人', bl[0].proposer, NODE_MINER);
+  eq('区块 · gasLimit', bl[0].gasLimit, 20000000);
+  eq('区块 · baseFee 是 BigInt 0', bl[0].baseFee, 0n);
+  eq('区块 · 纪元是按时间戳算的', bl[0].epoch, Math.floor(1789999998 / 86400));
+  const emptyBlk = bl.find(x => x.txCount === 0);
+  const withTx = bl.find(x => x.txCount > 0);
+  ok('窗口里有空块', !!emptyBlk);
+  ok('窗口里有带交易的块', !!withTx);
+  eq('空块的手续费合计就是 0（这是事实，不是猜的）', emptyBlk.feeTotal, 0n);
+  eq('有交易的块 · 手续费合计 = gasUsed x effGasPrice', withTx.feeTotal, 21000n * 1000000000n);
+  eq('latestBlocks 打 3 个请求（块高 1 + 块 1 + 收据 1）', node.log.requests, 3);
+
+  node.log.requests = 0;
+  const txs = await B.layer.latestTxs(3);
+  eq('latestTxs 条数', txs.length, 3);
+  eq('交易 · 哈希长度', txs[0].hash.length, 66);
+  eq('交易 · 所属块', txs[0].blockNumber, txs[0].block);
+  eq('交易 · from', txs[0].from, '0x70997970c51812dc3a010c7d01b50e0d17dc79c8');
+  eq('交易 · to', txs[0].to, '0x000000000000000000000000000000000000dead');
+  eq('交易 · value 是 BigInt', txs[0].value, 1000000000000n);
+  eq('交易 · gas 上限', txs[0].gas, 21000);
+  eq('交易 · gasPrice', txs[0].gasPrice, 1000000000n);
+  eq('交易 · 不是部署合约', txs[0].isCreate, false);
+  eq('交易 · 部署出的合约地址为空', txs[0].created, null);
+  eq('交易 · 收据给了状态', txs[0].status, 1);
+  eq('交易 · 手续费', txs[0].fee, 21000n * 1000000000n);
+  eq('交易 · zeroBaseFee 销毁 0', txs[0].feeBurned, 0n);
+  eq('交易 · agent 归属 RPC 读不出来 → null', txs[0].agentId, null);
+  eq('交易 · 带上块时间', typeof txs[0].ts, 'number');
+  eq('latestTxs 也是 3 个请求（交易从块里捡，不逐笔请求）', node.log.requests, 3);
+
+  node.log.requests = 0;
+  const one = await B.layer.block(0x12d682);   // 1234562，能被 7 整除 → 有交易
+  eq('block() · 块号', one.number, 0x12d682);
+  eq('block() · 带完整交易', one.txs.length, 1);
+  eq('block() · 交易有状态', one.txs[0].status, 1);
+  eq('block() · parentHash', typeof one.parentHash, 'string');
+  eq('block() 只打 2 个请求', node.log.requests, 2);
+
+  node.log.requests = 0;
+  const t1 = await B.layer.tx(txs[0].hash);
+  eq('tx() · 哈希对上', t1.hash, txs[0].hash);
+  eq('tx() · 状态', t1.status, 1);
+  eq('tx() · gasUsed 来自收据', t1.gasUsed, 21000);
+  eq('tx() · 时间戳来自块头', typeof t1.ts, 'number');
+  eq('tx() 只打 2 个请求', node.log.requests, 2);
+
+  eq('批量上限 25', B.layer.MAX_BATCH, 25);
+  let tooBig = null;
+  try { await B.layer.send(new Array(26).fill({ method: 'eth_chainId' })); } catch (e) { tooBig = e; }
+  ok('超过批量上限直接拒绝', !!tooBig);
+
+  /* -- 2. 一轮完整轮询：请求数固定 3，状态与来源都标清楚 -- */
+  const node2 = makeNode();
+  const env2 = makeEnv({
+    ethers: makeEthers(makeChain(FIXTURES)),
+    fetchImpl: makeFetch({ node: node2 }), config: LAYER_ONLY_CONFIG
+  });
+  const B2 = env2.BAC;
+  await B2.layer.run({ once: true });
+
+  eq('一轮完整轮询 = 3 个 HTTP 请求', node2.log.requests, 3);
+  eq('一轮完整轮询 = 3 个批量体', B2.layer.stats.batches, 3);
+  eq('LAYER_LIVE = true', B2.LAYER_LIVE, true);
+  eq('state.layerLive', B2.state.layerLive, true);
+  eq('层内段状态 ok', B2.state.layer.sections.head, 'ok');
+  eq('区块段状态 ok', B2.state.layer.sections.blocks, 'ok');
+  eq('交易段状态 ok', B2.state.layer.sections.txs, 'ok');
+  eq('区块来源标成 rpc', B2.state.blocks.source, 'rpc');
+  eq('交易来源标成 rpc', B2.state.txs.source, 'rpc');
+  eq('块高落进 state', B2.state.layer.head, 0x12d687);
+  eq('取了 blocksLimit 个块', B2.state.blocks.items.length, 20);
+  eq('实测出块间隔', B2.state.layer.blockIntervalSec, 3);
+  eq('窗口平均出块间隔', B2.state.layer.blockTimeSec, 3);
+  eq('gasLimit 落进 state', B2.state.layer.gasLimit, 20000000);
+  eq('baseFee 落进 state', B2.state.layer.baseFee, 0n);
+
+  // 本轮最关键的一条：BSC 没发射，层内的块照样显示，不是「发射后公布」
+  eq('BAC.LIVE 仍然是 false', B2.LIVE, false);
+  eq('区块视图状态 = ok（不被 BAC.LIVE 挡住）', B2.view.blocks().status, 'ok');
+  eq('交易视图状态 = ok', B2.view.txs().status, 'ok');
+  eq('链指标状态 = ok', B2.view.chainStats().status, 'ok');
+  eq('链指标标了来源', B2.view.chainStats().source, 'rpc');
+  eq('链指标标了端点', B2.view.chainStats().endpoint, 'https://layer.test/rpc');
+  eq('BSC 那一半照旧是「发射后公布」', B2.view.treasury().status, 'pre');
+  eq('桥也还是「发射后公布」', B2.view.bridge().status, 'pre');
+  eq('验证者也还是「发射后公布」', B2.view.validators().status, 'pre');
+  eq('全程没有碰 DOM', env2.domHits.length, 0);
+
+  // 索引器在供数时只做轻量探活（2 个请求），不抢它的活
+  node2.log.requests = 0;
+  B2.state.indexer.ready = true; B2.state.indexer.degraded = false; B2.state.indexer.error = null;
+  B2.HAS_INDEXER = true;
+  eq('索引器在供数 → 走探活', B2.layer.indexerServing(), true);
+  await B2.layer.run({ once: true });
+  eq('探活只打 2 个请求', node2.log.requests, 2);
+  eq('探活不覆盖索引器的区块来源', B2.state.blocks.source, 'rpc');
+  eq('探活把块高记在 rpcHead 上', B2.state.layer.rpcHead, 0x12d687);
+  B2.HAS_INDEXER = false;
+  B2.state.indexer.ready = false;
+
+  /* -- 3. 主端点挂了：透明切到兜底，并且不再每轮去撞墙 -- */
+  const node3 = makeNode();
+  const env3 = makeEnv({
+    ethers: makeEthers(makeChain(FIXTURES)),
+    fetchImpl: makeFetch({ node: node3, rpcFail: { 'https://layer.test/rpc': true } }),
+    config: LAYER_ONLY_CONFIG
+  });
+  const B3 = env3.BAC;
+  eq('端点清单：主在前兜底在后', B3.layer.endpoints.join(','), 'https://layer.test/rpc,https://fallback.test/rpc');
+  await B3.layer.run({ once: true });
+
+  eq('切到兜底后照样读到块高', B3.state.layer.head, 0x12d687);
+  eq('在用的端点是兜底', B3.layer.endpoint(), 'https://fallback.test/rpc');
+  eq('state 里也标了端点', B3.state.layer.endpoint, 'https://fallback.test/rpc');
+  eq('不是主端点', B3.layer.isPrimary(), false);
+  eq('主端点只撞了一次', node3.log.byUrl['https://layer.test/rpc'], 1);
+  eq('其余都打在兜底上', node3.log.byUrl['https://fallback.test/rpc'], 3);
+
+  await B3.layer.run({ once: true });
+  eq('第二轮不再去撞主端点（退避中）', node3.log.byUrl['https://layer.test/rpc'], 1);
+  eq('第二轮全打兜底', node3.log.byUrl['https://fallback.test/rpc'], 6);
+
+  // 主端点恢复（退避到期）→ 自动换回主端点
+  const node4 = makeNode();
+  const env4 = makeEnv({
+    ethers: makeEthers(makeChain(FIXTURES)),
+    fetchImpl: makeFetch({ node: node4 }), config: LAYER_ONLY_CONFIG
+  });
+  await env4.BAC.layer.run({ once: true });
+  eq('主端点能用时就用主端点', env4.BAC.layer.endpoint(), 'https://layer.test/rpc');
+  eq('主端点能用时兜底一个请求都不发', node4.log.byUrl['https://fallback.test/rpc'], undefined);
+
+  /* -- 4. 后台标签页退到慢档 ---------------------------- */
+  const node5 = makeNode();
+  const env5 = makeEnv({
+    ethers: makeEthers(makeChain(FIXTURES)),
+    fetchImpl: makeFetch({ node: node5 }), config: LAYER_ONLY_CONFIG
+  });
+  const B5 = env5.BAC;
+  await B5.layer.run({ once: true });
+  eq('前台：6 秒一轮（链 3 秒一块，不比它更快）', B5.layer.period(), 6000);
+  ok('永远不比出块还快', B5.layer.period() >= 3000);
+  const before = node5.log.requests;
+  B5.setHidden(true);
+  eq('切到后台：退到 60 秒一轮', B5.layer.period(), 60000);
+  eq('切到后台不会立刻再打请求', node5.log.requests, before);
+  B5.setHidden(false);
+  eq('回到前台：恢复 6 秒', B5.layer.period(), 6000);
+
+  /* -- 5. 两个端点全挂：报「读取失败」，绝不编数 -------- */
+  const env6 = makeEnv({
+    ethers: makeEthers(makeChain(FIXTURES)),
+    fetchImpl: makeFetch({ layerRpcOk: false }), config: LAYER_ONLY_CONFIG
+  });
+  const B6 = env6.BAC;
+  await B6.layer.run({ once: true });
+
+  eq('全挂 → LAYER_LIVE = false', B6.LAYER_LIVE, false);
+  eq('全挂 → 层内段状态 error', B6.state.layer.sections.head, 'error');
+  eq('全挂 → 区块段状态 error', B6.state.layer.sections.blocks, 'error');
+  eq('全挂 → 交易段状态 error', B6.state.layer.sections.txs, 'error');
+  eq('全挂 → 错误文案逐字', B6.state.layer.error, '读取失败 · 重试中');
+  eq('全挂 → 块高仍是 null，不编', B6.state.layer.head, null);
+  eq('全挂 → 时间戳仍是 null', B6.state.layer.headTs, null);
+  eq('全挂 → 出块间隔仍是 null', B6.state.layer.blockIntervalSec, null);
+  eq('全挂 → 一个区块都没有', B6.state.blocks.items.length, 0);
+  eq('全挂 → 一笔交易都没有', B6.state.txs.items.length, 0);
+  eq('全挂 → 来源为空', B6.state.layer.source, null);
+  eq('全挂 → 区块视图是 error（不是 ok、也不是 pre）', B6.view.blocks().status, 'error');
+  eq('全挂 → 链指标是 error', B6.view.chainStats().status, 'error');
+  eq('全挂 → 链指标块高是 null', B6.view.chainStats().head, null);
+  eq('全挂 → 告警记下来了', B6.state.warnings.includes('layer_rpc_down'), true);
+  eq('全挂 → 两个端点各撞一次就停', B6.layer.stats.requests, 2);
+  ok('全挂 → 退避后慢下来', B6.layer.period() >= 5000);
+  eq('全挂 → 也没有碰 DOM', env6.domHits.length, 0);
+
+  /* -- 6. 一个端点都没配：这是「没配」，不是「读取失败」-- */
+  const env7 = makeEnv({
+    ethers: makeEthers(makeChain(FIXTURES)),
+    fetchImpl: makeFetch({}), config: { indexerBase: '', fallbackApi: '', layerRpc: '', fallbackRpc: '' }
+  });
+  await env7.BAC.layer.run({ once: true });
+  eq('没配端点 → prelaunch', env7.BAC.state.layer.sections.head, 'prelaunch');
+  eq('没配端点 → 视图是 pre（显示「发射后公布」）', env7.BAC.view.blocks().status, 'pre');
+  eq('没配端点 → 不发任何请求', env7.BAC.layer.stats.requests, 0);
+
+  /* -- 7. 节点没开 eth_getBlockReceipts：安静降级，块照读 -- */
+  const node8 = makeNode({ noReceipts: true });
+  const env8 = makeEnv({
+    ethers: makeEthers(makeChain(FIXTURES)),
+    fetchImpl: makeFetch({ node: node8 }), config: LAYER_ONLY_CONFIG
+  });
+  await env8.BAC.layer.run({ once: true });
+  eq('收据读不到也拿到了块', env8.BAC.state.blocks.items.length, 20);
+  eq('收据读不到 → 手续费合计是 null，不猜', env8.BAC.state.blocks.items.find(x => x.txCount > 0).feeTotal, null);
+  eq('收据读不到 → 交易状态是 null，不猜', env8.BAC.state.txs.items[0].status, null);
+  eq('收据读不到 → gasUsed 是 null，不用 gas 上限顶替', env8.BAC.state.txs.items[0].gasUsed, null);
+  eq('收据读不到 → 区块视图仍然 ok', env8.BAC.view.blocks().status, 'ok');
 });
 
 await group('degraded', async () => {
@@ -660,14 +1004,19 @@ await group('degraded', async () => {
   eq('索引器失败被记下来', B.state.indexer.ready, false);
   eq('进入降级模式', B.state.indexer.degraded, true);
   eq('降级告警', B.state.warnings.includes('indexer_down'), true);
-  eq('降级提示语', B.api.degradedNote(), '索引器读不到：层内数据暂时不可用，BSC 侧数字仍然是实时的');
-  eq('层内那段报「读取失败 · 重试中」', B.state.layer.error, '读取失败 · 重试中');
-  eq('feed 状态 = error', B.view.feed().status, 'error');
+  eq('降级提示语（链还活着）', B.api.degradedNote(), '索引器读不到：区块与交易改由本站直接读层内节点，历史与搜索暂时不可用');
+  eq('feed（索引器独有）状态 = error', B.view.feed().status, 'error');
 
-  // 退到层内 RPC：只回答「链还活着吗」，并标清来源
-  eq('降级后块高来自层内 RPC', B.state.layer.source, 'rpc');
+  // 层内那一半改由 bac-layer.js 直接读 RPC：**块和交易仍然是真数据**，只是来源不同
+  eq('层内那段没有报错（RPC 读到了）', B.state.layer.error, null);
+  eq('降级后层内数据来自 RPC', B.state.layer.source, 'rpc');
   eq('层内 RPC 读到的块高', B.state.layer.head, 0x12d687);
-  eq('不知道的时间戳就是 null', B.state.layer.headTs, null);
+  eq('时间戳也是真读到的，不再是 null', B.state.layer.headTs, 1789999998);
+  eq('区块列表来自 RPC', B.state.blocks.source, 'rpc');
+  eq('区块视图状态 = ok（不是「发射后公布」）', B.view.blocks().status, 'ok');
+  eq('交易视图状态 = ok', B.view.txs().status, 'ok');
+  ok('确实读到了区块', B.view.blocks().items.length > 0);
+  eq('出块间隔是实测出来的', B.view.chainStats().blockIntervalSec, 3);
 
   // BSC 一半必须仍然是真数
   eq('BSC 段仍然就绪', B.state.bsc.ready, true);
@@ -676,18 +1025,20 @@ await group('degraded', async () => {
   eq('验证者的链上总量仍然在', B.view.validators().totalStaked, 5000000n * E18);
   eq('gas 三元组仍然在', B.view.validators().gas.shortfall, 10n * E18);
   eq('链指标标了降级', B.view.chainStats().degraded, true);
-  ok('链指标带降级说明', /BSC 侧数字仍然是实时的/.test(B.view.chainStats().degradedNote));
-  eq('整页横幅', B.view.overview().degradedBanner, '索引器读不到：层内数据暂时不可用，BSC 侧数字仍然是实时的');
+  ok('链指标带降级说明', /直接读层内节点/.test(B.view.chainStats().degradedNote));
+  eq('整页横幅', B.view.overview().degradedBanner, '索引器读不到：区块与交易改由本站直接读层内节点，历史与搜索暂时不可用');
 
   // 层内 RPC 也挂：source 回到 null，不许编数
   const env2 = makeEnv({ ethers: makeEthers(makeChain(FIXTURES)), fetchImpl: makeFetch({ fail: true, layerRpcOk: false }), config: LIVE_CONFIG });
   await env2.BAC.api.run({ once: true });
   eq('两边都挂 → 来源为空', env2.BAC.state.layer.source, null);
   eq('两边都挂 → 块高仍是 null', env2.BAC.state.layer.head, null);
+  eq('两边都挂 → LAYER_LIVE = false', env2.BAC.LAYER_LIVE, false);
+  eq('两边都挂 → 提示语退回原来那句', env2.BAC.api.degradedNote(), '索引器读不到：层内数据暂时不可用，BSC 侧数字仍然是实时的');
 
-  // 没配索引器时不该发请求
+  // 主用和兜底两个索引器地址都没配时不该发请求
   const log3 = [];
-  const env3 = makeEnv({ ethers: makeEthers(makeChain(FIXTURES)), fetchImpl: makeFetch({ log: log3 }), config: Object.assign({}, LIVE_CONFIG, { indexerBase: '' }) });
+  const env3 = makeEnv({ ethers: makeEthers(makeChain(FIXTURES)), fetchImpl: makeFetch({ log: log3 }), config: Object.assign({}, LIVE_CONFIG, { indexerBase: '', fallbackApi: '' }) });
   await env3.BAC.api.run({ once: true });
   eq('没配索引器就不发请求', log3.length, 0);
   eq('HAS_INDEXER = false', env3.BAC.HAS_INDEXER, false);

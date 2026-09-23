@@ -1,0 +1,9 @@
+.env
+.env*
+.vercel
+node_modules
+*.log
+**/*.test.html
+**/test*.html
+__*
+*.md

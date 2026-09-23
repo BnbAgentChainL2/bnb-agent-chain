@@ -3,7 +3,8 @@
    降级模式（degraded）：索引器读不到时，
    - state.indexer.degraded = true，层内各段的 error 写「读取失败 · 重试中」；
    - **BSC 那一半照常刷新**，页面上金库/桥/验证者质押的数字仍然是实时的；
-   - 如果配了 layerRpc，再退一步用它直接读一个 head，只为回答「链还活着吗」，并标 source='rpc'。
+   - 层内那一半交给 bac-layer.js 直接读 RPC：块、交易、块高都还是真数据，只是标 source='rpc'
+     （索引器独有的历史 / 搜索 / 聚合才是真的没有了）。
    宁可停，不可错：读不到就说读不到，不猜、不补、不显示上一次的数当成新的。 */
 (function (root) {
   'use strict';
@@ -16,8 +17,36 @@
   if (BAC.api) return;
 
   var CFG = BAC.CFG, TEXT = BAC.TEXT, big = BAC.big, C = BAC.C;
-  var BASE = CFG.indexerBase;
   var apiHealth = BAC.healthTable(5000);   // 索引器是我们自己的，重试比公共 RPC 积极一点
+
+  /* 索引器的端点清单：主域名在前，IP 兜底在后。
+     主域名过期 / 还没解析出来 / 被劫持时自动落到兜底；主域名恢复后（退避到期）自动换回去。 */
+  var API_EPS = [];
+  (function () {
+    [CFG.indexerBase, CFG.fallbackApi].forEach(function (u) {
+      if (typeof u === 'string' && u && API_EPS.indexOf(u) < 0) API_EPS.push(u);
+    });
+  })();
+  var BASE = API_EPS.length ? API_EPS[0] : '';
+  var curBase = null;                      // 上一次成功的那个
+
+  /** 挑一个还没试过、且不在退避窗口里的端点；全在退避里就挑最快到期的那个（不彻底放弃）。 */
+  function pickBase(now, tried) {
+    tried = tried || [];
+    var order = API_EPS.slice();
+    if (curBase && order.length > 1 && order[0] !== curBase && !apiHealth.healthy('base:' + order[0], now)) {
+      order = [curBase].concat(order.filter(function (u) { return u !== curBase; }));
+    }
+    var best = null, bestUntil = Infinity, i, u;
+    for (i = 0; i < order.length; i++) {
+      u = order[i];
+      if (tried.indexOf(u) >= 0) continue;
+      if (apiHealth.healthy('base:' + u, now)) return u;
+      var until = apiHealth.get('base:' + u).until;
+      if (until < bestUntil) { bestUntil = until; best = u; }
+    }
+    return best;
+  }
 
   function num(v) { return v === undefined || v === null ? null : Number(v); }
   function str(v) { return v === undefined || v === null ? null : String(v); }
@@ -37,11 +66,11 @@
     return out.length ? '?' + out.join('&') : '';
   }
 
-  /** GET 一个端点。失败抛错（错误里带 code），成功返回已解析的 JSON。 */
-  function get(path, params, opts) {
+  /** GET 一个端点（单个 base，不含换端点逻辑）。失败抛错（错误里带 code），成功返回已解析的 JSON。 */
+  function getFrom(base, path, params, opts) {
     opts = opts || {};
-    if (!BASE) return Promise.reject(new Error('没有配置索引器地址'));
-    var url = BASE + path + qs(params);
+    if (!base) return Promise.reject(new Error('没有配置索引器地址'));
+    var url = base + path + qs(params);
     var f = root.fetch;
     if (typeof f !== 'function') return Promise.reject(new Error('浏览器不支持 fetch'));
 
@@ -72,6 +101,31 @@
       clearTimeout(timer);
       throw err;
     });
+  }
+
+  /** GET，带主域名 → 兜底 IP 的自动切换（最多试两个端点，不做无限重试）。 */
+  function get(path, params, opts) {
+    var tried = [], lastErr = null;
+    function attempt() {
+      var now = Date.now();
+      var base = pickBase(now, tried);
+      if (!base) return Promise.reject(lastErr || new Error('没有配置索引器地址'));
+      tried.push(base);
+      return getFrom(base, path, params, opts).then(function (j) {
+        apiHealth.ok('base:' + base);
+        curBase = base;
+        BAC.state.indexer.endpoint = base;
+        return j;
+      }, function (err) {
+        // 404 / 业务错误不算端点坏了：别因为一个端点没实现就切到兜底
+        if (err && err.status && err.status >= 400 && err.status < 500) throw err;
+        apiHealth.bad('base:' + base, err, now);
+        lastErr = err;
+        if (tried.length >= Math.min(2, API_EPS.length)) throw err;
+        return attempt();
+      });
+    }
+    return attempt();
   }
 
   /** 带退避的 GET：这个端点还在退避窗口里就直接拒绝，不打无用的请求。 */
@@ -114,14 +168,21 @@
     BAC.emit('state', BAC.state);
   }
 
+  /** 索引器这一段失败了。
+      但如果这一段**正由层内 RPC 直接供数**（source === 'rpc'，而且是新鲜的），
+      就别把它改成「读取失败」—— 那上面显示的是真的链上数据，只是不从索引器来。 */
   function failSection(sec, err) {
     sec.failures++;
+    if (sec.source === 'rpc' && sec.ready && (Date.now() - (sec.updatedAt || 0)) < 60000) return;
     sec.error = TEXT.ERR;
     sec.errorDetail = BAC.errInfo(err).message;
+    sec.status = 'error';
+    sec.stale = !!sec.ready;
     sec.updatedAt = Date.now();
   }
   function okSection(sec) {
     sec.ready = true; sec.error = null; sec.errorDetail = null; sec.failures = 0;
+    sec.source = 'indexer'; sec.status = 'ok'; sec.stale = false;
     sec.updatedAt = Date.now();
   }
 
@@ -166,17 +227,26 @@
     };
   }
 
+  /** 索引器的 agent 条目。v2（决策 #31）没有自研 AgentRegistry、没有状态机：
+      status / statusName / statusZh / solved / lastHeartbeatEpoch / missed / endpointHash / modelFingerprint
+      一律 null —— 哪怕旧索引器还在发这些字段，它们描述的是一个已经不存在的合约，不许再显示。
+      ERC-8004 的几项（identityId / identityOwner / agentWallet / tokenURI）索引器给了就原样带上。 */
   function agentItem(a) {
+    var id = a.identityId !== undefined && a.identityId !== null ? num(a.identityId) : num(a.agentId);
     return {
-      agentId: num(a.agentId), controller: str(a.controller), wallet: str(a.wallet),
-      status: num(a.status), statusName: str(a.statusName) || BAC.statusName(a.status),
-      statusZh: BAC.statusZh(a.status),
-      registeredAt: num(a.registeredAt), activatedAt: num(a.activatedAt),
-      solved: num(a.solved), lastHeartbeatEpoch: num(a.lastHeartbeatEpoch), missed: num(a.missed),
+      agentId: num(a.agentId), identityId: id,
+      controller: str(a.controller), wallet: str(a.wallet),
+      identityOwner: str(a.identityOwner) || str(a.holder),
+      agentWallet: str(a.agentWallet),
+      tokenURI: str(a.tokenURI),
+      source: 'indexer',
+      status: null, statusName: null, statusZh: null,
+      registeredAt: null, activatedAt: num(a.activatedAt !== undefined ? a.activatedAt : a.firstLockAt),
+      solved: null, lastHeartbeatEpoch: null, missed: null,
       credited: big(a.credited), exited: big(a.exited), layerBalance: big(a.layerBalance),
       deploys: num(a.deploys), announces: num(a.announces), lastLayerBlock: num(a.lastLayerBlock),
-      agentURI: str(a.agentURI), endpointHash: str(a.endpointHash), modelFingerprint: str(a.modelFingerprint),
-      untrusted: true                        // agentURI 是 agent 自己写的
+      agentURI: null, endpointHash: null, modelFingerprint: null,
+      untrusted: true                        // tokenURI 是身份持有人自己写的
     };
   }
 
@@ -232,9 +302,41 @@
     agents: function (params) { return fetchEndpoint('agents', '/api/agents', params); },
     agent: function (id) { return fetchEndpoint('agent', '/api/agent/' + encodeURIComponent(id)); },
     blocks: function (params) { return fetchEndpoint('blocks', '/api/blocks', params); },
-    block: function (n) { return fetchEndpoint('block', '/api/block/' + encodeURIComponent(n)); },
-    tx: function (h) { return fetchEndpoint('tx', '/api/tx/' + encodeURIComponent(h)); },
+    /* 区块 / 交易详情：索引器读不到就直接问层内 RPC（bac-layer.js）。
+       返回的字段名和索引器一致，绑定层那边一行都不用改。
+       RPC 给不出来的东西（agent 归属、日志解码）一律 null —— 不猜。 */
+    block: function (n) {
+      return fetchEndpoint('block', '/api/block/' + encodeURIComponent(n)).catch(function (e) {
+        if (!BAC.layer) throw e;
+        return BAC.layer.block(n);
+      });
+    },
+    tx: function (h) {
+      return fetchEndpoint('tx', '/api/tx/' + encodeURIComponent(h)).catch(function (e) {
+        if (!BAC.layer) throw e;
+        return BAC.layer.tx(h).then(function (t) { return { tx: t, decoded: [], source: 'rpc' }; });
+      });
+    },
     contracts: function (params) { return fetchEndpoint('contracts', '/api/contracts', params); },
+    /* 单个合约「这是个什么」（03 §7.6 的新端点）：classified / classifiedZh 直接给页面用。
+       索引器给不出就是给不出，前端显示「我们没能识别出这个合约是什么」，**不猜**。 */
+    contract: function (a) { return fetchEndpoint('contract', '/api/contract/' + encodeURIComponent(a)); },
+
+    /* ── agent 造出来的东西：代币 / 交易对 / 成交（决策 #19，03 §7.6）──────
+       全部是**启发式解码**的结果：会漏也会错，每个返回体都带 detection 块，
+       页面必须把那句话显示出来。金额是该代币自己的最小单位，随行返回 decimals，
+       **不许和 BAC / BNB 的金额合并**，也**不许折算成任何法币**（这条链上没有法币计价，也没有预言机）。 */
+    tokens: function (params) { return fetchEndpoint('tokens', '/api/tokens', params); },
+    token: function (a) { return fetchEndpoint('token', '/api/token/' + encodeURIComponent(a)); },
+    tokenHolders: function (a, params) {
+      return fetchEndpoint('tokenHolders', '/api/token/' + encodeURIComponent(a) + '/holders', params);
+    },
+    tokenTransfers: function (a, params) {
+      return fetchEndpoint('tokenTransfers', '/api/token/' + encodeURIComponent(a) + '/transfers', params);
+    },
+    pairs: function (params) { return fetchEndpoint('pairs', '/api/pairs', params); },
+    pair: function (a) { return fetchEndpoint('pair', '/api/pair/' + encodeURIComponent(a)); },
+    swaps: function (params) { return fetchEndpoint('swaps', '/api/swaps', params); },
     epochs: function (params) { return fetchEndpoint('epochs', '/api/epochs', params); },
     epoch: function (n) { return fetchEndpoint('epoch', '/api/epoch/' + encodeURIComponent(n)); },
     leaves: function (n) { return fetchEndpoint('leaves', '/api/epoch/' + encodeURIComponent(n) + '/leaves'); },
@@ -309,17 +411,23 @@
       (j.warnings || []).forEach(function (w) { BAC.pushWarning('indexer:' + w); });
       if (l.headTs) BAC.time.setChainTime(Number(l.headTs));
       okSection(L);
+      L.sections.head = 'ok';
+      L.endpoint = BAC.state.indexer.endpoint;
       BAC.emit('health', j);
       return j;
     }).catch(function (e) {
       failSection(L, e);
+      L.sections.head = L.status;
       return layerRpcFallback().catch(function () { return null; });
     });
   }
 
-  /** 索引器挂了的最后一跳：直接问层内 RPC「现在第几块」。只为回答「链还活着吗」。 */
+  /** 索引器挂了的最后一跳：直接问层内 RPC。
+      bac-layer.js 在的话交给它（它会读整套块头 + 区块 + 交易，并自己做主/兜底端点切换）；
+      不在的话退回这里最小的一跳：只问一个块高，只为回答「链还活着吗」。 */
   function layerRpcFallback() {
     var L = BAC.state.layer;
+    if (BAC.layer) return BAC.layer.run({ once: true }).then(function () { return L; });
     if (!CFG.layerRpc || typeof root.fetch !== 'function') return Promise.reject(new Error('没有层内 RPC'));
     var ctl = typeof root.AbortController === 'function' ? new root.AbortController() : null;
     var timer = setTimeout(function () { if (ctl) ctl.abort(); }, CFG.apiTimeoutMs);
@@ -391,9 +499,14 @@
     return api.blocks({ limit: CFG.blocksLimit }).then(function (j) {
       B.items = (j.items || []).map(blockItem).sort(function (a, b) { return b.number - a.number; });
       okSection(B);
+      BAC.state.layer.sections.blocks = 'ok';
       BAC.emit('blocks', B.items);
       return B.items;
-    }).catch(function (e) { failSection(B, e); return B.items; });
+    }).catch(function (e) {
+      failSection(B, e);
+      BAC.state.layer.sections.blocks = B.status;
+      return B.items;
+    });
   }
 
   /** 最近的交易：/api/blocks 不带交易，所以取最新的块再读它的交易列表。 */
@@ -413,8 +526,13 @@
       }
       T.items = txs;
       okSection(T);
+      BAC.state.layer.sections.txs = 'ok';
       return T.items;
-    }).catch(function (e) { failSection(T, e); return T.items; });
+    }).catch(function (e) {
+      failSection(T, e);
+      BAC.state.layer.sections.txs = T.status;
+      return T.items;
+    });
   }
 
   function pullAgents(params) {
@@ -489,7 +607,7 @@
   function run(opts) {
     opts = opts || {};
     if (inFlight) return inFlight;
-    if (!BASE) return Promise.resolve();
+    if (!API_EPS.length) return Promise.resolve();
     var first = tick === 0;
     tick++;
     var jobs = [pullHealth(), pullFeed({ initial: first }), pullBlocks()];
@@ -529,9 +647,11 @@
     run: run,
     start: function () { if (started) return; started = true; run(); },
     stop: function () { if (timer) { clearTimeout(timer); timer = null; } started = false; },
-    /** 降级说明：给绑定层一句能直接显示的中文。 */
+    /** 降级说明：给绑定层一句能直接显示的中文。
+        层内节点还答话的时候不许说「层内数据暂时不可用」—— 块和交易照样是真的。 */
     degradedNote: function () {
-      return BAC.state.indexer.degraded ? TEXT.NO_INDEXER : null;
+      if (!BAC.state.indexer.degraded) return null;
+      return BAC.LAYER_LIVE ? TEXT.RPC_DIRECT : TEXT.NO_INDEXER;
     }
   });
 })(typeof window !== 'undefined' ? window : globalThis);

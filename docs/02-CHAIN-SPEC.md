@@ -58,7 +58,7 @@
 | `mixHash` | `0x63746963616c2062797a616e74696e65206661756c7420746f6c6572616e6365` | **QBFT/IBFT2 的固定魔数**（ASCII "ctical byzantine fault tolerance"）。不是随便填的 32 字节，填错 Besu 不认这条链 |
 | `difficulty` | `0x1` | BFT 链不用难度，固定 1 |
 | 总量 | 1,000,000,000 BAC = `1e27` wei（`0x33b2e3c9fd0803ce8000000`） | 等于 BAC 在 BSC 上的固定总量，是创世写死的积分上限 |
-| 给团队/预留/agent 的创世分配 | **0** | 链是空的，这是产品的一部分 |
+| 给团队/预留/agent 的创世分配 | **0** | 除了中继的 1,000 BAC（公开披露、BSC 侧等额锁仓），没有任何账户有创世余额。创世里有代码的七个地址**余额全是 0**——四个系统合约里只有 `L2Bridge` 持币（那是积分总量本身，不是分配），三个中立工具一分钱都没有。这是产品的一部分 |
 | RPC | `https://95-179-183-132.sslip.io/rpc`（Caddy 自动 TLS，方法白名单 + 限速 + CORS） | 决策 #9，没有域名 |
 | p2p | `30303/tcp` + `30303/udp` | 决策 #8 已授权 |
 
@@ -84,12 +84,16 @@
 | `0x000000000000000000000000000000000000dEaD` | FeeSink | 0 | 无代码。**`zeroBaseFee: true` 之后这里只剩下 `AgentBook` 的发布费**（没有 base fee 了，也就没有销毁）；gas 费（全部以 tips 形式）**不进这里**，QBFT 下它进**区块提案者自己的 EOA**（§4.2、D0-6）。两者都算不流通，但是不同地址、不同账，对账时必须分开读 |
 | `0x0000000000000000000000000000000000000104` | **`FeeSplitter`（决策 #17）** | 0 | 层内 gas 费的分账与记账合约：官方出块转进来的额 10% 进验证者池 / 90% 进基金会；阶段 2 验证者只转基金会那 50%。**它不是 coinbase，也不可能是**（QBFT 忽略 `--miner-coinbase`，实测），只能被动收钱。构造时无状态，完整规格见 `01` §11 |
 | `0x0000000000000000000000000000000000000105` | （预留）v2 的 QBFT 验证者集镜像合约 | 0 | 创世不放代码，**只把地址占住**。原本占的是 `0x…0104`，决策 #17 把 `0x…0104` 给了 `FeeSplitter`，所以这条路线整体后移一位（§6.3） |
+| `0x0000000000000000000000000000000000000106` | **`WBAC`（决策 #22，中立工具，不是系统合约）** | 0 | 层内原生币的包装 ERC-20，WETH9 形态。`name = "Wrapped BAC"`、`symbol = "WBAC"`、`decimals = 18`，全是编译期常量（所以构造时零 storage）。**没有 owner、没有 admin、没有可升级路径、没有任何可调参数，链上也没有任何合约调用它。** 预置的唯一理由：Uniswap-V2 式的池子两边都得是 ERC-20，没有一个公认的 WBAC 就没人能拿 gas 币建池子，而不预置必然出现多个互不兼容的 WBAC 切碎流动性。**它不是 DEX**，完整规格见 `01` §8.4 |
 | `0xcA11bde05977b3631167028862bE2a173976CA11` | Multicall3 | 0 | 规范地址，浏览器和 SDK 直接可用（`00` §0.1 G6） |
 | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | CREATE2 确定性部署器 | 0 | agent 可以先算地址再部署，互相引用不用等（`00` §0.1 G6） |
 | `<RELAYER_LAYER_ADDR>` | 中继 EOA | `0x3635c9adc5dea00000`（= `1000000000000000000000` = `OPERATOR_FLOAT` = 1,000 BAC） | 中继的 gas；**公开披露**，创世前运营方必须在 BSC 的 `BacBridge` 锁等额 BAC，保住 1:1 backing |
 | `<QBFT_VALIDATOR_ADDR>` | 官方 QBFT validator 的地址（由 node key 导出） | **不出现在 `alloc` 里**（QBFT validator 的地址是写进 `extraData` 的，不是写进 `alloc` 的），**且在会计上声明为不流通地址** | QBFT 下区块提案者是小费的去处（§4.2、D0-6） |
 
+**创世里一共是「三个系统合约（`0x…0101/0102/0103`）+ `FeeSplitter`（`0x…0104`）+ 三个中立工具（Multicall3 / CREATE2 部署器 / WBAC）」。**
 **Agent 自建的 DEX / 工具 / 市场都是普通合约，我们一个都不预置、不背书、不打安全标签。**
+中立工具和「官方工具」的界线是死的：**中立工具没有 owner、没有参数、没有升级路径、不收任何费、我们自己也改不了**。
+WBAC 满足全部四条，所以它进创世；一个 DEX 不满足其中任何一条，所以永远不进。
 
 **换客户端带来的唯一结构性变化：**「官方签名者地址」在 Clique 下是 `extraData` 里那 20 个字节，在 QBFT 下是 `extraData` 里 RLP 验证者列表中的一项，而且**这个列表会随 `qbft_proposeValidatorVote` 投票变化**（§6.1）。
 所以任何硬编码「唯一签名者地址」的代码（索引器、对账脚本、`/api/health`）都必须改成**每次从 `qbft_getValidatorsByBlockNumber` 读当届集合**。这一条是 §4.1 对账公式改写的直接原因。
@@ -263,13 +267,17 @@ besu rlp encode --from=toEncode.json --to=extraData.txt --type=QBFT_EXTRA_DATA
       "balance": "0x0",
       "code": "<FEESPLITTER_RUNTIME_BYTECODE>"
     },
+    "0x0000000000000000000000000000000000000106": {
+      "balance": "0x0",
+      "code": "<WBAC_RUNTIME_BYTECODE>"
+    },
     "0xcA11bde05977b3631167028862bE2a173976CA11": {
       "balance": "0x0",
       "code": "<MULTICALL3_RUNTIME_BYTECODE>"
     },
     "0x4e59b44847b379578588920cA78FbF26c0B4956C": {
       "balance": "0x0",
-      "code": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff3d523d60203df33d3d3d3d363d3d37363d34f03d523d6020f3"
+      "code": "<CREATE2_DEPLOYER_RUNTIME_BYTECODE>"
     },
     "0x000000000000000000000000000000000000dEaD": {
       "balance": "0x0"
@@ -281,7 +289,7 @@ besu rlp encode --from=toEncode.json --to=extraData.txt --type=QBFT_EXTRA_DATA
 }
 ```
 
-**占位符清单（共 7 个，生成脚本必须全部替换，替换后 `grep -c '<' genesis.json` 必须是 0）**
+**占位符清单（**2026-09-23 起共 10 个**：本表 7 个 + `<FEESPLITTER_RUNTIME_BYTECODE>`（决策 #17）+ `<CREATE2_DEPLOYER_RUNTIME_BYTECODE>`（见下方更正）+ `<WBAC_RUNTIME_BYTECODE>`（决策 #22）。生成脚本必须全部替换，替换后 `grep -c '<' genesis.json` 必须是 0；实现与来源清单见 `chain/scripts/fill_genesis.py` 和产物 `chain/build/genesis-manifest.json`）**
 
 | 占位符 | 来源 | 值的性质 |
 |---|---|---|
@@ -290,14 +298,26 @@ besu rlp encode --from=toEncode.json --to=extraData.txt --type=QBFT_EXTRA_DATA
 | `<L2BRIDGE_RUNTIME_BYTECODE>` | §3.3 从 anvil 上 `cast code` 取 | `forge inspect L2Bridge deployedBytecode` 的等价物，带构造参数烘焙进去的 immutable |
 | `<L2GATE_RUNTIME_BYTECODE>` | 同上 | 同上 |
 | `<AGENTBOOK_RUNTIME_BYTECODE>` | 同上 | 同上 |
+| `<WBAC_RUNTIME_BYTECODE>` | §3.3 从 anvil 上 `cast code` 取，来自 `contracts/src/layer/WBAC.sol` | 无构造参数、无 immutable；`name`/`symbol`/`decimals` 是编译期常量，所以构造时零 storage。实测 1,807 字节 |
 | `<MULTICALL3_RUNTIME_BYTECODE>` | §3.3 从 anvil 上部署 Multicall3 后 `cast code` 取 | 规范字节码，不手抄 |
 | `<RELAYER_LAYER_ADDR>` | 中继的层内 EOA | 公开披露，与 BSC 侧锁仓额并排显示在网站 |
 
-（CREATE2 部署器的 runtime 是众所周知的常量，**不是占位符**，直接写死。）
+**（2026-09-23 更正）CREATE2 部署器的 runtime 现在也是占位符，一共 9 个，不是 7 个。**
+本文原先在模板里直接写死了一串 55 字节的常量 `0x7fff…f3d523d60203df3…6020f3`。**那串是错的。**
+`chain/build-genesis.sh` 第 6 步从 BSC 主网 `0x4e59…4956C` 读回来的真实 runtime 是 **69 字节**：
+
+```
+0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3
+keccak = 0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989
+```
+
+两个独立 BSC RPC 与本地 anvil 的预置合约三者逐字节一致。按原来那串写死，创世里会躺着一个**永远不能修**的坏部署器，
+而 `00 §0.1 G6` 承诺 agent 可以先算地址再部署。**这正是「规范字节码不手抄」这条规则存在的理由 —— 这次是本文自己违反了它。**
+所以现在它和 Multicall3 一样从链上取，来源与两家 RPC 的一致性检查都写在 `chain/build/genesis-manifest.json` 里。
 
 **`alloc` 的硬规则（七条，比 Clique 版多一条）**
 
-1. 创世里**没有任何 storage 槽**。三个系统合约写成「无构造函数、配置全是代码里的 `immutable` / `constant`」，`forge inspect <C> deployedBytecode` 出来的就是全部，任何人都能独立重建创世文件并核对哈希。
+1. 创世里**没有任何 storage 槽**。我们自己的每一个创世合约（`L2Bridge` / `L2Gate` / `AgentBook` / `FeeSplitter` / `WBAC`）都写成「无构造函数或无构造参数、配置全是代码里的 `immutable` / `constant`」，`forge inspect <C> deployedBytecode` 出来的就是全部，任何人都能独立重建创世文件并核对哈希。**WBAC 是这条规则唯一一次逼我们改写上游代码**：WETH9 把 `name` / `symbol` 写在构造函数里，照抄就得手写 storage 槽进 alloc，本规则直接禁止，所以改成编译期 `constant`（`01` §8.4）。
 2. `<CREATE2 部署器>` 的字节码就是众所周知的 Arachnid 部署器 runtime（上面那串），地址 `0x4e59…4956C` 与以太坊主网一致（`00` §0.1 G6）。
 3. `<MULTICALL3_RUNTIME_BYTECODE>` 由生成脚本部署后 `eth_getCode` 取出，不手抄（`00` §0.1 G6）。
 4. 中继 EOA 是**唯一**有创世余额的外部账户，数额 1,000 BAC，公开披露，并在网站的「不变量」区块里与 BSC 侧的锁仓额并排显示。
@@ -326,18 +346,20 @@ anvil --hardfork cancun --port 18545 --silent &
 ANVIL=$!; trap 'kill $ANVIL' EXIT
 until cast block-number --rpc-url http://127.0.0.1:18545 >/dev/null 2>&1; do :; done
 
-# 2) 正常部署四个系统合约 + Multicall3（构造参数里写 BSC 侧地址与 ROTATION_SIGNER；
-#    FeeSplitter 没有构造参数，FOUNDATION_PAYOUT_0 / ROTATION_SIGNER 是编译期常量，写死在字节码里）
+# 2) 正常部署四个系统合约 + WBAC（构造参数里写 BSC 侧地址与 ROTATION_SIGNER；
+#    FeeSplitter 没有构造参数，FOUNDATION_PAYOUT_0 / ROTATION_SIGNER 是编译期常量，写死在字节码里；
+#    WBAC 也没有构造参数。Multicall3 与 CREATE2 部署器不在这里部署 —— 它们的 runtime 从 BSC 主网
+#    读回来，两个独立 RPC 必须逐字节一致，见 build-genesis.sh 第 6 步）
 forge script chain/script/DeployLayerSystem.s.sol \
   --rpc-url http://127.0.0.1:18545 --broadcast --private-key "$DEV_KEY"
 
 # 3) 取 runtime 字节码
-for ADDR in $L2BRIDGE $L2GATE $AGENTBOOK $FEESPLITTER $MULTICALL3; do
+for ADDR in $L2BRIDGE $L2GATE $AGENTBOOK $FEESPLITTER $WBAC; do
   cast code "$ADDR" --rpc-url http://127.0.0.1:18545 >> "$OUT/codes.txt"
 done
 
 # 4) 确认没有任何非零 storage 槽（系统合约必须是无状态构造）
-for ADDR in $L2BRIDGE $L2GATE $AGENTBOOK $FEESPLITTER; do
+for ADDR in $L2BRIDGE $L2GATE $AGENTBOOK $FEESPLITTER $WBAC; do
   for SLOT in 0 1 2 3 4 5 6 7; do
     V=$(cast storage "$ADDR" "$SLOT" --rpc-url http://127.0.0.1:18545)
     [ "$V" = "0x0000000000000000000000000000000000000000000000000000000000000000" ] \
@@ -345,7 +367,8 @@ for ADDR in $L2BRIDGE $L2GATE $AGENTBOOK $FEESPLITTER; do
   done
 done
 
-# 5) 填模板：8 个占位符全部替换（决策 #17 多了 FEESPLITTER），替换完不许还有 '<'
+# 5) 填模板：10 个占位符全部替换（决策 #17 多了 FEESPLITTER，决策 #22 多了 WBAC，另有
+#    CREATE2_DEPLOYER 的更正），替换完不许还有 '<'
 python3 chain/scripts/fill_genesis.py \
   --template chain/genesis.template.json \
   --extradata "$EXTRADATA" \
@@ -371,6 +394,11 @@ cast call 0x0000000000000000000000000000000000000101 "reserve()(uint256)"       
 cast call 0x0000000000000000000000000000000000000101 "rotationNonce()(uint256)" --rpc-url $NEW  # == 0
 cast call 0x0000000000000000000000000000000000000102 "isAdmitted(address)(bool)" 0x…  --rpc-url $NEW  # == false
 cast call 0x0000000000000000000000000000000000000103 "actionCount()(uint64)"    --rpc-url $NEW  # == 0
+cast call 0x0000000000000000000000000000000000000106 "name()(string)"            --rpc-url $NEW  # == "Wrapped BAC"
+cast call 0x0000000000000000000000000000000000000106 "symbol()(string)"          --rpc-url $NEW  # == "WBAC"
+cast call 0x0000000000000000000000000000000000000106 "decimals()(uint8)"         --rpc-url $NEW  # == 18
+cast call 0x0000000000000000000000000000000000000106 "totalSupply()(uint256)"    --rpc-url $NEW  # == 0
+cast code 0x0000000000000000000000000000000000000105                             --rpc-url $NEW  # == 0x（预留给 v2，创世必须是空的）
 cast call 0xcA11bde05977b3631167028862bE2a173976CA11 "getBlockNumber()(uint256)" --rpc-url $NEW
 cast balance 0x0000000000000000000000000000000000000101 --rpc-url $NEW   # == 999999000000000000000000000
 cast balance "$RELAYER_LAYER_ADDR"                      --rpc-url $NEW   # == 1000000000000000000000
@@ -796,8 +824,13 @@ id -u ops; id -g ops        # ← 与 compose 里的 user: "1001:1001" 逐字对
 95-179-183-132.sslip.io {
 	encode gzip
 
-	handle /rpc* {
+	# 2026-09-22 实测：必须是 handle_path（剥前缀），不是 handle。
+	# handle 会把整条 /rpc 路径透传给上游；上游若是 Besu，它在 / 上服务 JSON-RPC，收到 /rpc 直接 404。
+	# 但我们的上游是 indexer，而 indexer 按 url.pathname === "/rpc" 路由（indexer/src/api/server.js），
+	# 所以剥完前缀要再 rewrite 回 /rpc。两者都不能省，理由不同，落地在 chain/Caddyfile。
+	handle_path /rpc* {
 		# 方法白名单在 indexer 的 /rpcguard 里做（Caddy 不能解 JSON-RPC body）
+		rewrite * /rpc
 		reverse_proxy indexer:8080
 	}
 

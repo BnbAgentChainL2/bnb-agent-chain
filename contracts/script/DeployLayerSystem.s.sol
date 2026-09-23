@@ -7,6 +7,7 @@ import {console2} from "forge-std/console2.sol";
 import {L2Bridge} from "../src/layer/L2Bridge.sol";
 import {L2Gate} from "../src/layer/L2Gate.sol";
 import {AgentBook} from "../src/layer/AgentBook.sol";
+import {WBAC} from "../src/layer/WBAC.sol";
 
 /// @title DeployLayerSystem
 /// @notice Deploys the layer genesis system contracts onto a THROWAWAY local anvil so that
@@ -31,6 +32,12 @@ import {AgentBook} from "../src/layer/AgentBook.sol";
 ///      deployed here because `contracts/src/layer/FeeSplitter.sol` does not exist yet.  When it is
 ///      written, uncomment the three marked lines below; `build-genesis.sh` already refuses to
 ///      produce a launch genesis while FEESPLITTER is missing, so the two cannot drift apart.
+///
+///      WBAC (decision #22, genesis address 0x...0106, spec 01-CONTRACT-SPEC 8.4) IS deployed here.
+///      It is a neutral tool, not a system contract - no constructor arguments, no immutables, and
+///      nothing on this chain calls it. It is in the genesis only because a Uniswap-V2-style pair
+///      needs an ERC-20 on both sides, and a chain without one canonical wrapper ends up with
+///      several incompatible ones.
 contract DeployLayerSystem is Script {
     function run() external {
         uint256 expectedChainId = vm.envOr("BAC_DEPLOY_CHAINID", uint256(31337));
@@ -50,6 +57,7 @@ contract DeployLayerSystem is Script {
         L2Bridge bridge = new L2Bridge(bscBridge, rotationSigner, genesisRelayer);
         L2Gate gate = new L2Gate();
         AgentBook book = new AgentBook();
+        WBAC wbac = new WBAC();
         // FeeSplitter splitter = new FeeSplitter();                       // <-- uncomment with 11
 
         vm.stopBroadcast();
@@ -58,6 +66,7 @@ contract DeployLayerSystem is Script {
         console2.log("BAC_ADDR_L2BRIDGE=%s", vm.toString(address(bridge)));
         console2.log("BAC_ADDR_L2GATE=%s", vm.toString(address(gate)));
         console2.log("BAC_ADDR_AGENTBOOK=%s", vm.toString(address(book)));
+        console2.log("BAC_ADDR_WBAC=%s", vm.toString(address(wbac)));
         // console2.log("BAC_ADDR_FEESPLITTER=%s", vm.toString(address(splitter)));  // <-- uncomment
     }
 }
