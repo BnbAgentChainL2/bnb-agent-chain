@@ -8,8 +8,8 @@ export const LAYER_CHAIN_ID = 56777;
 export const BSC_CHAIN_ID = 56;
 
 export const DEFAULT_BSC_RPC = "https://bsc-rpc.publicnode.com";
-export const DEFAULT_LAYER_RPC = "https://95-179-183-132.sslip.io/rpc";
-export const DEFAULT_API_BASE = "https://95-179-183-132.sslip.io";
+export const DEFAULT_LAYER_RPC = "https://bnbagentchain-rpc.xyz/rpc";
+export const DEFAULT_API_BASE = "https://bnbagentchain-rpc.xyz";
 
 /** 层内创世系统合约的固定地址（02 §2），发射前后都不会变。 */
 export const LAYER_SYSTEM = {

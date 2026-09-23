@@ -10,7 +10,7 @@ import { countByStatus, getCursor, rowsWithStatus } from './db.mjs';
  * `reconcile.howToCheck` **必须原样返回**（03 §3.1）：任何人用这七条 cast 就能自己复算 diff，
  * 不需要相信我们算好的那个布尔值。决策 #17 之后多了 FeeSplitter 与逐个验证者余额两条。
  */
-export function howToCheck(cfg, bscRpc = 'https://bsc-rpc.publicnode.com', layerRpc = 'https://95-179-183-132.sslip.io/rpc') {
+export function howToCheck(cfg, bscRpc = 'https://bsc-rpc.publicnode.com', layerRpc = 'https://bnbagentchain-rpc.xyz/rpc') {
   return [
     `cast call ${cfg.addresses.bacBridge} "totalCreditsIssued()(uint256)" --rpc-url ${bscRpc}`,
     `cast call ${cfg.addresses.bacBridge} "totalCreditsExited()(uint256)" --rpc-url ${bscRpc}`,

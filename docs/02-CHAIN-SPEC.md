@@ -22,7 +22,7 @@
 | D0-6 | **实测小费（priority fee）到底进了谁的账** | 一次性链上发一笔 `maxPriorityFeePerGas > 0` 的交易，读 header 的 `miner`/`coinbase` 字段与该地址的余额增量 | ⬜ **必做，它决定 §4.1 对账公式减哪几个地址。** 预期：Besu 的 BFT 出块器把**本节点地址**写进 header 的 coinbase，小费归**提案者**（= QBFT validator 的地址，由 node key 导出）。**在实测之前，对账公式按 fail-closed 写成「减去 `qbft_getValidatorsByBlockNumber` 返回的每一个地址」**——多减一个恒为 0 余额的地址不会出错，漏减一个会让告警永久误报 |
 | D0-7 | **冷备能不能真恢复** | 停容器 → `tar` 整个 data-path → 起一台新容器用同一份 `genesis.json` + 恢复的 data-path + 同一份 `key` → 确认从原高度续上、enode 不变、`qbft_getValidatorsByBlockNumber` 一致 | ⬜ **必做**。顺便测出「停机打备份」要多久（决定 §5.5 的窗口是不是 5 分钟）。**RocksDB 没有在线一致快照，绝不对运行中的 data-path 打 tar**（§5.5） |
 | D0-8 | **用正式模板跑一次创世回读对拍** | §3.1 的 `build-genesis.sh` 全程跑通，结尾打印 `GENESIS BUILD PASSED` | ⬜ **必做**。这一条同时钉死三个 Besu 细节：①`alloc.balance` 用十六进制还是十进制（本文一律写十六进制，见 §3 规则 7）；②`cancunTime: 0` 下不预置 EIP-4788 beacon-root 合约会不会拦启动（D0-1 的实测说不会，这里用正式 alloc 再确认一次）；③`mixHash` 必须是 QBFT 的那个魔数常量 |
-| D0-9 | **确认 Bonsai 的 trie-log 修剪是开着的** | 启动日志里搜 `trie log`；`--bonsai-limit-trie-logs-enabled` 的默认值随版本变过 | ⬜ **必做**。这是 Besu Bonsai 最有名的磁盘坑：trie log 不修剪会无界增长，几周就能吃掉几十 GB。若默认是关的就显式打开；若已经涨起来了，离线用 `besu storage x-trie-log prune` 修剪（要停节点） |
+| D0-9 | ~~**确认 Bonsai 的 trie-log 修剪是开着的**~~ → **改为：确认离线修剪可行** | 演练链实测 | ✅ **DONE 2026-09-22**：**在线修剪不可用** —— `--bonsai-limit-trie-logs-enabled` 与 `--sync-mode=FULL` + `BONSAI` 互斥，Besu 拒绝启动；单验证者私链只能是 FULL。改为停机后跑 `besu storage x-trie-log prune`，并进冷备窗口与运维周检清单。原文：这是 Besu Bonsai 最有名的磁盘坑：trie log 不修剪会无界增长，几周就能吃掉几十 GB。若默认是关的就显式打开；若已经涨起来了，离线用 `besu storage x-trie-log prune` 修剪（要停节点） |
 | D0-10 | **钉死 BFT 区块时间戳的未来上界** | 看 Besu 源码/日志里 BFT 的 `ACCEPTABLE_CLOCK_DRIFT` 实际秒数 | ⬜ **必做**。`00` §2 的信任表写着「签名节点可在 ±15 秒漂移内自由选择区块时间戳，从而决定一笔退出属于哪个纪元」——这句话在 Besu 下的**上界数字要换成实测值**，权力本身依然存在，不能因为换客户端就悄悄删掉 |
 
 **镜像钉死 `hyperledger/besu:24.12.2`（D0-1 实测通过的那个 tag），并 `docker save` 一份本地 tar 留底。不用 `latest`。**
@@ -569,7 +569,7 @@ RocksDB 的压缩/写放大/索引开销按 1.5–2 倍估 → **26–58 MB/天�
 | 其余 | 给系统与机器上已有的其他负载（**不动**） | — |
 
 **这个 9.5–21 GB/年是估算，不是实测。** D0-4 跑 200 块只够验证「能起来」，真正的日增要在上线后第一个 24 小时用 `du -sh` 量一次并写回本表。
-**Bonsai 的 trie log 是唯一已知会无界增长的部分**（D0-9）：确认 `--bonsai-limit-trie-logs-enabled` 打开；真涨起来了用 `besu storage x-trie-log prune` 离线修剪（要停节点，和冷备窗口合并做）。
+**Bonsai 的 trie log 是唯一已知会无界增长的部分**（D0-9）：**在线修剪用不了** —— 实测加上 `--bonsai-limit-trie-logs-enabled` 后 Besu 直接拒绝启动（`Cannot enable --bonsai-limit-trie-logs-enabled with --sync-mode=FULL and --data-storage-format=BONSAI`），而单验证者私链的同步模式就是 FULL。所以只能**停机离线修剪**；真涨起来了用 `besu storage x-trie-log prune` 离线修剪（要停节点，和冷备窗口合并做）。
 
 ---
 
@@ -652,7 +652,9 @@ services:
       - --node-private-key-file=/secrets/key  # ← 同时是 enode 身份和 QBFT validator 身份，丢了两样一起丢
       - --data-storage-format=BONSAI          # §4.4；Besu 24.12 的 Bonsai 没有 archive 模式
       - --bonsai-historical-block-limit=512   # eth_call 的历史窗口 = 512 × 3 s ≈ 25.6 分钟（写进 /api/health 的 rpc.limits）
-      - --bonsai-limit-trie-logs-enabled=true # D0-9：不开就是无界增长
+      # 不要加 --bonsai-limit-trie-logs-enabled：D0-9 实测 Besu 直接拒绝启动
+      #   Cannot enable --bonsai-limit-trie-logs-enabled with --sync-mode=FULL and --data-storage-format=BONSAI
+      # 单验证者私链的同步模式就是 FULL，所以在线修剪永远用不了，只能离线修剪（§4.4）
       - --sync-mode=FULL
       # --- HTTP RPC（只在 compose 内网，外部只经 caddy → indexer 的方法白名单）---
       - --rpc-http-enabled=true

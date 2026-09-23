@@ -24,7 +24,7 @@ export const FEE_SINK = '0x000000000000000000000000000000000000dEaD';
 export const TOTAL_SUPPLY = 10n ** 27n;         // 1,000,000,000 BAC
 
 // —— 默认端点（02 §1、决策 #9）——
-export const DEFAULT_API_BASE = 'https://95-179-183-132.sslip.io';
+export const DEFAULT_API_BASE = 'https://bnbagentchain-rpc.xyz';
 export const DEFAULT_LAYER_RPC = 'http://127.0.0.1:8545';   // 见证人只读自己的节点
 export const DEFAULT_BSC_RPC = 'https://bsc-rpc.publicnode.com';
 export const DEFAULT_BSC_RPC_2 = 'https://bsc-dataseed.bnbchain.org';

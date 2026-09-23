@@ -64,7 +64,7 @@ export function loadConfig(env = process.env) {
     // 限速：每 IP 每秒 20 次、每分钟 600 次（03 §3 开头）。
     ratePerSec: intOr(env.BAC_API_RATE_PER_SEC, 20),
     ratePerMin: intOr(env.BAC_API_RATE_PER_MIN, 600),
-    apiBase: env.BAC_API_BASE || "https://95-179-183-132.sslip.io",
+    apiBase: env.BAC_API_BASE || "https://bnbagentchain-rpc.xyz",
 
     addresses,
   };

@@ -429,9 +429,10 @@ bilingual, with identical meaning in both languages.
 
 `docs/decisions.md` is the ratified decision record and overrides every other document, including
 this one. It is append-only, so later rows supersede earlier ones — read the whole table, never a
-single row. As of this writing it holds 17 decisions. Decision #6 supersedes #1, #12 supersedes
-the consensus-client half of #6, #13 replaced the exit-queue economics, and #17 overrides the
-gas-fee split in #15 and #16.
+single row. As of this writing it holds 18 decisions. Decision #6 supersedes #1, #12 supersedes
+the consensus-client half of #6, #13 replaced the exit-queue economics, #17 overrides the gas-fee
+split in #15 and #16, and #18 supersedes #9 — the project now has domains, though they resolve to
+the same single host.
 
 ---
 
@@ -441,18 +442,40 @@ Pre-launch. Nothing is deployed on any network.
 
 - No token exists. No contract address exists. Any address claiming to be BAC right now is not
   this project.
-- The layer chain has never produced a block. Its genesis has not been built.
+- **The production layer chain has never produced a block, and its genesis has not been built.** A
+  separate staging chain does run, on the same parameters (chainId 56777, 3-second QBFT blocks, a
+  20,000,000 gas limit, `cancunTime 0`, `zeroBaseFee`, Bonsai storage), to answer the questions that
+  can only be answered by leaving a node up overnight. It is not the chain: its genesis carries none
+  of the system contracts and no `OPERATOR_FLOAT`, its validator key is throwaway, and its data is
+  wiped at will. Nothing on it is a balance, a history, or a commitment.
 - Contracts compile and the suite passes, but they have not been audited and have not been
   deployed to a testnet.
 - The website is a design draft. Every number visible on it is a placeholder, and the page says
   so.
+
+### Endpoints
+
+These are the hosts the code is configured against. They serve the staging chain, not a production
+one, and none of them is a commitment — read [Status](#status) above before pointing anything at
+them.
+
+| Purpose | Host |
+|---|---|
+| Layer RPC | `https://bnbagentchain-rpc.xyz/rpc` |
+| Indexer API | `https://bnbagentchain-rpc.xyz` |
+| Block explorer | `https://bnbagentchain-scan.com` |
+| Fallback RPC and API | `https://95-179-183-132.sslip.io` (Caddy auto-TLS, no domain needed) |
+
+The fallback is the same machine, reached by its address instead of by name. Naming it does not add
+a second host, and the single-trust-domain statement in [Trust model](#trust-model-in-v1) applies to
+every row of this table.
 
 ### Where each piece stands
 
 | Piece | State |
 |---|---|
 | `contracts/` | Written and compiling, suite passing, not audited, not deployed. Predates decision #17: there is no `FeeSplitter`, and `Anchor` has no `proposerIncomeRoot`. |
-| `chain/` | Config template and README only. Genesis has never been built; the build script is not written. |
+| `chain/` | Config template and README only. The production genesis has never been built and the build script is not written. A staging node has run on the same parameters; what it measured is folded into `docs/02-CHAIN-SPEC.md`. |
 | `relayer/` | Directions A (deposits), B (anchors) and C (status mirror) implemented and tested. Direction D (fee-split weights, `docs/03-INTERFACES.md` §1.4b) is not written. The anchor it posts is the pre-#17 twelve-field struct. |
 | `indexer/` | Ingest, store, warnings and every §3 endpoint implemented, including the three fee endpoints added for decision #17. The tables that feed those endpoints (`proposer_income`, `pool_claims`, `remittance`) exist but nothing writes to them yet. |
 | `sdk/` | Complete against §5 and building to `dist/`. The commitment it helps compute is the pre-#17 triple. |

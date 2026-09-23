@@ -493,6 +493,10 @@ contract BacForkLaunchTest is FlapBSCFixture {
         factory.newVault(token, address(0), LAUNCHER, _vaultData());
 
         _assertSolvent();
+        emit log_named_address("launched token (vanity ...7777)", token);
+        emit log_named_address("treasury vault", address(vault));
+        emit log_named_bytes32("launch salt", launchSalt);
+        emit log_named_uint("fork block", vm.getBlockNumber());
         emit log_named_uint("GAS launch (newTokenV6WithVault, with 0.05 BNB launch buy)", gasLaunch);
     }
 

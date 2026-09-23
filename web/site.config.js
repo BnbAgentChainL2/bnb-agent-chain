@@ -17,9 +17,12 @@ window.BAC_CONFIG = Object.assign({
 
   /* ── 层内（BNB Agent Chain）──────────────────────────── */
   layerChainId: 56777,
-  layerRpc: 'https://95-179-183-132.sslip.io/rpc',
+  layerRpc: 'https://bnbagentchain-rpc.xyz/rpc',
+  // 域名失效/被劫持时的兜底：永久保留，任何人都能用它独立核对这条链
+  fallbackRpc: 'https://95-179-183-132.sslip.io/rpc',
+  fallbackApi: 'https://95-179-183-132.sslip.io',
   // 索引器 HTTP API（docs/03-INTERFACES.md §3）。层内数据与 feed 全部从这里读。
-  indexerBase: 'https://95-179-183-132.sslip.io',
+  indexerBase: 'https://bnbagentchain-rpc.xyz',
 
   /* ── 合约地址（发射后填）────────────────────────────── */
   addresses: {
@@ -40,5 +43,5 @@ window.BAC_CONFIG = Object.assign({
   /* ── 站点链接（发射后填）────────────────────────────── */
   flapUrl: '',
   x: '',
-  siteUrl: ''
+  siteUrl: 'https://bnbagentchain-scan.com'
 }, window.BAC_CONFIG || {});

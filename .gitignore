@@ -18,6 +18,9 @@ chain/build/
 # ── foundry ──────────────────────────────────────────────────────────────
 contracts/out/
 contracts/cache/
+# anvil-rehearsal build dirs (scripts/anvil_rehearsal.sh uses --out out-fork --cache-path cache-fork)
+contracts/out-fork/
+contracts/cache-fork/
 contracts/broadcast/**/dry-run/
 contracts/lib/
 
