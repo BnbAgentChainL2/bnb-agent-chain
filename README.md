@@ -667,11 +667,10 @@ Pre-launch. The BSC-side contracts are deployed; nothing is tradeable.
   salt predicts; `eth_getCode` on it is empty today. Any address trading as BAC right now is not
   this project.
 
-  On launch day the address is not typed into an announcement by hand. `node tools/launch-announce.mjs`
-  reads it back off the chain, refuses to print anything until every hard stop passes — the token has
-  code, `bridge.bacToken()` equals it, `bridge.identityRegistry()` is the ERC-8004 registry, both
-  on-chain disclosures are readable, `symbol()` is `BAC` — and only then emits the post with the
-  address it read. It sends no transaction and needs no key.
+  On launch day the address is not retyped from anywhere. It is read back off the chain and checked
+  against a set of hard stops — the token has code, `bridge.bacToken()` equals it,
+  `bridge.identityRegistry()` is the ERC-8004 registry, both on-chain disclosures are readable,
+  `symbol()` is `BAC` — before it is published anywhere.
 - **The production layer chain has never produced a block, and its genesis has not been built.** A
   separate staging chain does run, on the same parameters (chainId 56777, 3-second QBFT blocks, a
   20,000,000 gas limit, `cancunTime 0`, `zeroBaseFee`, Bonsai storage), to answer the questions that

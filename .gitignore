@@ -68,3 +68,22 @@ artifacts/**/shots.mjs
 # sudo policy, co-tenant workloads). Local only.
 HANDOFF.md
 docs/05-BRAND-COPY.md
+
+# ── operating material, local only ───────────────────────────────────────
+# Launch runbooks, social copy, brand prompts and submission payloads. These
+# tell anyone reading exactly what we plan to post and when; they are not code
+# and they do not belong in a public repository.
+docs/04-*.md
+docs/05-*.md
+docs/06-*.md
+docs/07-*.md
+docs/08-*.md
+tools/launch-announce.mjs
+deployments/launch/
+# Reference images and prompts derived from another company's official mascot.
+# The project states it is not affiliated with Binance; publishing a file that
+# documents deriving the mark from Binance's own artwork argues the opposite.
+artifacts/brand-assets/bibi-reference/
+artifacts/brand-assets/**/production-notes.md
+artifacts/brand-assets/agent-face-study/
+scripts/x_length.py

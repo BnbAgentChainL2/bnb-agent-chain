@@ -192,5 +192,5 @@ numbers; new rarely-called code belongs in the extension.
 extension), the `ERC1967Proxy` with `initialize`, `setValidatorStaking`, `BacTaxRouter`. It then
 checks the proxy's implementation slot, owner, the #29a notice, the extension, every
 `bacToken()`, that the bare implementation holds no state, and that the router has no
-`description()`. The launch itself is `docs/04-发射操作手册.md`. BscScan verification:
+`description()`. The launch runbook itself is kept out of this repository. BscScan verification:
 `verify/bscscan/README.md` (the JSON there must be regenerated from the final build).

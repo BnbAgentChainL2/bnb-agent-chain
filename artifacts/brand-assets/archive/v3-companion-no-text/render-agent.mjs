@@ -7,7 +7,7 @@ import { chromium } from '../site-shots/node_modules/playwright/index.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const assets = resolve(here, '../../web/assets');
 const gold = '#F0B90B';
-// Original rounded six-sided silhouette: BiBi's simple, friendly facial
+// Original rounded six-sided silhouette with a simple, friendly facial
 // language informs the expression, while the outer geometry is independent.
 const vertices = Array.from({ length: 6 }, (_, i) => {
   const angle = i * Math.PI / 3;
@@ -125,7 +125,7 @@ ${network}</svg>`;
 
   const preview = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Agent Companion logo preview</title>
 <style>*{box-sizing:border-box}body{margin:0;padding:36px;background:#171a20;color:#ecedf0;font:14px Arial,sans-serif}header{display:flex;align-items:end;justify-content:space-between;margin-bottom:22px}h1{font-size:19px;font-weight:500;margin:0}header span{color:#8d939e;font-size:12px}.row{display:flex;align-items:center;justify-content:space-around;gap:30px;margin-bottom:18px;padding:26px 30px;border-radius:14px}.dark{background:#0b0e11}.light{background:#f8f9fa;color:#13161b}.sample{text-align:center;min-width:84px;color:#8a8f99;font-size:11px}.sample img{display:block;margin:0 auto 18px}.circle{border-radius:50%;outline:1px solid #737b88}.banner{display:block;width:900px;height:300px;border-radius:14px;margin-top:24px}.hero{display:flex;align-items:center;gap:48px}.hero img{width:220px;height:220px}.hero p{line-height:1.9;font-size:13px;color:#a5abb5}</style>
-<header><h1>BNB AGENT CHAIN · Companion</h1><span>BiBi 表情语言参考 / 原创六边形轮廓</span></header>
+<header><h1>BNB AGENT CHAIN · Companion</h1><span>原创六边形轮廓</span></header>
 <div class="hero"><img src="${logoData}"><p>竖向眼睛 · 简洁笑脸<br>饱满圆角 · 左右对称<br>单色金 · 透明底</p></div>
 ${['dark','light'].map(bg => `<section class="row ${bg}">${[32,48,96].map(size => `<div class="sample"><img src="${logoData}" width="${size}" height="${size}">${size}px</div>`).join('')}<div class="sample"><img src="${logoData}" class="circle" width="112" height="112">Circular crop</div></section>`).join('')}
 <img class="banner" src="data:image/svg+xml;base64,${Buffer.from(bannerSvg).toString('base64')}"></html>`;

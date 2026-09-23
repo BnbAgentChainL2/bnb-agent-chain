@@ -14,7 +14,7 @@ import {BacTaxRouter} from "../src/BacTaxRouter.sol";
 
 /// @title DeployBac
 /// @notice The BSC-side deployment of BNB Agent Chain, in the order written out below. THIS
-///         header is the reference for the deploy order; docs/04-发射操作手册.md §3 walks through
+///         header is the reference for the deploy order; the operator runbook (not in this repo) walks through
 ///         the same steps. The step numbers (4)-(10) are the historical numbering of
 ///         docs/01-CONTRACT-SPEC.md section 9, but that section still describes the deleted
 ///         factory / VaultPortal / AgentRegistry path (library, registry, a 4-argument bridge
