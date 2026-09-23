@@ -184,7 +184,7 @@
         ? R.emptyRow(AG_COLS, '还没有任何 agent 进场。进场要持有 ERC-8004 agent 身份（BSC 身份注册表 ' + ID_REGISTRY
           + '），再把 BAC 锁进 BSC 上的 BacBridge；代币还没发射、桥还没部署，所以现在一条进场记录都没有 —— '
           + '这不是读取失败，是真的还没有人进场。' + ID_LIMIT
-          + '层内那条链（演练链）本身已经在出块了，区块和交易在「区块」「交易」两页都是实时的。')
+          + '层内那条链本身已经在出块了，区块和交易在「区块」「交易」两页都是实时的。')
         : R.missRow(AG_COLS, s, '');
       UI.setText('#agCount', s === 'pre' ? '0 个身份' : miss(s));
       /* 没有列表就没有可翻的页：'pre' 时照实写 0 条（真的还没有人进场），读取中 / 读不到时什么都不画。 */
@@ -380,7 +380,7 @@
         /* 决策 #15 / #17：验证者节点是**发射后开放**的事，现在只有官方节点在出块 —— 不许写成现在就能当验证者。
            演练链的只读同步已经公开（HANDOFF §2），那种节点不出块、没有奖励，照实说。 */
         body.innerHTML = R.missRow(9, s, s === 'pre'
-          ? '这里会是全部注册节点。现在只有官方节点在出块；演练链的只读同步现在就开放（' + UI.NODE_JSON
+          ? '这里会是全部注册节点。现在只有官方节点在出块；这条链的只读同步现在就开放（' + UI.NODE_JSON
             + '，没有任何奖励），在 BSC 上质押 BAC、跑验证者节点发射后开放。'
           : '');
       } else if (!VM.validators.items.length) {
@@ -480,7 +480,7 @@
       '</div>' +
       '<p class="fs-note">basefee 固定为 0，gas 单价固定 1 gwei，所以这一块的手续费 <b>100% 先落在出块者自己的地址里</b>' +
       '（Besu QBFT 下 <code>--miner-coinbase</code> 被忽略，coinbase 永远是出块者本人）。发射后的阶段 1 由官方节点把它转进分账合约 ' +
-      '<code>' + esc(sa(splitter)) + '</code>（正式链创世预置，演练链上没有这个合约） —— <b>这一步是受信的</b>，对账见<a class="a-link" href="#/validators">验证者页</a>。</p>' +
+      '<code>' + esc(sa(splitter)) + '</code>（正式链创世预置，现在这条链上还没有这个合约） —— <b>这一步是受信的</b>，对账见<a class="a-link" href="#/validators">验证者页</a>。</p>' +
       '</div></div>';
   }
 
@@ -504,7 +504,7 @@
       val(s, toSelf, function (x) { return bac(x, 9); }) + ' BAC</b></div>' +
       '<div class="fs-row"><span>→ 官方基金会</span><b>' + val(s, toFound, function (x) { return bac(x, 9); }) + ' BAC</b></div>' +
       '</div>' +
-      '<p class="fs-note">手续费不销毁：basefee = 0，全额以 tips 形式进出块者地址；发射后再由它转入分账合约（演练链上没有分账合约）。' +
+      '<p class="fs-note">手续费不销毁：basefee = 0，全额以 tips 形式进出块者地址；发射后再由它转入分账合约（现在这条链上还没有分账合约）。' +
       '<b>阶段 1 的出块者给自己付费等于免费</b>，这一条照实说。' + esc(GAS_NOTE_OFFICIAL + GAS_NOTE_VALIDATOR) + '</p>' +
       '</div></div>';
   }
@@ -929,12 +929,12 @@
           : R.emptyRow(9, '还没有任何纪元被锚定。'))
         : R.missRow(9, s, s === 'pre' ? '这里会是每一个纪元的锚点、见证与 gas 对账。' : '')) +
       '</tbody></table></div>' +
-      '<div class="pf"><span>「差额」= 出块者已收 − 已转入分账合约 <code>0x…0104</code>（正式链创世预置，演练链上没有）。进行中的纪元差额不为 0 是正常的' +
+      '<div class="pf"><span>「差额」= 出块者已收 − 已转入分账合约 <code>0x…0104</code>（正式链创世预置，现在这条链上还没有）。进行中的纪元差额不为 0 是正常的' +
       '（当纪元的费用还没扫完）；<b>已最终的纪元差额应当是 0，不是 0 会在这里变黄并触发告警</b>。</span>' +
       '<span class="pf-r">保留最近 30 个纪元</span></div></div>' +
       '<p class="note">退出的叶子数据由 <code>GET /api/epoch/{n}/leaves</code> 公开，' +
       /* 只读同步现在就开放（决策 #36），但演练链上没有 L2Bridge：能从日志重建退出叶子的只有正式链 */
-      '<b>任何跑了全节点的人都能从 <code>L2Bridge.ExitBurned</code> 日志自己重建</b>（L2Bridge 只在正式链上，演练链上没有）—— 我们的服务器不是这份数据的唯一来源。' +
+      '<b>任何跑了全节点的人都能从 <code>L2Bridge.ExitBurned</code> 日志自己重建</b>（L2Bridge 只在正式链上，现在这条链上还没有）—— 我们的服务器不是这份数据的唯一来源。' +
       '退出拿到的是桥用桥池 BNB 在市场上回购来的 BAC，按份额兑付，不承诺任何金额。</p>';
   }
 
@@ -1103,9 +1103,9 @@
         : builtEmpty('还没有 agent 在这条链上发过代币。',
             /* 正式链创世的设计（决策 #22），不是现在这条演练链：演练链创世里只有一个测试账户，系统合约与中立工具一个都没有（eth_getCode 实测为 0x） */
             '这条链上没有官方 DEX，也没有任何官方发行的代币：正式链的创世只会预置三个系统合约和几个中立工具' +
-            '（Multicall3、CREATE2 部署器、WBAC 包装币），没有一个是拿来给人炒的；现在跑的演练链创世里这些都没有。第一个代币要等某个 agent 自己部署出来。' +
+            '（Multicall3、CREATE2 部署器、WBAC 包装币），没有一个是拿来给人炒的；现在这条链的创世里这些都没有。第一个代币要等某个 agent 自己部署出来。' +
             '<br>正式发射后只有 agent 能在这一层发交易，到时这一页要么是空的，要么上面每一行都是某个 agent 自己造的。' +
-            '演练链上没有这道门：测试私钥是公开的，谁都能在上面发币。' +
+            '现在这条链上还没有这道门：创世里预置账户的私钥是公开的测试私钥，谁都能在上面发币。' +
             '<br><br>agent 想发一个，自己用 <code>@bac/agent-sdk</code> 部署合约就行；' + esc(BUILT_SRC))) +
       '</div>' + detectBar();
   }
@@ -1517,25 +1517,25 @@
     { a: ['wbac', 'wrapped bac', '包装币', '包装'], t: 'token',
       ad: '0x0000000000000000000000000000000000000106',
       v: 'WBAC · Wrapped BAC', m: '层内包装币：创世预置的中立工具，1:1 包装原生 BAC',
-      pre: '正式链创世预置的包装币（0x…0106）；现在跑的演练链上还没有', page: '#/tokens' },
+      pre: '正式链创世预置的包装币（0x…0106）；现在这条链上还没有', page: '#/tokens' },
     { a: ['multicall3', 'multicall'], t: 'contract', ad: '0xcA11bde05977b3631167028862bE2a173976CA11',
       v: 'Multicall3', m: '创世预置的中立工具：一次调用批量读多个合约',
-      pre: '正式链创世预置的中立工具；现在跑的演练链上还没有', page: '#/tokens' },
+      pre: '正式链创世预置的中立工具；现在这条链上还没有', page: '#/tokens' },
     { a: ['create2', 'create2 部署器', '部署器'], t: 'contract', ad: '0x4e59b44847b379578588920cA78FbF26c0B4956C',
       v: 'CREATE2 部署器', m: '创世预置的中立工具：确定性地址部署',
-      pre: '正式链创世预置的中立工具；现在跑的演练链上还没有', page: '#/tokens' },
+      pre: '正式链创世预置的中立工具；现在这条链上还没有', page: '#/tokens' },
     { a: ['l2bridge', '层内桥'], t: 'contract', ad: '0x0000000000000000000000000000000000000101',
       v: 'L2Bridge · 层内桥', m: '系统合约：层内一侧的进出场记账',
-      pre: '正式链创世的系统合约；现在跑的演练链上还没有', page: '#/treasury' },
+      pre: '正式链创世的系统合约；现在这条链上还没有', page: '#/treasury' },
     { a: ['l2gate', '入场门禁', '门禁'], t: 'contract', ad: '0x0000000000000000000000000000000000000102',
       v: 'L2Gate · 入场门禁', m: '系统合约：层内只有 agent 能发交易这条规则由它执行',
-      pre: '正式链创世的系统合约；现在跑的演练链上还没有（演练链上谁都能发交易）', page: '#/agents' },
+      pre: '正式链创世的系统合约；现在这条链上还没有（现在这条链上谁都能发交易）', page: '#/agents' },
     { a: ['agentbook', 'agent 名录', '名录'], t: 'contract', ad: '0x0000000000000000000000000000000000000103',
       v: 'AgentBook · Agent 名录', m: '系统合约：层内的 agent 名册',
-      pre: '正式链创世的系统合约；现在跑的演练链上还没有', page: '#/agents' },
+      pre: '正式链创世的系统合约；现在这条链上还没有', page: '#/agents' },
     { a: ['feesplitter', 'gas 分账', '分账'], t: 'contract', ad: '0x0000000000000000000000000000000000000104',
       v: 'FeeSplitter · gas 分账', m: '系统合约：出块者的 gas 费按决策 #17 分账',
-      pre: '正式链创世的系统合约；现在跑的演练链上还没有', page: '#/validators' }
+      pre: '正式链创世的系统合约；现在这条链上还没有', page: '#/validators' }
   ];
 
   function searchAll(qraw) {

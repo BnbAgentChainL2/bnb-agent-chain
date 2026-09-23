@@ -295,7 +295,7 @@
         <thead><tr><th class="l">交易哈希</th><th class="l">方法</th><th class="l">agent</th><th class="l">目标</th><th class="r">手续费</th><th class="r">状态</th></tr></thead>
         <tbody id="ovTxs"></tbody>
       </table></div>
-      <div class="pf"><span>正式发射后，未注册地址会标成「未注册（由某 agent 转入）」，它自己发不出交易。演练链上没有这道门：测试私钥是公开的，谁都能发交易。</span><span class="pf-r">点任意一行看交易详情</span></div>
+      <div class="pf"><span>正式发射后，未注册地址会标成「未注册（由某 agent 转入）」，它自己发不出交易。现在这条链上还没有这道门：创世里预置账户的私钥是公开的测试私钥，谁都能发交易。</span><span class="pf-r">点任意一行看交易详情</span></div>
     </div>
   </div>
 
@@ -313,7 +313,7 @@
           <tr><td>层内流通积分</td><td class="r n"><span data-vm="chain.circulating" data-st="idx" data-fmt="token">—</span><u>BAC</u></td></tr>
         </tbody>
       </table>
-      <p class="note">块高、区块上限、gas 单价、baseFee 是层内节点的实时读数。累计交易、累计合约、层内流通积分要把全链扫一遍才算得出来，由索引器提供，它没答话时显示「—」。演练链的创世里预置了测试用 BAC，所以现在的流通积分不是从 BSC 桥进来的。</p>
+      <p class="note">块高、区块上限、gas 单价、baseFee 是层内节点的实时读数。累计交易、累计合约、层内流通积分要把全链扫一遍才算得出来，由索引器提供，它没答话时显示「—」。现在这条链的创世里预置了测试用 BAC，所以现在的流通积分不是从 BSC 桥进来的。</p>
       <div class="ph sub"><span class="ph-t">每块交易数（本站读到的这一窗口）</span><span class="ph-fill"></span><span class="ph-m"><span data-vm="chain.tps" data-st="blocks" data-fmt="tps">读取中…</span> tx/s</span></div>
       <div class="chart" id="chLive" data-h="62"></div>
     </div>
@@ -485,7 +485,7 @@
     <h1 data-i18n="nav.txs">交易</h1>
     <span class="vh-en">TRANSACTIONS</span>
     <span class="fill" aria-hidden="true"></span>
-    <span class="vh-m">gas 单价固定 1 gwei · basefee = 0，手续费全额进出块者地址；发射后再由它转入分账合约，演练链上没有分账合约 · <span data-src="layer">读取中…</span></span>
+    <span class="vh-m">gas 单价固定 1 gwei · basefee = 0，手续费全额进出块者地址；发射后再由它转入分账合约，现在这条链上还没有分账合约 · <span data-src="layer">读取中…</span></span>
   </div>
 
   <div class="panel">
@@ -550,8 +550,8 @@
   <p class="note" data-stage="deployed launched" hidden><b>名录怎么来的：</b>一个 agent = 一个锁进过 BacBridge 的 ERC-8004 身份编号。编号、持有人（ownerOf）和 agentWallet 由本站直接读 BSC 上的 ERC-8004 身份注册表 <code translate="no">0x8004A169FB4a3325136EB29fA0ceB6D2e539a432</code>；名字来自这个身份的 tokenURI，是持有人自述，本站只原样转义显示，不背书其中任何说法，也不加载其中的图片和链接。我们要求持有 agent 身份，我们不能证明它是 AI：这个身份是一枚普通的 ERC-721，人也能铸。<br>
   锁入积分与已退出积分直接读 BacBridge 的 <code translate="no">credited</code> / <code translate="no">exitedCredits</code>；层内余额、部署数这些层内数据只有索引器给得出，读不到时写「—」。</p>
   <p class="note" data-stage="none"><b>为什么这一页是空的：</b>进场要求持有 ERC-8004 agent 身份 —— 桥合约直接读 BSC 上的 ERC-8004 身份注册表 <code translate="no">0x8004A169FB4a3325136EB29fA0ceB6D2e539a432</code>（ERC-721，名称 AgentIdentity）。我们要求持有 agent 身份，我们不能证明它是 AI：这个身份是一枚普通的 ERC-721，人也能铸。代币还没发射、桥合约还没部署，所以到现在还没有任何 agent 进场。
-  这不是读取失败，也不是我们藏了数据 —— 层内那条链（目前是演练链）本身已经在出块了，它的区块与交易在<a class="a-link" href="#/blocks">区块</a>、<a class="a-link" href="#/txs">交易</a>两页都是实时的，
-  但上面没有一笔是 agent 发的：演练链的预置账户用的是公开的 Hardhat 测试私钥，我们用它压测，任何人也都能用它发交易。<br>
+  这不是读取失败，也不是我们藏了数据 —— 层内那条链本身已经在出块了，它的区块与交易在<a class="a-link" href="#/blocks">区块</a>、<a class="a-link" href="#/txs">交易</a>两页都是实时的，
+  但上面没有一笔是 agent 发的：创世里的预置账户用的是公开的 Hardhat 测试私钥，我们用它压测，任何人也都能用它发交易。<br>
   tokenURI（持有人自述）的内容由身份持有人自己提供，本站只做格式核对，不背书其中任何说法。浏览器对任何合约只显示事实（部署者、字节码大小、调用次数），不做任何安全评级。</p>
 </section>
 
@@ -719,7 +719,7 @@
   <!-- 时间点必须照实（决策 #15 / #17 / #36）：只读同步节点现在就能跑（没有奖励）；质押、见证、分 gas 费、出块资格发射后开放，下面整页写的是发射后的规则。 -->
   <section class="notice v-when">
     <span class="n-tag">发射后开放</span>
-    <p><b>现在能跑的只有只读同步节点，没有奖励。</b>当前是演练链，出块的只有官方一个节点；演练链的同步已经公开，照 <code translate="no">https://bnbagentchain-rpc.xyz/node.json</code> 里的命令就能自己跑一个只读节点、从创世块同步全部历史，但它不出块、不见证、拿不到任何奖励。<span data-stage="none">BSC 上的质押合约还没部署。</span><span data-stage="deployed" hidden>BSC 上的质押合约已经部署，代币发射后才能质押。</span><span data-stage="launched" hidden>BSC 上的质押合约已经部署。</span><b>发射后</b>任何人在 BSC 质押 BAC 就能跑验证节点：阶段 1 由官方节点出块，官方块 gas 费的 10% 按「质押 × 出勤」分给见证达标的验证者，另有节点基金注入的见证奖励；阶段 2 挣到出块资格的验证者，自己出的块 gas 费留 50%。不承诺任何金额。</p>
+    <p><b>现在能跑的只有只读同步节点，没有奖励。</b>现在出块的只有官方一个节点；这条链的同步已经公开，照 <code translate="no">https://bnbagentchain-rpc.xyz/node.json</code> 里的命令就能自己跑一个只读节点、从创世块同步全部历史，但它不出块、不见证、拿不到任何奖励。<span data-stage="none">BSC 上的质押合约还没部署。</span><span data-stage="deployed" hidden>BSC 上的质押合约已经部署，代币发射后才能质押。</span><span data-stage="launched" hidden>BSC 上的质押合约已经部署。</span><b>发射后</b>任何人在 BSC 质押 BAC 就能跑验证节点：阶段 1 由官方节点出块，官方块 gas 费的 10% 按「质押 × 出勤」分给见证达标的验证者，另有节点基金注入的见证奖励；阶段 2 挣到出块资格的验证者，自己出的块 gas 费留 50%。不承诺任何金额。</p>
   </section>
 
   <!-- 新分账规则：按出块者分 -->
@@ -737,7 +737,7 @@
           <span><b class="sw v"></b>10% 进<b>验证者池</b>，由本纪元所有在线且见证无误的验证者按质押权重分</span>
           <span><b class="sw f"></b>90% 进<b>官方基金会</b></span>
         </div>
-        <div class="src-n">只是挂机见证，拿的就是这 10%。发射后，这一块的 gas 费先落在官方节点的 EOA 里，再由它转进分账合约（演练链上没有分账合约，费用留在出块者地址） —— <b>这一步是受信的</b>，所以下面有对账面板。</div>
+        <div class="src-n">只是挂机见证，拿的就是这 10%。发射后，这一块的 gas 费先落在官方节点的 EOA 里，再由它转进分账合约（现在这条链上还没有分账合约，费用留在出块者地址） —— <b>这一步是受信的</b>，所以下面有对账面板。</div>
       </div>
 
       <div class="inc-src">
@@ -814,7 +814,8 @@
         <li><b>5</b><span><em>领取</em><code>claimReward(day, validator)</code> 领 BNB 见证奖励；官方块的 10% gas 分账按纪元结算到你的 payout 地址。</span></li>
         <li><b>6</b><span><em>升级</em>按设计，连续 30 天见证无误 → 获得出块资格（阶段 2 规则，还没实现，细则发射后公布），之后<b>你自己出的块按 50/50</b>。</span></li>
       </ol>
-      <div class="v-act"><a class="btn" href="#" aria-disabled="true" title="发射后开放">节点程序 · 发射后公布</a><a class="btn ghost" href="#" aria-disabled="true" title="发射后开放">质押合约 · 发射后公布</a></div>
+      <!-- 质押合约（决策 #39）：BSC 主网上已经部署，按阶段显示 —— 部署之后不许再写「发射后公布」 -->
+      <div class="v-act"><a class="btn" href="#" aria-disabled="true" title="发射后开放">节点程序 · 发射后公布</a><a class="btn ghost" data-stage="none" href="#" aria-disabled="true" title="发射后开放">质押合约 · 发射后公布</a><a class="btn ghost" data-stage="deployed launched" hidden href="https://bscscan.com/address/0xC0cdF18fb2aF4C5Ca34603B6D7C4E29005042943" target="_blank" rel="noopener">质押合约 · BscScan</a></div>
     </div>
   </div>
 
@@ -830,11 +831,11 @@
   <!-- gas 对账（全链累计口径：要 BSC 上的 ChainAnchor） -->
   <div class="recon">
     <div class="rc-h"><span class="rc-t">gas 费对账</span><span class="rc-fill"></span>
-      <span class="rc-m"><span data-stage="none">全链累计口径要 BSC 上的 <code>ChainAnchor</code> 与分账合约，两者都还没部署 —— 所以这四个数现在是「发射后公布」，上面那块是现在就能核的层内实测</span><span data-stage="deployed launched" hidden>全链累计口径来自 BSC 上 <code>ChainAnchor</code> 的 FINAL 锚点与正式链创世里的分账合约；演练链上没有分账合约，上面那块是现在就能核的层内实测</span></span></div>
+      <span class="rc-m"><span data-stage="none">全链累计口径要 BSC 上的 <code>ChainAnchor</code> 与分账合约，两者都还没部署 —— 所以这四个数现在是「发射后公布」，上面那块是现在就能核的层内实测</span><span data-stage="deployed launched" hidden>全链累计口径来自 BSC 上 <code>ChainAnchor</code> 的 FINAL 锚点与正式链创世里的分账合约；现在这条链上还没有分账合约，上面那块是现在就能核的层内实测</span></span></div>
     <div class="rc-b">
       <div class="rc-n"><i>官方节点已收（链上加总）</i><b data-vm="fees.received" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>它出的每个块里 gasUsed × effectiveGasPrice 之和</span></div>
       <div class="rc-op">−</div>
-      <div class="rc-n"><i>已转入分账合约</i><b data-vm="fees.remitted" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>正式链创世里的分账合约 0x…0104 的入账总额（演练链上没有）</span></div>
+      <div class="rc-n"><i>已转入分账合约</i><b data-vm="fees.remitted" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>正式链创世里的分账合约 0x…0104 的入账总额（现在这条链上还没有）</span></div>
       <div class="rc-op">=</div>
       <div class="rc-n rc-diff"><i>差额</i><b data-vm="fees.gap" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>不为 0 会在这里变红并触发告警</span></div>
       <div class="rc-how" id="rcHow"><span>自己核：</span><code>发射后公布</code></div>

@@ -1644,7 +1644,7 @@ contract BacBridgeExtension is BacBridgeCore {
             uint256 amount = epochOwed[epoch][who];
             if (amount == 0) continue;
             // A matured claim is senior and untouchable, exactly as it is after a halt.
-            uint256 young = owed[who] - _maturedOwed(who, cutoff);
+            uint256 young = owed[who];
             if (young == 0) continue;
             // Zeroed even when only part is taken: the rest of this epoch's debt is matured or
             // already paid, and neither can ever become revocable again.

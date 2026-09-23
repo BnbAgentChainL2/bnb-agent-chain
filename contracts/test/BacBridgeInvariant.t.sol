@@ -72,6 +72,7 @@ contract BridgeHandler is Test {
     // ---- ghosts added with v1.1 (per-debt maturity) ----
     bool public gMaturedTakenBack; // a revoke or a demotion reached a matured claim: must stay false
     uint256 public gMaturityChecks; // how often a revoke / demotion ran against a non-zero matured part
+    mapping(address => uint64) internal claimEpochOf; // the anchor epoch of each actor's last own claim
 
     uint256 internal nextExitId = 1;
 
@@ -263,6 +264,7 @@ contract BridgeHandler is Test {
             nextExitId++;
             gHarvests++;
             last = LastExit(e, exitId, agentId, to, credits, true);
+            claimEpochOf[to] = e;
         } catch {}
     }
 
@@ -414,6 +416,27 @@ contract BridgeHandler is Test {
             gHarvests++;
             last = LastExit(e, exitId, agentId, to, credits, true);
             if (bridge.maturedOwed(to) < matured) gMaturedTakenBack = true; // new debt aged old debt
+        } catch {}
+    }
+
+    /// @dev The v1 watchdog-side exploit, end to end: let `to`'s claim mature, route a dust exit
+    ///      to it, then revoke the OLD epoch its matured claim was locked against. v1 voided the
+    ///      whole matured claim here; v1.1 may void at most the young dust.
+    function dustThenRevokeOld(uint256 fromSeed, uint256 toSeed) public {
+        address to = _actor(toSeed);
+        uint64 oldEpoch = claimEpochOf[to];
+        if (oldEpoch == 0 || bridge.owed(to) == 0 || bridge.isHalted()) return;
+        vm.warp(vm.getBlockTimestamp() + bridge.OWED_MATURITY() + 1 days);
+        dustExitTo(fromSeed, toSeed);
+        vm.prank(bridge.watchdog());
+        try bridge.pause() {} catch {}
+        address[] memory who = new address[](1);
+        who[0] = to;
+        uint256 matured = bridge.maturedOwed(to);
+        vm.prank(bridge.watchdog());
+        try bridge.revokeEpochOwed(oldEpoch, who) returns (uint256 revoked) {
+            if (revoked > 0) gHarvests++;
+            _noteMaturedKept(to, matured);
         } catch {}
     }
 
@@ -651,8 +674,9 @@ contract BacBridgeInvariantTest is Test {
 
         handler = new BridgeHandler(bridge, bac, identity, anchor, portal, router, actors);
 
-        bytes4[] memory selectors = new bytes4[](25);
+        bytes4[] memory selectors = new bytes4[](26);
         selectors[24] = BridgeHandler.dustExitTo.selector;
+        selectors[25] = BridgeHandler.dustThenRevokeOld.selector;
         selectors[0] = BridgeHandler.lock.selector;
         selectors[1] = BridgeHandler.release.selector;
         selectors[2] = BridgeHandler.forcePushAndSweep.selector;

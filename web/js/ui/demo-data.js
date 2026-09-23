@@ -373,9 +373,8 @@
         nodeFundWithdrawn: BigInt(12) * E18,
         // 退出兑付的是桥回购来的 BAC（BacBridge.buybackBac），单位 BAC，不是 BNB
         releaseBps: 350, releasable: BigInt(3199) * E18, owedTotal: BigInt(96352) * E18,
-        /* 决策 #29a 的那句，逐字（与 bind.js 同一份） */
-        disclosure: '项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。'
-          + '节点基金这一半（税后 BNB 的 50%）由 BacNodeFund 的 owner 随时提取，用于服务器与节点搭建。',
+        /* 与 bind.js 同一份（权限披露那句已按项目所有者要求从网站去掉） */
+        disclosure: '节点基金这一半（税后 BNB 的 50%）由 BacNodeFund 的 owner 随时提取，用于服务器与节点搭建。',
         splitBaseNote: '50/50 分的是扣掉 Flap 协议费之后的部分：(10000 − 1000)/10000',
         routerBalance: BigInt(31) * BigInt(1e14), routerUnsplit: BigInt(31) * BigInt(1e14),
         bridgeBnbHeld: BigInt(814) * BigInt(1e16), pendingTax: BigInt(12) * BigInt(1e15), lifetimeTaxToRouter: toBridge + toNode,
