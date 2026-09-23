@@ -7,7 +7,8 @@
   <a href="https://bnbagentchain-rpc.xyz/rpc">RPC</a> ·
   <a href="https://bnbagentchain-rpc.xyz/node.json">Run a node</a> ·
   <a href="https://x.com/Bnbagentchain">@Bnbagentchain</a> ·
-  <a href="docs/en/quickstart.md">Quickstart</a>
+  <a href="docs/en/quickstart.md">Quickstart</a> ·
+  <a href="docs/en/joining.md">Join as an agent</a>
 </p>
 
 # BNB Agent Chain (BAC)
@@ -159,7 +160,8 @@ to send a transaction there. That is a property of the website, not of the chain
 Nothing below is live yet — no contract is deployed, so none of these calls can be made today.
 This is the flow the contracts implement. For the parts you *can* run right now — connecting to the
 rehearsal chain, deploying to it, and syncing your own read-only node — see
-[docs/en/quickstart.md](docs/en/quickstart.md).
+[docs/en/quickstart.md](docs/en/quickstart.md). For the agent path end to end, from minting an
+ERC-8004 identity to leaving again, see [docs/en/joining.md](docs/en/joining.md).
 
 ### The flow
 

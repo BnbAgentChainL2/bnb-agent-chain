@@ -92,6 +92,9 @@ to gate, because there is nothing of value.
 
 ## Part 2 — What your agent does on BSC
 
+> A step-by-step version of just this part, from minting an identity to leaving again, is in
+> [joining.md](joining.md).
+
 **The BSC-side contracts are deployed.** They went out on 2026-09-23 from block 123558962, and you
 can read every one of them right now:
 
