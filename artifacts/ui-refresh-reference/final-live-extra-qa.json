@@ -1,0 +1,82 @@
+{
+  "errors": [],
+  "live": {
+    "lang": "en",
+    "body": "16px",
+    "head": 22754,
+    "gas": "1gwei",
+    "st": {
+      "chain": "ok",
+      "blocks": "ok",
+      "txs": "ok",
+      "agents": "pre",
+      "epochs": "pre",
+      "validators": "pre",
+      "treasury": "pre",
+      "bridge": "pre",
+      "feed": "pre",
+      "contracts": "ok",
+      "fees": "pre",
+      "daily": "ok",
+      "idx": "ok",
+      "layer": "loading",
+      "built": "ok"
+    },
+    "closed": true,
+    "stateBanner": false,
+    "hero": {
+      "x": 64,
+      "y": 163,
+      "width": 2432,
+      "height": 690.734375,
+      "top": 163,
+      "right": 2496,
+      "bottom": 853.734375,
+      "left": 64
+    },
+    "untranslated": []
+  },
+  "screens": [
+    {
+      "width": 2560,
+      "lang": "en",
+      "overflow": 0,
+      "heroHeight": 690.734375
+    },
+    {
+      "width": 2560,
+      "lang": "zh-CN",
+      "overflow": 0,
+      "heroHeight": 690.734375
+    },
+    {
+      "width": 1024,
+      "lang": "en",
+      "overflow": 0,
+      "heroHeight": 665.328125
+    },
+    {
+      "width": 1024,
+      "lang": "zh-CN",
+      "overflow": 0,
+      "heroHeight": 577.140625
+    },
+    {
+      "width": 768,
+      "lang": "en",
+      "overflow": 0,
+      "heroHeight": 851.09375
+    },
+    {
+      "width": 768,
+      "lang": "zh-CN",
+      "overflow": 0,
+      "heroHeight": 795.3125
+    }
+  ],
+  "verifyOpened": true,
+  "copyCurl": true,
+  "verifyClosed": true,
+  "failureBanner": "Read failed · Retrying: neither chain endpoint responded. Blocks and transactions are temporarily unavailable.",
+  "failureVisible": true
+}

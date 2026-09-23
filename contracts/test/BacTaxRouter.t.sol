@@ -254,9 +254,16 @@ contract BacTaxRouterTest is Test {
     /*                     the 50,000-gas dispatch ping                  */
     /* ---------------------------------------------------------------- */
 
-    /// @notice The single most expensive thing in this contract to get wrong. `TaxProcessor.dispatch`
-    ///         pays the beneficiary inside `call{gas: 50_000}`; if `receive()` reverts or runs out,
-    ///         that dispatch's share is forfeited permanently and is never retried.
+    /// @notice The single most expensive thing in this contract to get wrong: if `receive()`
+    ///         reverts or runs out of gas inside `TaxProcessor.dispatch`, that dispatch's share is
+    ///         forfeited permanently and never retried (measured on a fork: it stays behind as
+    ///         WBNB, see `test_fork_revertingBeneficiaryForfeitsTheShare`). 50,000 gas is our own
+    ///         conservative budget, not Flap's: the live TaxProcessor forwards ~63/64 of its
+    ///         remaining gas (review measurement, 2026-09-23), so today the binding limit is the
+    ///         keeper's outer dispatch gas. The budget protects us if Flap ever adds a cap.
+    ///         (`BacTaxRouter.sol`'s own NatSpec still says the dispatch uses `call{gas: 50_000}`;
+    ///         that file is left byte-identical to the deployed, immutable router so it can be
+    ///         verified on BscScan.)
     function test_receive_succeedsUnder50kGas() public {
         uint256 g = gasleft();
         (bool ok,) = address(router).call{value: 1 ether, gas: 50_000}("");

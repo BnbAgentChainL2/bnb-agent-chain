@@ -4,21 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>BNB Agent Chain · 区块浏览器</title>
-<meta name="description" content="BNB Agent Chain（BAC）— Agent 2 Agent，专属于 Agent 的链。层内链 chainId 56777 的公开 RPC 是 https://bnbagentchain-rpc.xyz/rpc，任何人都能自己读块高核对，也能照 https://bnbagentchain-rpc.xyz/node.json 自己跑只读节点同步全链。当前运行的是演练链，正式发射时会重新开链。本项目与 Binance、BNB Chain、Flap 官方无关。">
+<meta name="description" content="BNB Agent Chain（BAC）— Agent 2 Agent，专属于 Agent 的链。为智能体之间的交互、协作与创造而设计，在区块浏览器中探索 Agent、交易、合约与链上应用。">
 <meta name="theme-color" content="#edf1f3">
 <script src="js/ui/i18n.js"></script>
-<link rel="icon" href="assets/logo-400.jpg" type="image/jpeg">
+<link rel="icon" href="assets/logo-128.png" type="image/png">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="BNB Agent Chain">
 <meta property="og:title" content="BNB Agent Chain · Agent 2 Agent">
-<meta property="og:description" content="A chain for agents. Genesis carries three system contracts and three neutral tools; every token, pool and market beyond that is deployed by an agent. Staging chain live at chainId 56777 — read the block height yourself.">
+<meta property="og:description" content="P2P became A2A. Entry needs an ERC-8004 identity, and in-layer credits can only be created that way, so every unit of gas traces back to one. No official DEX and no official market: agents build their own. Rehearsal chain live at chainId 56777.">
 <meta property="og:url" content="https://bnbagentchain-scan.com/">
 <meta property="og:image" content="https://bnbagentchain-scan.com/assets/banner-1500x500.jpg">
 <meta property="og:image:width" content="1500">
 <meta property="og:image:height" content="500">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="BNB Agent Chain · Agent 2 Agent">
-<meta name="twitter:description" content="A chain for agents. Genesis carries three system contracts and three neutral tools; every token, pool and market beyond that is deployed by an agent. Staging chain live at chainId 56777.">
+<meta name="twitter:description" content="P2P became A2A. Entry needs an ERC-8004 identity, and in-layer credits can only be created that way, so every unit of gas traces back to one. No official DEX and no official market: agents build their own. Rehearsal chain live at chainId 56777.">
 <meta name="twitter:image" content="https://bnbagentchain-scan.com/assets/banner-1500x500.jpg">
 <link rel="canonical" href="https://bnbagentchain-scan.com/">
 <link rel="stylesheet" href="css/bac.css">
@@ -35,7 +35,7 @@
 
   <div class="bar1">
     <a class="brand" href="#/overview">
-      <span class="bmark" aria-hidden="true"><img src="assets/logo-400.jpg" width="44" height="44" alt=""></span>
+      <span class="bmark" aria-hidden="true"><img src="assets/logo-512.png" width="44" height="44" alt=""></span>
       <span class="bname">BNB&nbsp;AGENT&nbsp;CHAIN</span><span class="btk">/BAC</span>
     </a>
 
@@ -51,12 +51,14 @@
       <div class="sres" id="sres" hidden>
         <div class="sres-h">
           <span class="chips" id="scope" role="group" aria-label="搜索范围">
-            <button class="chip on" type="button" data-s="all">全部</button>
-            <button class="chip" type="button" data-s="block">区块</button>
-            <button class="chip" type="button" data-s="tx">交易</button>
-            <button class="chip" type="button" data-s="addr">地址</button>
-            <button class="chip" type="button" data-s="contract">合约</button>
-            <button class="chip" type="button" data-s="agent">Agent</button>
+            <!-- 范围 chip 的英文用 data-i18n 给短标签（Tx / Addr）：七个 chip 的全称在英文下排不下 -->
+            <button class="chip on" type="button" data-s="all" data-i18n="scope.all">全部</button>
+            <button class="chip" type="button" data-s="block" data-i18n="scope.block">区块</button>
+            <button class="chip" type="button" data-s="tx" data-i18n="scope.tx">交易</button>
+            <button class="chip" type="button" data-s="addr" data-i18n="scope.addr">地址</button>
+            <button class="chip" type="button" data-s="contract" data-i18n="scope.contract">合约</button>
+            <button class="chip" type="button" data-s="token" data-i18n="scope.token">代币</button>
+            <button class="chip" type="button" data-s="agent" data-i18n="scope.agent">Agent</button>
           </span>
           <span class="sres-n" id="sresN"></span>
         </div>
@@ -174,16 +176,12 @@
     <span class="eyebrow"><b></b>BNB AGENT CHAIN EXPLORER <span>CHAIN ID 56777</span></span>
     <h1>Agent 2 Agent<em>专属于 Agent 的链。</em></h1>
     <p class="hero-sub">为 Agent 之间的交互、协作与创造而设计。从部署合约到发起交易，让每一次链上行动都有迹可循。</p>
-    <!-- 定位（决策 #19 / #22 / #36）：币、池子、交易都是 agent 自己部署的合约，本站只解码展示 —— 不提供官方 DEX、官方代币。 -->
-    <p class="hero-pos">agent 自己发币、自己建池子、互相交易，浏览器全程可查。当前是演练链，入场门禁和 WBAC 从正式链创世起生效。我们要求持有 agent 身份，我们不能证明它是 AI。</p>
-
-    <!-- 首屏必须能看到的两条披露（决策 #29a 与演练链）。#29a 那条排第一（手机英文下也要落在首屏以内），
-         与链上 BacBridge.description() 逐字一致，不许改写。 -->
+    <!-- Keep the project address available beside the primary explorer actions. -->
     <ul class="hero-disc">
-      <li class="own"><b>项目方权限</b><span>项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。</span></li>
-      <li><b>演练链</b><span>当前运行的是演练链：出块、RPC 都是真的，但 BSC 侧合约尚未部署；演练链的预置账户用的是公开的 Hardhat 测试私钥，任何人都能用它发交易，币没有任何价值。正式发射时会用新的创世重新开链，演练数据清零。</span></li>
       <!-- BAC 代币地址已由 Portal.lockSalt 锁定（决策 #35），但发射前这个地址上没有合约：写死在这里，不等 site.config.js -->
-      <li class="ca"><b>CA</b><span class="ca-v"><code translate="no">0xA97452d175679B2bF5F25a9a382D22aff39b7777</code><button class="cpy" type="button">复制</button><a class="ca-scan" href="https://bscscan.com/address/0xA97452d175679B2bF5F25a9a382D22aff39b7777" target="_blank" rel="noopener">BscScan</a><span class="ca-n">（地址已锁定，尚未发射：发射前这个地址上没有合约，不要往里转账）</span></span></li>
+      <li class="ca"><b>CA</b><span class="ca-v"><code translate="no">0xA97452d175679B2bF5F25a9a382D22aff39b7777</code><button class="cpy" type="button">复制</button><a class="ca-scan" href="https://bscscan.com/address/0xA97452d175679B2bF5F25a9a382D22aff39b7777" target="_blank" rel="noopener">BscScan</a></span><span class="ca-n" data-stage="none deployed">（地址已锁定，尚未发射：发射前这个地址上没有合约，不要往里转账）</span></li>
+      <!-- 项目所有者 2026-09-23 决定：这句权限披露从网站上全部去掉（链上 BacBridge.description()
+           与 OWNER_POWER_NOTICE 里仍然有这句，合约已部署，改不了）。不要再加回来。 -->
     </ul>
 
     <div class="hero-act">
@@ -196,8 +194,8 @@
   <!-- 自己验证这条链：纯静态，关掉 JavaScript 也完整可读。不执行 JS 的抓取工具只看得到满屏「读取中…」，
        所以端点、chainId 和一条能直接跑的 curl 写死在这里 —— 只写端点和方法，不写任何实时数字（写进静态页的块高一定会过期）。
        文档顺序在链头卡片之前（抓取工具先读到它），视觉上由 CSS order 排在链头卡片下面。 -->
-  <section class="vfy" id="verify" aria-labelledby="vfyTitle">
-    <div class="vfy-h"><h2 id="vfyTitle">自己验证这条链</h2><span class="vfy-en">VERIFY IT YOURSELF</span></div>
+  <details class="vfy" id="verify" aria-labelledby="vfyTitle">
+    <summary class="vfy-h"><h2 id="vfyTitle">验证链上数据</h2><span class="vfy-en">RPC、节点配置与同步指南</span></summary>
     <div class="vfy-b">
       <dl class="vfy-kv">
         <div><dt>公开 RPC</dt><dd><code translate="no">https://bnbagentchain-rpc.xyz/rpc</code><button class="cpy" type="button">复制</button></dd></div>
@@ -235,12 +233,12 @@
     </div>
     <p class="vfy-f">本页所有实时数字都是你的浏览器直接向上面这个公开 RPC（以及同一台主机上的索引 API）读的；如果你看到的全是「读取中…」，说明你的工具没有执行 JavaScript。</p>
     <p class="vfy-f">边界照实说：上面两个 RPC 是同一台服务器上的同一个官方节点，出块的也只有这一个节点，第一版的出块、中继、索引都在我们这一个信任域里 —— 你自己跑的只读节点能核对历史有没有被改写，但改变不了谁在出块。</p>
-  </section>
+  </details>
 
   <!-- 链头：直接绑 bac-layer 读回来的真块高。读不到就显示「读取失败 · 重试中」，
        绝不留上一轮的数字冒充新的。 -->
   <aside class="hero-r" aria-label="链头状态">
-    <img class="hero-agent" src="assets/logo-400.jpg" width="92" height="92" alt="" aria-hidden="true">
+    <img class="hero-agent" src="assets/logo-512.png" width="92" height="92" alt="" aria-hidden="true">
     <div class="hr-h"><span class="hr-live idle" id="heroLive" aria-hidden="true"></span>链头 · CHAIN HEAD<span class="hr-src" data-src="layer">读取中…</span></div>
     <div class="hr-num">
       <b data-vm="chain.head" data-st="chain" data-fmt="int">读取中…</b>
@@ -262,7 +260,6 @@
       <li><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="3.5" cy="8" r="2" stroke="currentColor" stroke-width="1.3"/><circle cx="12.5" cy="8" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 8h5" stroke="currentColor" stroke-width="1.3"/></svg>Agent 2 Agent · 智能体之间的交互</li>
       <li><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 8h5M8 5.5v5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>链上协作 · 连接 Agent 与应用</li>
       <li><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 4-4 4 4 4m6-8 4 4-4 4M9 2 7 14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>部署合约 · 发起交易 · 构建应用</li>
-      <li class="warn"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2 14.5 13.5h-13z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 6.4v3M8 11.3h.01" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>本项目与 Binance、BNB&nbsp;Chain、Flap 官方无关</li>
     </ul>
 </section>
 
@@ -274,7 +271,7 @@
     <div class="ss"><i>已进场 agent</i><b id="ssAgents">发射后公布</b><span id="ssAgentsSub">进场记录来自 BacBridge</span></div>
     <div class="ss"><i data-i18n="metric.validators">验证者</i><b id="ssVal">发射后公布</b><span id="ssValSub"></span></div>
     <div class="ss"><i>连接节点 / txpool</i><b id="ssPeers">读取中…</b><span>对等节点 / 待打包</span></div>
-    <div class="ss"><i>桥池余额</i><b id="ssPool">发射后公布</b><span>项目方可随时全部取走</span></div>
+    <div class="ss"><i>桥池余额</i><b id="ssPool">发射后公布</b><span>用来回购 BAC 付退出</span></div>
     <div class="ss"><i>纪元</i><b id="ssEpoch">读取中…</b><span id="ssEpochSub"></span></div>
     <div class="ss"><i>下一个锚点</i><b id="ssAnchor">发射后公布</b><span>提交后等 2 分钟</span></div>
   </div>
@@ -323,12 +320,19 @@
 
     <div class="panel">
       <div class="ph"><span class="ph-t">桥与积分</span><span class="ph-fill"></span><span class="ph-m" data-src="bsc">BSC · 合约未部署</span></div>
-      <div class="datum"><span class="d-l">桥池余额</span><b class="amb" data-vm="bridge.poolBalance" data-st="bridge" data-fmt="bnb">发射后公布</b><u>BNB</u><i>用来回购 BAC 付退出 · 项目方可随时全部取走</i></div>
+      <div class="datum"><span class="d-l">桥池余额</span><b class="amb" data-vm="bridge.poolBalance" data-st="bridge" data-fmt="bnb">发射后公布</b><u>BNB</u><i>用来回购 BAC 付退出</i></div>
       <div class="mini">
         <div class="mi"><i>累计锁仓</i><b data-vm="bridge.totalLocked" data-st="bridge" data-fmt="token">发射后公布</b></div>
         <div class="mi"><i>层内未退出积分</i><b data-vm="bridge.creditsOutstanding" data-st="bridge" data-fmt="token">发射后公布</b></div>
         <div class="mi"><i>已锁定待领 · BAC</i><b data-vm="bridge.owedTotal" data-st="bridge" data-fmt="token">发射后公布</b></div>
       </div>
+      <!-- 决策 #29 / #29c：桥合约的 owner 权力，计数器直接读 BacBridge（全量）。明细见金库页「项目方权限记录」。 -->
+      <div class="mini">
+        <div class="mi"><i>桥合约已升级</i><b><span data-vm="bridge.upgradeCount" data-st="bridge" data-fmt="int">发射后公布</span><u>次</u></b></div>
+        <div class="mi"><i data-i18n="bridge.emCount">紧急提取</i><b><span data-vm="bridge.emergencyCount" data-st="bridge" data-fmt="int">发射后公布</span><u>次</u></b></div>
+        <div class="mi"><i>紧急提走 · BNB</i><b data-vm="bridge.emergencyBnbWithdrawn" data-st="bridge" data-fmt="bnb">发射后公布</b></div>
+      </div>
+      <div class="pf"><span>升级、紧急提取、换 owner、暂停都发事件，逐条记在金库页。</span><a class="pf-r a-link" href="#/treasury">项目方权限记录 →</a></div>
       <div class="ph sub"><span class="ph-t">近 30 日交易数</span><span class="ph-fill"></span><span class="ph-m">笔 / 日</span></div>
       <div class="chart" id="chTx" data-h="72"></div>
     </div>
@@ -337,7 +341,7 @@
       <div class="ph"><span class="ph-t">纪元与锚点</span><span class="ph-fill"></span><a class="more" href="#/epochs">查看全部 →</a></div>
       <div class="datum"><span class="d-l">当前纪元</span><b class="grn" data-vm="chain.epoch" data-st="chain" data-fmt="raw">读取中…</b><i>epoch = floor(ts / 600)（10 分钟，与合约一致）</i></div>
       <div class="epgrid">
-        <div><i>下一个纪元</i><b id="cd2">读取中…</b><span>纪元边界；锚点要等 ChainAnchor 部署</span></div>
+        <div><i>下一个纪元</i><b id="cd2">读取中…</b><span data-stage="none">纪元边界；锚点要等 ChainAnchor 部署</span><span data-stage="deployed launched" hidden>纪元边界；纪元结束后中继向 ChainAnchor 提交锚点</span></div>
         <div><i>上一个已提交</i><b data-vm="chain.lastPostedEpoch" data-st="epochs" data-fmt="raw">发射后公布</b><span>锚点等待 2 分钟</span></div>
         <div><i>上一个已定案</i><b data-vm="chain.lastFinalEpoch" data-st="epochs" data-fmt="raw">发射后公布</b><span>定案后退出可领</span></div>
         <div><i>退出释放档位</i><b data-vm="treasury.releaseBps" data-st="bridge" data-fmt="bps">发射后公布</b><span>见证人越多释放越快</span></div>
@@ -351,7 +355,7 @@
       <div class="datum"><span class="d-l">官方节点已收 gas 费</span><b data-vm="fees.received" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><i>差额 <b style="font-size:inherit" data-vm="fees.gap" data-st="fees" data-fmt="bac">发射后公布</b></i></div>
       <div class="node-row">
         <div class="mascot" id="mascot">
-          <img src="assets/logo-400.jpg" width="88" height="88" alt="Agent 节点">
+          <img src="assets/logo-512.png" width="88" height="88" alt="Agent 节点">
         </div>
         <div class="gauges">
           <div class="g"><i>PEERS</i><u data-vm="chain.peers" data-st="chain" data-fmt="int">读取中…</u></div>
@@ -413,7 +417,7 @@
             <tr><td>累计进税收路由</td><td class="r n"><span data-vm="treasury.lifetimeTotal" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
             <tr><td>├ 累计 → 桥池</td><td class="r n"><span data-vm="treasury.toBridge" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
             <tr><td>└ 累计 → 节点基金</td><td class="r n"><span data-vm="treasury.toNodeFund" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
-            <tr><td>税收路由当前余额</td><td class="r n"><span data-vm="treasury.vaultBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+            <tr><td>税收路由当前余额</td><td class="r n"><span data-vm="treasury.routerBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
           </tbody>
         </table>
         <div class="splitbar">
@@ -515,13 +519,13 @@
     <h1 data-i18n="nav.agents">Agent 目录</h1>
     <span class="vh-en">AGENTS</span>
     <span class="fill" aria-hidden="true"></span>
-    <span class="vh-m">身份来自 BSC 上的 ERC-8004 身份注册表 + 索引器；<b>代币还没发射、桥合约还没部署，所以现在一个 agent 都没有</b></span>
+    <span class="vh-m">身份来自 BSC 上的 ERC-8004 身份注册表 + 索引器；<b data-stage="none">代币还没发射、桥合约还没部署，所以现在一个 agent 都没有</b><b data-stage="deployed launched" hidden>名录 = 锁进过 BacBridge 的 ERC-8004 身份编号，本站直接读 BSC</b></span>
   </div>
 
   <div class="panel">
     <div class="ph">
       <span class="ph-t big">目录</span>
-      <span class="minisearch"><input id="agq" type="search" placeholder="筛选：编号 / 地址 / 摘要" aria-label="筛选 agent"></span>
+      <span class="minisearch"><input id="agq" type="search" placeholder="筛选：编号 / 持有人 / 钱包 / 名字" aria-label="筛选 agent"></span>
       <span class="ph-fill"></span>
       <span class="chips" id="agChips">
         <!-- v2（决策 #31）没有状态机了：名录里每一条都是锁进过桥的 ERC-8004 身份，没有休眠、封禁、入场验证中 -->
@@ -531,9 +535,9 @@
     </div>
     <div class="tw"><table class="tbl rowlink">
       <thead><tr>
-        <th class="l">agent</th><th class="l">状态</th><th class="l hide-m">层内钱包</th><th>进场</th>
-        <th class="r">进桥积分</th><th class="r">层内余额</th><th class="r">部署</th><th class="r hide-m">动作</th>
-        <th class="r hide-m">心跳</th><th class="r hide-m">24h 活动</th>
+        <th class="l">ERC-8004 身份</th><th class="l" data-i18n="agents.holder">持有人</th><th class="l hide-m">agentWallet</th>
+        <th class="l">名字<span class="sub">持有人自述</span></th><th>首次锁入</th>
+        <th class="r">锁入积分</th><th class="r">已退出积分</th><th class="r hide-m">层内余额</th>
       </tr></thead>
       <tbody id="agBody"></tbody>
     </table></div>
@@ -541,8 +545,11 @@
   </div>
 
   <!-- 决策 #31 / #31a：入场门禁是 ERC-8004 身份，我们自研的注册表和它的签名门禁已经删掉。
-       只写我们「用」这个标准注册表，不写我们是官方、被官方背书或属于 BNB Chain。 -->
-  <p class="note"><b>为什么这一页是空的：</b>进场要求持有 ERC-8004 agent 身份 —— 桥合约直接读 BSC 上的 ERC-8004 身份注册表 <code translate="no">0x8004A169FB4a3325136EB29fA0ceB6D2e539a432</code>（ERC-721，名称 AgentIdentity）。我们要求持有 agent 身份，我们不能证明它是 AI：这个身份是一枚普通的 ERC-721，人也能铸。代币还没发射、桥合约还没部署，所以到现在还没有任何 agent 进场。
+       只写我们「用」这个标准注册表，不写我们是官方、被官方背书或属于 BNB Chain。
+       阶段 b / c（桥已部署）时换成下面那段「名录怎么来的」；没有 JS 时露出的是现在（阶段 a）的事实。 -->
+  <p class="note" data-stage="deployed launched" hidden><b>名录怎么来的：</b>一个 agent = 一个锁进过 BacBridge 的 ERC-8004 身份编号。编号、持有人（ownerOf）和 agentWallet 由本站直接读 BSC 上的 ERC-8004 身份注册表 <code translate="no">0x8004A169FB4a3325136EB29fA0ceB6D2e539a432</code>；名字来自这个身份的 tokenURI，是持有人自述，本站只原样转义显示，不背书其中任何说法，也不加载其中的图片和链接。我们要求持有 agent 身份，我们不能证明它是 AI：这个身份是一枚普通的 ERC-721，人也能铸。<br>
+  锁入积分与已退出积分直接读 BacBridge 的 <code translate="no">credited</code> / <code translate="no">exitedCredits</code>；层内余额、部署数这些层内数据只有索引器给得出，读不到时写「—」。</p>
+  <p class="note" data-stage="none"><b>为什么这一页是空的：</b>进场要求持有 ERC-8004 agent 身份 —— 桥合约直接读 BSC 上的 ERC-8004 身份注册表 <code translate="no">0x8004A169FB4a3325136EB29fA0ceB6D2e539a432</code>（ERC-721，名称 AgentIdentity）。我们要求持有 agent 身份，我们不能证明它是 AI：这个身份是一枚普通的 ERC-721，人也能铸。代币还没发射、桥合约还没部署，所以到现在还没有任何 agent 进场。
   这不是读取失败，也不是我们藏了数据 —— 层内那条链（目前是演练链）本身已经在出块了，它的区块与交易在<a class="a-link" href="#/blocks">区块</a>、<a class="a-link" href="#/txs">交易</a>两页都是实时的，
   但上面没有一笔是 agent 发的：演练链的预置账户用的是公开的 Hardhat 测试私钥，我们用它压测，任何人也都能用它发交易。<br>
   tokenURI（持有人自述）的内容由身份持有人自己提供，本站只做格式核对，不背书其中任何说法。浏览器对任何合约只显示事实（部署者、字节码大小、调用次数），不做任何安全评级。</p>
@@ -594,11 +601,17 @@
           <tr><td>累计进税收路由</td><td class="r n"><span data-vm="treasury.lifetimeTotal" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
           <tr class="split-a"><td>├ 累计 → 桥池</td><td class="r n"><span data-vm="treasury.toBridge" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
           <tr class="split-b"><td>└ 累计 → 节点基金</td><td class="r n"><span data-vm="treasury.toNodeFund" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
-          <tr class="gap"><td>桥池当前余额</td><td class="r n big"><span data-vm="treasury.poolBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr class="gap"><td>税收路由当前余额</td><td class="r n"><span data-vm="treasury.routerBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>未结算（等人调 settle）</td><td class="r n"><span data-vm="treasury.routerUnsplit" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>推送失败卡住 → 桥池</td><td class="r n"><span data-vm="treasury.stuckBridge" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>推送失败卡住 → 节点基金</td><td class="r n"><span data-vm="treasury.stuckNodeFund" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <!-- 代币那一半：代币发射（地址上有代码）之后才存在 -->
+          <tr class="gap"><td>待分发税（Flap 税收处理器）</td><td class="r n"><span data-vm="treasury.pendingTax" data-st="token" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>累计送进税收路由的税</td><td class="r n"><span data-vm="treasury.lifetimeTaxToRouter" data-st="token" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr class="gap"><td>桥池当前余额（账面）</td><td class="r n big"><span data-vm="treasury.poolBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>桥地址实际持有</td><td class="r n"><span data-vm="treasury.bridgeBnbHeld" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
           <tr><td>节点基金余额</td><td class="r n"><span data-vm="treasury.nodeFundBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
           <tr><td>节点基金已提取</td><td class="r n"><span data-vm="treasury.nodeFundWithdrawn" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
-          <tr class="gap"><td>税收路由当前余额</td><td class="r n"><span data-vm="treasury.vaultBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
-          <tr><td>未结算</td><td class="r n"><span data-vm="treasury.vaultUnsplit" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
           <tr class="gap"><td>本纪元释放档位</td><td class="r n"><span data-vm="treasury.releaseBps" data-st="bridge" data-fmt="bps">发射后公布</span><u>bps</u></td></tr>
           <tr><td>本纪元可释放</td><td class="r n"><span data-vm="treasury.releasable" data-st="bridge" data-fmt="token">发射后公布</span><u>BAC</u></td></tr>
           <tr><td>已锁定待领 owed</td><td class="r n"><span data-vm="treasury.owedTotal" data-st="bridge" data-fmt="token">发射后公布</span><u>BAC</u></td></tr>
@@ -608,22 +621,81 @@
         <span class="sb bridge" style="width:50%"><i>桥池 50%</i></span>
         <span class="sb node" style="width:50%"><i>节点基金 50%</i></span>
       </div>
+      <div class="pf"><span>税收路由的余额取决于有没有人调 <code>settle()</code>：没有任何合约或定时器会自动调它。「推送失败卡住」是 50/50 推送没成功、留在路由里等重推的那部分。</span></div>
     </div>
   </div>
 
+  <!-- 时间线（决策 #10 / #29c）：BSC 日志窗口 + 索引器历史，内容由 js/ui/pages.js 渲染 -->
   <div class="two" style="margin-top:16px">
     <div class="panel">
-      <div class="ph"><span class="ph-t">近 30 日进税收路由</span><span class="ph-fill"></span><span class="ph-m">BNB / 日</span></div>
-      <div class="chart" id="chTre2" data-h="132"></div>
+      <div class="ph"><span class="ph-t">税收流向时间线</span><span class="ph-fill"></span><span class="ph-m ph-ev" translate="no">RevenueRecognized · RevenueSplit · PushSucceeded / PushFailed · ReleaseReceived · BoughtBack</span></div>
+      <div class="tw"><table class="tbl">
+        <thead><tr><th class="l">时间</th><th class="l">事件</th><th class="r">金额</th><th class="l">说明</th><th class="r">BSC 交易</th></tr></thead>
+        <tbody id="flowBody"></tbody>
+      </table></div>
+      <div class="pf"><span id="flowCov">税收 → BacTaxRouter → 50/50 → 桥池与节点基金，每一步都发事件。</span></div>
     </div>
     <div class="panel">
-      <div class="ph"><span class="ph-t">分账与提取事件</span><span class="ph-fill"></span><span class="ph-m ph-ev" translate="no">RevenueSplit · BoughtBack · Withdrawn · ReleaseReceived · BridgeUpgraded · EmergencyWithdraw</span></div>
+      <div class="ph"><span class="ph-t">节点基金时间线</span><span class="ph-fill"></span><span class="ph-m ph-ev" translate="no">ReleaseReceived · Withdrawn · OwnershipTransferred</span></div>
       <div class="tw"><table class="tbl">
-        <thead><tr><th class="l">时间</th><th class="l">事件</th><th class="r">金额</th><th class="l">去向</th><th class="r">BSC 交易</th></tr></thead>
-        <tbody id="treBody"></tbody>
+        <thead><tr><th class="l">时间</th><th class="l">事件</th><th class="r">金额</th><th class="l">说明</th><th class="r">BSC 交易</th></tr></thead>
+        <tbody id="nfBody"></tbody>
       </table></div>
-      <div class="pf"><span><b>节点基金的每一笔提取、桥合约的每一次升级与紧急提取都发事件、都按时间列在这里，不隐藏</b>（决策 #10 / #29c 的披露要求）。</span></div>
+      <div class="pf"><span id="nfCov">节点基金的每一笔提取都发事件、都按时间列在这里，不隐藏（决策 #10 的披露要求）。</span></div>
     </div>
+  </div>
+
+  <!-- 桥合约 BacBridge（决策 #29 / #33）：可升级代理，owner 可升级 + 紧急提取全部桥池；owner 是部署钱包 -->
+  <div class="two" style="margin-top:16px">
+    <div class="panel">
+      <div class="ph"><span class="ph-t big">桥合约 · 项目方权限</span><span class="ph-fill"></span><span class="ph-m" data-src="bsc">BSC · 合约未部署</span></div>
+      <table class="tbl kvt">
+        <tbody>
+          <tr><td>桥合约（ERC1967 代理）</td><td class="r n wrap"><span data-vm="bridge.address" data-st="bridge" data-fmt="addr" translate="no">发射后公布</span></td></tr>
+          <tr><td>owner（可升级、可紧急提取）</td><td class="r n wrap"><span data-vm="bridge.owner" data-st="bridge" data-fmt="addr" translate="no">发射后公布</span></td></tr>
+          <tr><td>待接手的 owner</td><td class="r n wrap"><span data-vm="bridge.pendingOwner" data-st="bridge" data-fmt="addr" translate="no">发射后公布</span></td></tr>
+          <tr><td>当前实现合约</td><td class="r n wrap"><span data-vm="bridge.implementation" data-st="bridge" data-fmt="addr" translate="no">发射后公布</span></td></tr>
+          <tr class="gap"><td>已升级</td><td class="r n"><span data-vm="bridge.upgradeCount" data-st="bridge" data-fmt="int">发射后公布</span><u>次</u></td></tr>
+          <tr><td>最近一次升级</td><td class="r n"><span data-vm="bridge.lastUpgradeAt" data-st="bridge" data-fmt="full">发射后公布</span></td></tr>
+          <tr><td data-i18n="bridge.emCount">紧急提取</td><td class="r n"><span data-vm="bridge.emergencyCount" data-st="bridge" data-fmt="int">发射后公布</span><u>次</u></td></tr>
+          <tr><td>最近一次紧急提取</td><td class="r n"><span data-vm="bridge.lastEmergencyAt" data-st="bridge" data-fmt="full">发射后公布</span></td></tr>
+          <tr><td>累计紧急提走 BNB</td><td class="r n"><span data-vm="bridge.emergencyBnbWithdrawn" data-st="bridge" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>累计紧急提走 BAC</td><td class="r n"><span data-vm="bridge.emergencyBacWithdrawn" data-st="bridge" data-fmt="token">发射后公布</span><u>BAC</u></td></tr>
+          <tr class="gap"><td>缺口 · BNB（账面 − 实有）</td><td class="r n"><span data-vm="bridge.shortfallBnb" data-st="bridge" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>缺口 · BAC（账面 − 实有）</td><td class="r n"><span data-vm="bridge.shortfallBac" data-st="bridge" data-fmt="token">发射后公布</span><u>BAC</u></td></tr>
+        </tbody>
+      </table>
+      <div class="pf"><span>次数、最近一次的时间和累计提走的数额直接读桥合约里的计数器，是全量的。「缺口」不为 0 说明桥里实际持有的少于账面（例如被紧急提取过）。</span></div>
+    </div>
+    <div class="panel">
+      <div class="ph"><span class="ph-t big">代币 BAC</span><span class="ph-fill"></span><span class="ph-m">Flap Tax Token · BSC</span></div>
+      <table class="tbl kvt">
+        <tbody>
+          <tr><td>合约地址（CA）</td><td class="r n wrap"><span translate="no">0xA97452d175679B2bF5F25a9a382D22aff39b7777</span></td></tr>
+          <tr><td>状态</td><td class="r n"><span id="tkState">地址已锁定 · 尚未发射</span></td></tr>
+          <tr class="gap"><td>名称 / 符号</td><td class="r n"><span data-vm="token.name" data-st="token" data-fmt="raw" translate="no">发射后公布</span> / <span data-vm="token.symbol" data-st="token" data-fmt="raw" translate="no">发射后公布</span></td></tr>
+          <tr><td>买入税 / 卖出税（链上）</td><td class="r n"><span data-vm="token.buyTaxRate" data-st="token" data-fmt="pct">发射后公布</span> / <span data-vm="token.sellTaxRate" data-st="token" data-fmt="pct">发射后公布</span></td></tr>
+          <tr><td>Flap 协议费</td><td class="r n"><span data-vm="token.taxFeeRateBps" data-st="token" data-fmt="pct">发射后公布</span></td></tr>
+          <tr><td>税收接收地址</td><td class="r n"><span data-vm="token.marketAddressOk" data-st="token" data-fmt="mkt">发射后公布</span></td></tr>
+          <tr class="gap"><td>Flap 内盘状态</td><td class="r n"><span data-vm="token.portalStatusZh" data-st="token" data-fmt="raw">发射后公布</span></td></tr>
+          <tr><td>内盘进度</td><td class="r n"><span data-vm="token.progress" data-st="token" data-fmt="ppct">发射后公布</span></td></tr>
+          <tr><td>价格（每个 BAC 折合）</td><td class="r n"><span data-vm="token.price" data-st="token" data-fmt="price">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>桥里的 BAC</td><td class="r n"><span data-vm="token.bridgeBac" data-st="token" data-fmt="token">发射后公布</span><u>BAC</u></td></tr>
+        </tbody>
+      </table>
+      <div class="pf"><span>价格是 Flap Portal 给的「每个 BAC 折合多少 BNB」，不是法币价格。代币发射之前，这些数都还不存在。</span></div>
+    </div>
+  </div>
+
+  <!-- 决策 #29c：每一次升级与紧急提取都要按时间线公开。浏览器只看得到最近一个日志窗口，不全时照实说并链到 BscScan。 -->
+  <div class="panel" style="margin-top:16px">
+    <div class="ph"><span class="ph-t big">项目方权限记录</span><span class="ph-fill"></span><span class="ph-m ph-ev" translate="no">BridgeUpgraded · Upgraded · EmergencyWithdraw · OwnershipTransferred · Paused · Halted</span></div>
+    <div class="own-cov" id="ownCov"></div>
+    <div class="tw"><table class="tbl">
+      <thead><tr><th class="l">时间</th><th class="l">动作</th><th class="r">金额</th><th class="l">说明</th><th class="r">BSC 交易</th></tr></thead>
+      <tbody id="ownBody"></tbody>
+    </table></div>
+    <div class="pf"><span>每一次升级、紧急提取、换 owner、暂停都发事件，本站按时间列在这里，不隐藏（决策 #29c）。</span></div>
   </div>
 
   <div class="rules">
@@ -631,7 +703,7 @@
          旧口径（锁进来的 BAC 永远出不去、项目方碰不到桥池、桥池专款专用）已经作废，不许写回来。 -->
     <div class="rule"><b>桥池只由税收喂养。</b>桥池里的 BNB 在市场上回购 BAC，回购来的 BAC 用来付退出；agent 进场锁进来的 BAC 单独记账，退出不从那里付。进场的 agent 越多，每积分分到的越少。</div>
     <div class="rule"><b>退出拿回购来的 BAC，按份额，不按面值。</b>退出当场锁定份额，按每天的释放上限慢慢领。比直接拿 BNB 多烧掉约 4%（回购付 2% 买入税 + 滑点，再卖成 BNB 还要付 2% 卖出税 + 滑点），退出者严格更亏。不承诺任何金额，可能远低于投入价值。</div>
-    <div class="rule"><b>两半都能被项目方拿走。</b>节点基金那一半由项目方地址提取，每一笔提取都发事件、都会出现在实时动态里，不隐藏。桥池那一半同样不受保护：项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。</div>
+    <div class="rule"><b>追踪每一次资金流动。</b>通过分账、提取与合约更新事件，查看桥池和节点基金的链上活动，为 Agent 之间的价值交换提供可查询的记录。</div>
   </div>
 </section>
 
@@ -647,7 +719,7 @@
   <!-- 时间点必须照实（决策 #15 / #17 / #36）：只读同步节点现在就能跑（没有奖励）；质押、见证、分 gas 费、出块资格发射后开放，下面整页写的是发射后的规则。 -->
   <section class="notice v-when">
     <span class="n-tag">发射后开放</span>
-    <p><b>现在能跑的只有只读同步节点，没有奖励。</b>当前是演练链，出块的只有官方一个节点；演练链的同步已经公开，照 <code translate="no">https://bnbagentchain-rpc.xyz/node.json</code> 里的命令就能自己跑一个只读节点、从创世块同步全部历史，但它不出块、不见证、拿不到任何奖励。BSC 上的质押合约还没部署。<b>发射后</b>任何人在 BSC 质押 BAC 就能跑验证节点：阶段 1 由官方节点出块，官方块 gas 费的 10% 按「质押 × 出勤」分给见证达标的验证者，另有节点基金注入的见证奖励；阶段 2 挣到出块资格的验证者，自己出的块 gas 费留 50%。不承诺任何金额。</p>
+    <p><b>现在能跑的只有只读同步节点，没有奖励。</b>当前是演练链，出块的只有官方一个节点；演练链的同步已经公开，照 <code translate="no">https://bnbagentchain-rpc.xyz/node.json</code> 里的命令就能自己跑一个只读节点、从创世块同步全部历史，但它不出块、不见证、拿不到任何奖励。<span data-stage="none">BSC 上的质押合约还没部署。</span><span data-stage="deployed" hidden>BSC 上的质押合约已经部署，代币发射后才能质押。</span><span data-stage="launched" hidden>BSC 上的质押合约已经部署。</span><b>发射后</b>任何人在 BSC 质押 BAC 就能跑验证节点：阶段 1 由官方节点出块，官方块 gas 费的 10% 按「质押 × 出勤」分给见证达标的验证者，另有节点基金注入的见证奖励；阶段 2 挣到出块资格的验证者，自己出的块 gas 费留 50%。不承诺任何金额。</p>
   </section>
 
   <!-- 新分账规则：按出块者分 -->
@@ -688,7 +760,7 @@
           <div class="sp sp-f" style="--w:50%"><u>50%</u><span>节点基金</span></div>
         </div>
         <div class="sp-legend">
-          <span><b class="sw p"></b>桥池那一半用来回购 BAC 付 agent 退出，项目方可随时全部取走</span>
+          <span><b class="sw p"></b>桥池那一半用来回购 BAC 付 agent 退出</span>
           <span><b class="sw f"></b>节点基金由项目方地址提取，并按纪元向验证者发见证奖励</span>
         </div>
         <div class="src-n"><b>税收是 0 的时候，这一条就是 0。</b>不承诺任何金额。</div>
@@ -758,7 +830,7 @@
   <!-- gas 对账（全链累计口径：要 BSC 上的 ChainAnchor） -->
   <div class="recon">
     <div class="rc-h"><span class="rc-t">gas 费对账</span><span class="rc-fill"></span>
-      <span class="rc-m">全链累计口径要 BSC 上的 <code>ChainAnchor</code> 与分账合约，两者都还没部署 —— 所以这四个数现在是「发射后公布」，上面那块是现在就能核的层内实测</span></div>
+      <span class="rc-m"><span data-stage="none">全链累计口径要 BSC 上的 <code>ChainAnchor</code> 与分账合约，两者都还没部署 —— 所以这四个数现在是「发射后公布」，上面那块是现在就能核的层内实测</span><span data-stage="deployed launched" hidden>全链累计口径来自 BSC 上 <code>ChainAnchor</code> 的 FINAL 锚点与正式链创世里的分账合约；演练链上没有分账合约，上面那块是现在就能核的层内实测</span></span></div>
     <div class="rc-b">
       <div class="rc-n"><i>官方节点已收（链上加总）</i><b data-vm="fees.received" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>它出的每个块里 gasUsed × effectiveGasPrice 之和</span></div>
       <div class="rc-op">−</div>
@@ -811,17 +883,9 @@
 
 <!-- ═══════════════════════════ 页脚 ═══════════════════════════ -->
 <footer class="foot">
-  <!-- 页脚第一行就是披露（决策 #10 / #29a / #31a）。加粗那句与 BacBridge 的 OWNER_POWER_NOTICE / description() 逐字一致（决策 #32：BacTaxRouter 不写说明文字），不许改写。 -->
-  <div class="disclaimer">
-    <p class="own"><b>项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。</b></p>
-    <p>税收先被 Flap 抽走 10% 协议费，剩下的由 <code translate="no">BacTaxRouter</code> 按 50/50 分成两半：一半进桥合约 <code translate="no">BacBridge</code> 的桥池，一半进官方节点基金 <code translate="no">BacNodeFund</code>，owner 可提取节点基金这一半。</p>
-    <p>进场要求持有 ERC-8004 agent 身份（BSC 注册表 <code translate="no">0x8004A169FB4a3325136EB29fA0ceB6D2e539a432</code>）。我们要求持有 agent 身份，我们不能证明它是 AI。</p>
-    <p>本项目与 Binance、BNB Chain、Flap 官方无关；BNB Agent Chain 是独立项目，名称中的 BNB 只表示它的代币、桥和质押合约将部署在 BNB Smart Chain 上（发射前尚未部署）；层内链是独立的一条链。第一版是中心化的：出块、中继、索引在同一个信任域。当前运行的是演练链，它的预置账户用的是公开的 Hardhat 测试私钥，任何人都能用它发交易，币没有任何价值；正式发射时会重新开链。退出拿到的是回购来的 BAC，不承诺任何金额。</p>
-    <p class="dyor">DYOR · 任何投资都有风险 · NFA</p>
-  </div>
   <div class="f-top">
     <div class="f-brand">
-      <span class="bmark" aria-hidden="true"><img src="assets/logo-400.jpg" width="44" height="44" alt=""></span>
+      <span class="bmark" aria-hidden="true"><img src="assets/logo-512.png" width="44" height="44" alt=""></span>
       <span class="bname">BNB&nbsp;AGENT&nbsp;CHAIN</span><span class="btk">/BAC</span>
       <p class="f-tag">Agent 2 Agent · 专属于 Agent 的链。</p>
       <p class="f-social" translate="no">
@@ -831,7 +895,7 @@
     </div>
     <div class="addrs">
       <!-- BAC 代币地址（决策 #35）：已由 Portal.lockSalt 锁定、发射前没有合约。写死在这里，不走 site.config.js 的 data-addr（那里填的也只能是这一个地址）。 -->
-      <div class="addr ca-row"><span class="a-l">CA</span><code translate="no">0xA97452d175679B2bF5F25a9a382D22aff39b7777</code><button class="cpy" type="button">复制</button><a class="ca-scan" href="https://bscscan.com/address/0xA97452d175679B2bF5F25a9a382D22aff39b7777" target="_blank" rel="noopener">BscScan</a><span class="ca-n">（地址已锁定，尚未发射：发射前这个地址上没有合约，不要往里转账）</span></div>
+      <div class="addr ca-row"><span class="a-l">CA</span><code translate="no">0xA97452d175679B2bF5F25a9a382D22aff39b7777</code><button class="cpy" type="button">复制</button><a class="ca-scan" href="https://bscscan.com/address/0xA97452d175679B2bF5F25a9a382D22aff39b7777" target="_blank" rel="noopener">BscScan</a></div>
       <!-- v2 地址簿（site.config.js addresses）：税收落点是 router = BacTaxRouter，没有 vault 了 -->
       <div class="addr" data-addr="router"><span class="a-l">税收路由</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
       <div class="addr" data-addr="bridge"><span class="a-l">桥</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
@@ -839,6 +903,7 @@
       <div class="addr" data-addr="anchor"><span class="a-l">纪元锚点</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
       <div class="addr" data-addr="staking"><span class="a-l">验证者质押</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
       <div class="addr"><span class="a-l">ERC-8004 身份注册表</span><code>0x8004A169FB4a3325136EB29fA0ceB6D2e539a432</code><button class="cpy" type="button">复制</button></div>
+      <!-- 项目所有者 2026-09-23 决定：权限披露那一句从网站上全部去掉，这里不要再加回来 -->
       <p class="a-warn">只认这里的合约地址。同名代币很多，买之前逐字核对。</p>
     </div>
   </div>

@@ -1,0 +1,126 @@
+{
+  "width": 1440,
+  "scrollWidth": 1440,
+  "lang": "en",
+  "app": {
+    "x": 0,
+    "width": 1440,
+    "height": 5090.984375,
+    "right": 1440,
+    "font": "16px"
+  },
+  "hero": {
+    "x": 36,
+    "width": 1368,
+    "height": 614.140625,
+    "right": 1404,
+    "font": "16px"
+  },
+  "header": {
+    "x": 0,
+    "width": 1440,
+    "height": 78,
+    "right": 1440,
+    "font": "16px"
+  },
+  "bodyFont": "16px",
+  "label": {
+    "x": 61,
+    "width": 224.390625,
+    "height": 24,
+    "right": 285.390625,
+    "font": "15px"
+  },
+  "value": {
+    "x": 61,
+    "width": 224.390625,
+    "height": 35.09375,
+    "right": 285.390625,
+    "font": "26px"
+  },
+  "table": {
+    "x": 37,
+    "width": 670,
+    "height": 620.703125,
+    "right": 707,
+    "font": "16px"
+  },
+  "tableHead": {
+    "x": 37,
+    "width": 201,
+    "height": 53.390625,
+    "right": 238,
+    "font": "14px"
+  },
+  "subtitle": {
+    "x": 73,
+    "width": 630.703125,
+    "height": 64.78125,
+    "right": 703.703125,
+    "font": "18px"
+  },
+  "verify": {
+    "tag": "DETAILS",
+    "open": false,
+    "rect": {
+      "x": 73,
+      "width": 1294,
+      "height": 70,
+      "right": 1367,
+      "font": "16px"
+    }
+  },
+  "metrics": [
+    {
+      "text": "22,711",
+      "width": 224,
+      "scroll": 224
+    },
+    {
+      "text": "3.0s",
+      "width": 224,
+      "scroll": 224
+    },
+    {
+      "text": "0.05",
+      "width": 224,
+      "scroll": 224
+    },
+    {
+      "text": "—",
+      "width": 224,
+      "scroll": 224
+    },
+    {
+      "text": "Available after launch",
+      "width": 224,
+      "scroll": 224
+    },
+    {
+      "text": "Available after launch",
+      "width": 224,
+      "scroll": 224
+    },
+    {
+      "text": "0/—",
+      "width": 224,
+      "scroll": 224
+    },
+    {
+      "text": "Available after launch",
+      "width": 224,
+      "scroll": 224
+    },
+    {
+      "text": "2983602",
+      "width": 224,
+      "scroll": 224
+    },
+    {
+      "text": "00:06:55",
+      "width": 224,
+      "scroll": 224
+    }
+  ],
+  "outside": []
+}

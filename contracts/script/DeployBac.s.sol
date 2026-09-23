@@ -4,6 +4,7 @@ pragma solidity 0.8.26;
 import {Script, console2} from "forge-std/Script.sol";
 import {VmSafe} from "forge-std/Vm.sol";
 import {ERC1967Proxy} from "@openzeppelin/proxy/ERC1967/ERC1967Proxy.sol";
+import {Clones} from "@openzeppelin/proxy/Clones.sol";
 
 import {ChainAnchor} from "../src/ChainAnchor.sol";
 import {ValidatorStaking} from "../src/ValidatorStaking.sol";
@@ -12,8 +13,12 @@ import {BacBridge} from "../src/BacBridge.sol";
 import {BacTaxRouter} from "../src/BacTaxRouter.sol";
 
 /// @title DeployBac
-/// @notice The BSC-side deployment of BNB Agent Chain, in the exact order of
-///         docs/01-CONTRACT-SPEC.md section 9 (steps 2 through 10).
+/// @notice The BSC-side deployment of BNB Agent Chain, in the order written out below. THIS
+///         header is the reference for the deploy order; docs/04-发射操作手册.md §3 walks through
+///         the same steps. The step numbers (4)-(10) are the historical numbering of
+///         docs/01-CONTRACT-SPEC.md section 9, but that section still describes the deleted
+///         factory / VaultPortal / AgentRegistry path (library, registry, a 4-argument bridge
+///         without a proxy, vault factory, setVaultSink) and must NOT be followed.
 ///
 /// @dev  DRY RUN IS THE DEFAULT. Running this without `--broadcast` only simulates; forge
 ///       sends nothing. Broadcasting needs BOTH of these, and the script reverts if the
@@ -21,6 +26,7 @@ import {BacTaxRouter} from "../src/BacTaxRouter.sol";
 ///
 ///         1. the CLI flag        --broadcast
 ///         2. the env var         BAC_BROADCAST=I_HAVE_READ_SECTION_9
+///            ("section 9" means the steps listed in this header, not the stale spec section)
 ///
 ///       Dry run (this is what you normally want):
 ///         forge script script/DeployBac.s.sol:DeployBac --fork-url "$BSC_RPC_URL" --sender 0x<deployer>
@@ -63,11 +69,26 @@ import {BacTaxRouter} from "../src/BacTaxRouter.sol";
 ///       That sentence is `BacBridge.OWNER_POWER_NOTICE`, and this script refuses to finish unless
 ///       the deployed bridge says it word for word.
 ///
-///       `T` (BAC_TOKEN_PREDICTED) is the ...7777 CREATE2 address mined in section 9 step 1 and
-///       locked with `Portal.lockSalt` (decision #35: salt 0xef6c...0b2af7 locked to the deployment
+///       `T` (BAC_TOKEN_PREDICTED) is the ...7777 CREATE2 address mined in step (1) and locked
+///       with `Portal.lockSalt` (decision #35: salt 0xef6c...0b2af7 locked to the deployment
 ///       wallet, T = 0xA97452d175679B2bF5F25a9a382D22aff39b7777). It is an immutable of (5)(6)(10)
 ///       and a write-once storage slot of (7b): if the launch uses a different salt, all of them
 ///       are scrap. The script refuses to run if `T` already has code.
+///
+///       PREFLIGHT ITEMS 1 AND 3 (docs/04 §1.3), BEFORE ANYTHING IS SENT. An env var is a cached
+///       value, and every post-deploy check compares the deployed contracts with that same value,
+///       so a one-character typo in BAC_TOKEN_PREDICTED would pass all of them and bind every
+///       immutable to the wrong token (review finding, 2026-09-23; forge's `envAddress` does not
+///       even enforce the EIP-55 checksum). So before `startBroadcast`, `_preflightToken`
+///       re-derives `T` on the spot:
+///         - on BSC mainnet, `T` must equal the decision #35 constant, AND recomputing the Flap
+///           clone address from the locked salt (Portal + the TOKEN_TAXED_V3 implementation, the
+///           Portal's own CREATE2 formula) must give the same `T`, AND `Portal.getSaltLock` must
+///           show that salt locked to BAC_LAUNCHER for tokenVersion 6 (TOKEN_TAXED_V3), which is
+///           the lock the launch needs;
+///         - on any other chain the same two recomputations run when BAC_LAUNCH_SALT is set
+///           (with BAC_FLAP_TOKEN_IMPL, default the mainnet implementation) and are skipped with a
+///           printed warning otherwise.
 ///
 ///       Step (11) (the launch, through the PLAIN Portal's `newTokenV6` with `beneficiary` =
 ///       BacTaxRouter, from the wallet that locked the salt) is not here. `newTokenV7` is not an
@@ -90,6 +111,15 @@ contract DeployBac is Script {
     ///      not there.
     address internal constant ERC8004_IDENTITY_BSC = 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432;
     address internal constant ERC8004_IDENTITY_BSC_TESTNET = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
+
+    /// @dev Decision #35: what is locked on BSC mainnet. `_preflightToken` refuses anything else.
+    bytes32 internal constant LOCKED_SALT_BSC = 0xef6c0eb73e1df199c6585180a2ff54ce08a4be94de3c68d5de52ead1680b2af7;
+    address internal constant BAC_TOKEN_BSC = 0xA97452d175679B2bF5F25a9a382D22aff39b7777;
+    /// @dev Flap's TOKEN_TAXED_V3 implementation on BSC mainnet. The Portal CREATE2-clones it, so
+    ///      `Clones.predictDeterministicAddress(impl, salt, Portal)` is the token address.
+    address internal constant FLAP_TOKEN_IMPL_TAXED_V3_BSC = 0x024f18294970B5c76c0691b87f138A0317156422;
+    /// @dev `TokenVersion.TOKEN_TAXED_V3` in the Portal's enum; the salt must be locked for it.
+    uint8 internal constant TOKEN_VERSION_TAXED_V3 = 6;
 
     /// @dev EIP-1967 implementation slot.
     bytes32 internal constant IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
@@ -151,6 +181,8 @@ contract DeployBac is Script {
         require(token != address(0), unicode"BAC_TOKEN_PREDICTED is zero / 预测代币地址为零");
         require(token.code.length == 0, unicode"BAC_TOKEN_PREDICTED already has code / 预测的代币地址已经被占用");
         require(launcher != address(0), unicode"BAC_LAUNCHER is zero / 发射钱包地址为零");
+        require(flapPortal.code.length > 0, unicode"BAC_FLAP_PORTAL has no code / Portal 地址没有代码");
+        _preflightToken(token, launcher, flapPortal);
         require(nodeFundOwner != address(0), unicode"BAC_NODE_FUND_OWNER is zero / 节点基金 owner 为零");
         require(
             initialCirculating == 1000e18,
@@ -163,10 +195,9 @@ contract DeployBac is Script {
             identityRegistry.code.length > 0,
             unicode"ERC-8004 identity registry has no code on this chain / 该链上这个 ERC-8004 注册表地址没有代码"
         );
-        require(flapPortal.code.length > 0, unicode"BAC_FLAP_PORTAL has no code / Portal 地址没有代码");
         require(pancakeRouter.code.length > 0, unicode"BAC_PANCAKE_ROUTER has no code / 路由地址没有代码");
 
-        console2.log("== DeployBac: BSC side, docs/01-CONTRACT-SPEC.md section 9 ==");
+        console2.log("== DeployBac: BSC side, in the order of this script's header (docs/04 section 3) ==");
         console2.log("mode                   :", wantsBroadcast ? "BROADCAST (armed)" : "DRY RUN (nothing is sent)");
         console2.log("chainId                :", block.chainid);
         console2.log("deployer               :", deployer);
@@ -220,6 +251,43 @@ contract DeployBac is Script {
         _summary(deployer, admin, vetoKey, relayer, watchdog, nodeFundOwner, bridgeOwner, launcher, token, identityRegistry);
     }
 
+    /// @dev Preflight items 1 and 3 of docs/04 §1.3, run BEFORE anything is broadcast: `T` is
+    ///      recomputed from the salt instead of trusted from the environment, and the salt lock is
+    ///      read from the Portal. See the header for why the env value alone proves nothing.
+    function _preflightToken(address token, address launcher, address flapPortal) internal view {
+        bytes32 salt;
+        address impl;
+        if (block.chainid == 56) {
+            require(
+                token == BAC_TOKEN_BSC,
+                unicode"preflight 1: BAC_TOKEN_PREDICTED is not T of decision #35 / 预测代币地址不是决策 #35 锁定的 T"
+            );
+            salt = LOCKED_SALT_BSC;
+            impl = FLAP_TOKEN_IMPL_TAXED_V3_BSC;
+        } else {
+            salt = vm.envOr("BAC_LAUNCH_SALT", bytes32(0));
+            if (salt == bytes32(0)) {
+                console2.log("WARNING preflight 1/3 skipped: BAC_LAUNCH_SALT is not set on this chain");
+                return;
+            }
+            impl = vm.envOr("BAC_FLAP_TOKEN_IMPL", FLAP_TOKEN_IMPL_TAXED_V3_BSC);
+        }
+        require(
+            Clones.predictDeterministicAddress(impl, salt, flapPortal) == token,
+            unicode"preflight 1: the locked salt does not produce BAC_TOKEN_PREDICTED / 用锁定的 salt 重算出的代币地址与预测值不一致"
+        );
+        (bool ok, bytes memory ret) = flapPortal.staticcall(abi.encodeWithSignature("getSaltLock(bytes32)", salt));
+        require(ok && ret.length >= 64, unicode"preflight 3: Portal.getSaltLock failed / 读取 salt 锁失败");
+        (address locker, uint8 version) = abi.decode(ret, (address, uint8));
+        require(locker == launcher, unicode"preflight 3: the salt is not locked to BAC_LAUNCHER / salt 没有锁给发射钱包");
+        require(
+            version == TOKEN_VERSION_TAXED_V3,
+            unicode"preflight 3: the salt is not locked for TOKEN_TAXED_V3 / salt 锁定的代币版本不是 TOKEN_TAXED_V3"
+        );
+        console2.log("preflight 1 (T recomputed from the locked salt): ok");
+        console2.log("preflight 3 (salt locked to the launcher, V3)   : ok");
+    }
+
     /// @dev The registry for this chain. Reverts rather than guessing on an unknown chain id.
     function _defaultIdentityRegistry() internal view returns (address) {
         if (block.chainid == 56) return ERC8004_IDENTITY_BSC;
@@ -258,7 +326,9 @@ contract DeployBac is Script {
         );
     }
 
-    /// @dev The read-only half of section 9 step 9: everything checkable without the token existing.
+    /// @dev The read-only half of step (9): everything checkable without the token existing. The
+    ///      "preflight 1" lines below only prove that the contracts agree with `token`; that `token`
+    ///      is the right address was proven before broadcasting, by `_preflightToken`.
     function _postDeployChecks(
         address token,
         address identityRegistry,
@@ -317,7 +387,9 @@ contract DeployBac is Script {
         // Decision #32: the immutable, ownerless router freezes no text. A router that still
         // answers `description()` is the pre-#32 build and must not become the beneficiary.
         (bool hasDesc,) = address(router).staticcall(abi.encodeWithSignature("description()"));
-        require(!hasDesc, unicode"BacTaxRouter still has description() (decision #32) / 路由合约不得带 description()");
+        require(
+            !hasDesc, unicode"BacTaxRouter still has description() (decision #32) / 路由合约不得带 description()"
+        );
     }
 
     /// @dev A machine-readable summary. Every line is `bac.<key>=<value>`, so a shell can do

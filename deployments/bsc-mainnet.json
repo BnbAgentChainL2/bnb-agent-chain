@@ -1,0 +1,96 @@
+{
+  "chainId": 56,
+  "deployedAt": "2026-09-23",
+  "deployBlock": 123558962,
+  "deployer": "0x934a6678120b85652D2CC818C69774ea17012844",
+  "sourceSnapshot": {
+    "BacBridge.sol sha256 prefix": "c14c4234d633",
+    "tests": "non-fork 324/324, BSC fork 9/9"
+  },
+  "addresses": {
+    "token": "0xA97452d175679B2bF5F25a9a382D22aff39b7777",
+    "router": "0x63D213C8AAa4E1C758ea41f8ed35066181B8e818",
+    "bridge": "0x2129f336ff42821afa27fE5928Dec36Ba90d3508",
+    "bridgeImplementation": "0xe825be69C9870F01A536d15a6ec58bC2eb45e4b2",
+    "bridgeExtension": "0x22b2ef52a38160148E08f27F3F791AcBb137c1fB",
+    "nodeFund": "0xBf92C03f2eD3b7aDFC4908019DF51a0401fC23Ff",
+    "anchor": "0xe6cCCD4809905152588f31417408c4Af9043b406",
+    "staking": "0xC0cdF18fb2aF4C5Ca34603B6D7C4E29005042943",
+    "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+    "flapPortal": "0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0"
+  },
+  "roles": {
+    "bridgeOwner": "0x934a6678120b85652D2CC818C69774ea17012844",
+    "admin": "0x934a6678120b85652D2CC818C69774ea17012844",
+    "vetoKey": "0x934a6678120b85652D2CC818C69774ea17012844",
+    "nodeFundOwner": "0x934a6678120b85652D2CC818C69774ea17012844",
+    "launcher": "0x934a6678120b85652D2CC818C69774ea17012844",
+    "relayer": "0xD1437933839d67b6EA04b5466f3EAB87Fa91F6E4",
+    "watchdog": "0x51b6D9a3665c74FFef80ca8d3898edB9DeBcDb55"
+  },
+  "transactions": [
+    {
+      "contract": "ChainAnchor",
+      "function": "CREATE",
+      "address": "0xe6cccd4809905152588f31417408c4af9043b406",
+      "tx": "0xa393dc9544f150c02f7f173aa892bbcc9b736a1343921662aceae2de315afd43",
+      "block": 123558962,
+      "gasUsed": 2138810,
+      "status": 1
+    },
+    {
+      "contract": "ValidatorStaking",
+      "function": "CREATE",
+      "address": "0xc0cdf18fb2af4c5ca34603b6d7c4e29005042943",
+      "tx": "0x6c1ff96df160528e3896f63141d138db3ea8f562acb84db93e782429d8823ad5",
+      "block": 123558967,
+      "gasUsed": 3812834,
+      "status": 1
+    },
+    {
+      "contract": "BacNodeFund",
+      "function": "CREATE",
+      "address": "0xbf92c03f2ed3b7adfc4908019df51a0401fc23ff",
+      "tx": "0x288334ee07971936043702d9ca9ef13346f0a8eeb5231e9e178cd8a2c4cb8439",
+      "block": 123558973,
+      "gasUsed": 440524,
+      "status": 1
+    },
+    {
+      "contract": "BacBridge",
+      "function": "CREATE",
+      "address": "0xe825be69c9870f01a536d15a6ec58bc2eb45e4b2",
+      "tx": "0xf190d053aab6404227592d87076301c543edb3355aa5f3c9f602a3b1e29ed24e",
+      "block": 123558977,
+      "gasUsed": 9156800,
+      "status": 1
+    },
+    {
+      "contract": "ERC1967Proxy",
+      "function": "CREATE",
+      "address": "0x2129f336ff42821afa27fe5928dec36ba90d3508",
+      "tx": "0xeefaf36da257c66fcaccc082bf712a0af980a582b04b440e9a2de0bb6edb6fc0",
+      "block": 123558981,
+      "gasUsed": 412085,
+      "status": 1
+    },
+    {
+      "contract": "ChainAnchor",
+      "function": "setValidatorStaking(address)",
+      "address": "0xe6cccd4809905152588f31417408c4af9043b406",
+      "tx": "0x9f471de125af60c881b3fb307a90045aeb1dd7fb2786812d4b4d7a9cd5acb846",
+      "block": 123558986,
+      "gasUsed": 45835,
+      "status": 1
+    },
+    {
+      "contract": "BacTaxRouter",
+      "function": "CREATE",
+      "address": "0x63d213c8aaa4e1c758ea41f8ed35066181b8e818",
+      "tx": "0x442ce4ac8f543adcaea639995d0e0b92decaa13b5dda72834d0e241b0fcaf9e3",
+      "block": 123558990,
+      "gasUsed": 731737,
+      "status": 1
+    }
+  ]
+}

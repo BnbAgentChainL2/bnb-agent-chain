@@ -277,13 +277,14 @@ function deployBacBridge(
 
 /// @dev A V2 written the way the storage comment in `BacBridgeCore` prescribes: its one new
 ///      variable takes the FIRST slot of `__gap`. In a real V2 that is a source change —
-///      `uint256 public v2Marker;` declared just above the gap and `__gap` shrunk to 41. A mock
+///      `uint256 public v2Marker;` declared just above the gap and `__gap` shrunk to 39. A mock
 ///      that inherits V1 cannot shrink V1's private gap, so it addresses that slot explicitly;
 ///      `BacBridgeUpgradeTest` pins `GAP_START` against the live layout, so the day somebody
 ///      inserts a variable above the gap, that test fails instead of this mock silently
 ///      writing over it.
 contract BacBridgeV2Mock is BacBridge {
-    uint256 internal constant GAP_START = 350;
+    /// @dev 350 in the first deployed version; v1.1 took 350 (`claimHistory`) and 351 (`owedPaid`).
+    uint256 internal constant GAP_START = 352;
 
     function initializeV2(uint256 marker) external reinitializer(2) {
         assembly {
@@ -1581,7 +1582,7 @@ contract BacBridgeReleaseIndexTest is Test {
             uint256 room = h.headroom();
             h.release(room - room / 1e5); // `p` shrinks ~1e5-fold each time
         }
-        (, , uint48 gen) = h.releaseIndex();
+        (,, uint48 gen) = h.releaseIndex();
         assertEq(uint256(gen), 0, "never a full release");
         (, uint48 scale,) = h.releaseIndex();
         assertGe(uint256(scale), 4);
@@ -2126,6 +2127,219 @@ contract BacBridgeHaltTest is BacBridgeTestBase {
 }
 
 // ============================================================================
+//          PER-DEBT MATURITY  (v1.1, review finding 2026-09-23: dust reset)
+// ============================================================================
+
+/// @dev v1 kept ONE `lastClaimAt` per address and let every `claimExit` in its favour reset it
+///      for the address's WHOLE owed. `L2Bridge.exit` lets any exiter name any BSC recipient and
+///      `claimExit` is permissionless, so a 101-wei-credit exit sent to a victim during a cause-2/3
+///      arming window made the victim's long-matured claim immature: `claimOwedAfterHalt`
+///      refused it and anyone could `sweepImmatureOwed` it into the junior pot, where the
+///      attacker's own escape weight collected it. Maturity is now per debt.
+contract BacBridgeMaturityTest is BacBridgeTestBase {
+    address[] internal holders;
+    uint256 internal carolOwed;
+
+    function setUp() public override {
+        super.setUp();
+        _lock(alice, 1, 600e18); // alice: the attacker, keeps her whole escape weight
+        _lock(carol, 3, 400e18); // carol: exits everything, so her only claim is her owed
+        _seedBuyback(10e18);
+        carolOwed = _exit(carol, 3, 1, 400e18);
+        assertGt(carolOwed, 0);
+        vm.warp(vm.getBlockTimestamp() + 20 days); // carol's claim is now mature
+    }
+
+    function _exit(address to, uint256 agentId, uint256 exitId, uint256 credits) internal returns (uint256) {
+        uint64 e = _curEpoch();
+        _postSingle(e, _leaf(exitId, agentId, to, credits), 3);
+        return _claim(e, exitId, agentId, to, credits);
+    }
+
+    /// Arms a cause-2 halt, lets `beforeDust` pass, has the ATTACKER route a dust exit to carol,
+    /// then halts at the earliest moment.
+    function _dustDuringArming(uint256 beforeDust) internal returns (uint256 dust) {
+        anchor.setHaltReason(2);
+        bridge.checkHalt();
+        vm.warp(vm.getBlockTimestamp() + beforeDust);
+        vm.prank(alice); // permissionless: the attacker submits it herself
+        dust = _exit(carol, 1, 99, 101);
+        assertGt(dust, 0, "the dust exit locked something for carol");
+        vm.warp(vm.getBlockTimestamp() + bridge.ESCAPE_ARM_DELAY() - beforeDust);
+        bridge.checkHalt();
+        assertTrue(bridge.isHalted());
+        assertEq(bridge.haltCause(), 2);
+    }
+
+    /// The exact attack of the finding, replayed: carol keeps her senior claim.
+    function test_DustExitDuringArmingCannotDemoteAMaturedClaim() public {
+        uint256 dust = _dustDuringArming(1 days);
+        assertEq(bridge.owed(carol), carolOwed + dust);
+        assertEq(bridge.maturedOwed(carol), carolOwed, "only the dust is young");
+
+        // carol is paid her matured claim at once - v1 reverted "Owed not matured" here
+        vm.prank(carol);
+        assertEq(bridge.claimOwedAfterHalt(carol), carolOwed);
+        assertEq(bac.balanceOf(carol), carolOwed, "the senior claim is paid in BAC");
+        assertEq(bridge.owed(carol), dust, "the young dust is still owed");
+
+        vm.prank(carol);
+        vm.expectRevert(unicode"Owed not matured / 债权尚未成熟");
+        bridge.claimOwedAfterHalt(carol);
+
+        // after the maturity window only the dust can be demoted, never the paid claim
+        vm.warp(vm.getBlockTimestamp() + bridge.OWED_MATURITY());
+        vm.prank(alice);
+        bridge.sweepImmatureOwed(carol);
+        assertEq(bridge.owed(carol), 0);
+
+        // alice's escape share is her own weight's share, NOT carol's claim on top
+        (uint256 aliceBac,) = bridge.escapeClaimable(1);
+        assertLt(aliceBac, 10e18 - carolOwed + dust + 1, "the attacker must not collect carol's claim");
+        _assertBacBooks();
+    }
+
+    /// Order does not matter: the victim can also claim AFTER the sweep. A sweep of an address
+    /// whose whole owed is matured is refused, and a sweep with dust takes only the dust.
+    function test_SweepBeforeTheVictimClaimsTakesOnlyTheYoungPart() public {
+        uint256 dust = _dustDuringArming(3 days);
+        vm.warp(vm.getBlockTimestamp() + bridge.OWED_MATURITY());
+        uint256 accBefore = bridge.accPerWeightBac();
+        bridge.sweepImmatureOwed(carol);
+        assertEq(bridge.owed(carol), carolOwed, "the matured claim stayed owed");
+        assertEq(bridge.owedTotal(), carolOwed);
+        (uint256 w,,,,) = bridge.escapeState();
+        assertEq(bridge.accPerWeightBac() - accBefore, (dust * 1e18) / w, "only the dust went junior");
+
+        vm.expectRevert(unicode"Owed already matured / 该债权已成熟");
+        bridge.sweepImmatureOwed(carol);
+        vm.prank(carol);
+        assertEq(bridge.claimOwedAfterHalt(carol), carolOwed);
+        vm.expectRevert(unicode"Nothing to demote / 没有可降级的债权");
+        bridge.sweepImmatureOwed(carol);
+        _assertBacBooks();
+    }
+
+    /// The rule the maturity check exists for still holds: debt claimed inside the arming window
+    /// (what a forged root produces) is demoted under cause 2, even when the SAME address also
+    /// holds an older matured claim that stays senior.
+    function test_OwnYoungDebtIsStillDemotedNextToAMaturedClaim() public {
+        anchor.setHaltReason(2);
+        bridge.checkHalt();
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        uint256 young = _exit(carol, 1, 7, 300e18); // a big, young claim in carol's favour
+        vm.warp(vm.getBlockTimestamp() + bridge.ESCAPE_ARM_DELAY() - 1 days); // halt at the earliest
+        bridge.checkHalt();
+        assertEq(bridge.maturedOwed(carol), carolOwed);
+
+        vm.prank(carol);
+        assertEq(bridge.claimOwedAfterHalt(carol), carolOwed, "only the matured part is senior");
+        vm.warp(vm.getBlockTimestamp() + bridge.OWED_MATURITY());
+        vm.prank(carol);
+        vm.expectRevert(unicode"Owed not matured / 债权尚未成熟");
+        bridge.claimOwedAfterHalt(carol); // cause 2: the young part never becomes senior
+        bridge.sweepImmatureOwed(carol);
+        assertEq(bridge.owed(carol), 0);
+        assertGt(young, 0);
+        _assertBacBooks();
+    }
+
+    /// Under a cause that keeps priority (1, 4, 5) the matured part is paid at once and the young
+    /// part `OWED_MATURITY` after the halt, in a second call.
+    function test_Cause1PaysTheMaturedPartNowAndTheRestLater() public {
+        anchor.setHaltReason(1);
+        bridge.checkHalt();
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        uint256 dust = _exit(carol, 1, 99, 101);
+        vm.warp(vm.getBlockTimestamp() + bridge.ESCAPE_ARM_DELAY() - 1 days); // halt at the earliest
+        bridge.checkHalt();
+
+        vm.prank(carol);
+        assertEq(bridge.claimOwedAfterHalt(carol), carolOwed);
+        vm.warp(vm.getBlockTimestamp() + bridge.OWED_MATURITY());
+        vm.prank(carol);
+        assertEq(bridge.claimOwedAfterHalt(carol), dust);
+        assertEq(bridge.owed(carol), 0);
+        assertEq(bac.balanceOf(carol), carolOwed + dust);
+        _assertBacBooks();
+    }
+
+    /// The watchdog side of the same bug: in v1 a dust exit in a later epoch made the whole
+    /// address young, and `revokeEpochOwed` on the OLD epoch then voided carol's matured claim.
+    function test_DustCannotOpenAMaturedClaimToTheWatchdog() public {
+        uint64 oldEpoch = uint64((vm.getBlockTimestamp() - 20 days) / E);
+        assertEq(bridge.epochOwed(oldEpoch, carol), carolOwed);
+        uint64 dustEpoch = _curEpoch();
+        uint256 dust = _exit(carol, 1, 99, 101);
+
+        assertEq(bridge.maturedOwed(carol), carolOwed, "the dust did not make the old claim young");
+
+        vm.prank(watchdog);
+        bridge.pause();
+        holders = [carol];
+        // v1 revoked all of carol's 4e18 here. Now at most the young dust can go, never the
+        // matured claim (the revoke is bounded by the address's young part).
+        vm.prank(watchdog);
+        assertLe(bridge.revokeEpochOwed(oldEpoch, holders), dust, "the matured claim is untouchable");
+        assertGe(bridge.owed(carol), carolOwed);
+        vm.prank(watchdog);
+        bridge.revokeEpochOwed(dustEpoch, holders);
+        assertEq(bridge.owed(carol), carolOwed, "exactly the matured claim is left");
+        // and with nothing young left, even the old epoch's record cannot be used again
+        vm.prank(watchdog);
+        assertEq(bridge.revokeEpochOwed(oldEpoch, holders), 0);
+        assertEq(bridge.owed(carol), carolOwed);
+        _assertBacBooks();
+    }
+
+    /// Payments count against the oldest debt first: collecting can only shrink the matured part.
+    function test_CollectCountsAgainstTheOldestDebtFirst() public {
+        uint256 young = _exit(carol, 1, 8, 200e18);
+        assertEq(bridge.maturedOwed(carol), carolOwed);
+        _warpEpochs(1);
+        _settleNext(3);
+        vm.prank(carol);
+        uint256 paid = bridge.collect(carol);
+        assertGt(paid, 0);
+        assertLt(paid, carolOwed, "test premise: a partial payment");
+        assertEq(bridge.owedPaid(carol), paid);
+        assertEq(bridge.maturedOwed(carol), carolOwed - paid, "the payment came off the oldest debt");
+        assertEq(bridge.owed(carol), carolOwed + young - paid);
+        // and once the young debt ages, everything left is matured
+        vm.warp(vm.getBlockTimestamp() + bridge.OWED_MATURITY());
+        assertEq(bridge.maturedOwed(carol), bridge.owed(carol));
+    }
+
+    /// Two claims in one block are one history point; a later block adds a point.
+    function test_ClaimHistoryIsOnePointPerBlock() public {
+        uint256 slot = uint256(keccak256(abi.encode(carol, uint256(350))));
+        assertEq(uint256(vm.load(address(bridge), bytes32(slot))), 1, "carol's first claim: one point");
+        _exit(carol, 1, 10, 1e18);
+        _exit(carol, 1, 11, 1e18);
+        assertEq(uint256(vm.load(address(bridge), bytes32(slot))), 2, "same block: one more point");
+        vm.warp(vm.getBlockTimestamp() + 1);
+        _exit(carol, 1, 12, 1e18);
+        assertEq(uint256(vm.load(address(bridge), bytes32(slot))), 3);
+    }
+
+    /// Owed that predates the history (an upgrade over live claims) is dated by its old
+    /// `lastClaimAt`, and a later claim can never make it young: the upgrade itself is safe.
+    function test_OwedFromBeforeTheHistoryKeepsItsAge() public {
+        // carol's claim, as a v1 bridge would have stored it: owed + lastClaimAt, no history
+        uint256 slot = uint256(keccak256(abi.encode(carol, uint256(350))));
+        vm.store(address(bridge), bytes32(slot), bytes32(0));
+        assertEq(bridge.maturedOwed(carol), carolOwed, "dated by lastClaimAt");
+
+        uint256 dust = _exit(carol, 1, 99, 101);
+        assertEq(uint256(vm.load(address(bridge), bytes32(slot))), 2, "the old debt was entered first");
+        assertEq(bridge.maturedOwed(carol), carolOwed, "and kept its age");
+        assertEq(bridge.owed(carol), carolOwed + dust);
+        vm.warp(vm.getBlockTimestamp() + bridge.OWED_MATURITY());
+        assertEq(bridge.maturedOwed(carol), carolOwed + dust);
+    }
+}
+
+// ============================================================================
 //                     PROXY / UUPS UPGRADES  (decision #29, #29c)
 // ============================================================================
 
@@ -2134,8 +2348,11 @@ contract BacBridgeUpgradeTest is BacBridgeTestBase {
     ///      re-derives each of them from live state, so a layout change fails loudly here.
     uint256 internal constant FIRST_SLOT = 301; // bacToken
     uint256 internal constant COUNTERS_SLOT = 349; // emergencyCount | lastEmergencyAt | upgradeCount | lastUpgradeAt
-    uint256 internal constant GAP_START = 350;
-    uint256 internal constant GAP_LEN = 42;
+    /// @dev v1.1 (the first upgrade of the deployed bridge) appended two mappings out of the gap.
+    uint256 internal constant CLAIM_HISTORY_SLOT = 350;
+    uint256 internal constant OWED_PAID_SLOT = 351;
+    uint256 internal constant GAP_START = 352;
+    uint256 internal constant GAP_LEN = 40;
     bytes32 internal constant IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
     function _implOf(address proxy) internal view returns (address) {
@@ -2181,8 +2398,10 @@ contract BacBridgeUpgradeTest is BacBridgeTestBase {
         bridge.emergencyWithdrawBnb(payable(treasury), 1 ether);
     }
 
-    function _sampleMappings(uint64 exitEpoch) internal view returns (uint256[10] memory) {
+    function _sampleMappings(uint64 exitEpoch) internal view returns (uint256[12] memory) {
         return [
+            bridge.owedPaid(alice),
+            bridge.maturedOwed(alice),
             bridge.credited(1),
             bridge.credited(2),
             bridge.exitedCredits(1),
@@ -2309,6 +2528,13 @@ contract BacBridgeUpgradeTest is BacBridgeTestBase {
         assertEq(uint256(uc), uint256(bridge.upgradeCount()));
         assertEq(uint256(lua), uint256(bridge.lastUpgradeAt()));
         assertEq(uint256(ec), 1);
+        // v1.1's two mappings sit exactly where the upgrade put them
+        assertEq(uint256(vm.load(address(bridge), keccak256(abi.encode(alice, CLAIM_HISTORY_SLOT)))), 1, "claimHistory");
+        assertGt(bridge.owedPaid(alice), 0, "test premise: alice collected");
+        assertEq(uint256(vm.load(address(bridge), keccak256(abi.encode(alice, OWED_PAID_SLOT)))), bridge.owedPaid(alice));
+        // a mapping's own slot is never written
+        assertEq(vm.load(address(bridge), bytes32(CLAIM_HISTORY_SLOT)), bytes32(0));
+        assertEq(vm.load(address(bridge), bytes32(OWED_PAID_SLOT)), bytes32(0));
         for (uint256 s = GAP_START; s < GAP_START + GAP_LEN; s++) {
             assertEq(vm.load(address(bridge), bytes32(s)), bytes32(0), "the gap must be unused");
         }
@@ -2327,7 +2553,7 @@ contract BacBridgeUpgradeTest is BacBridgeTestBase {
         }
         // and a sample of the hashed (mapping) slots through their getters
         (address dFrom, uint64 dAt, uint256 dAgent, uint256 dAmount) = bridge.deposits(1);
-        uint256[10] memory m = _sampleMappings(exitEpoch);
+        uint256[12] memory m = _sampleMappings(exitEpoch);
         address ext1 = bridge.EXTENSION();
 
         BacBridgeV2Mock v2 = new BacBridgeV2Mock();
@@ -2360,8 +2586,8 @@ contract BacBridgeUpgradeTest is BacBridgeTestBase {
         assertEq(uint256(dAt2), uint256(dAt));
         assertEq(dAgent2, dAgent);
         assertEq(dAmount2, dAmount);
-        uint256[10] memory m2 = _sampleMappings(exitEpoch);
-        for (uint256 i = 0; i < 10; i++) {
+        uint256[12] memory m2 = _sampleMappings(exitEpoch);
+        for (uint256 i = 0; i < 12; i++) {
             assertEq(m2[i], m[i], "a mapping slot moved");
         }
         assertEq(bridge.agentController(2), carol);
@@ -2652,6 +2878,37 @@ contract BacBridgeEmergencyTest is BacBridgeTestBase {
         vm.expectRevert(unicode"Nothing to withdraw / 没有可提取的金额");
         bridge.emergencyWithdrawToken(address(empty), treasury, 0);
         vm.stopPrank();
+    }
+
+    /// Review finding (2026-09-23): a "withdrawal" to the bridge itself moved nothing yet emitted
+    /// `EmergencyWithdraw` with `balanceAfter` 0 and inflated the lifetime counters, repeatably.
+    /// Both functions now refuse the bridge as recipient and nothing is logged or counted.
+    function test_WithdrawToTheBridgeItselfIsRefused() public {
+        uint256 bacBefore = bac.balanceOf(address(bridge));
+        vm.recordLogs();
+        vm.startPrank(owner);
+        vm.expectRevert(unicode"Recipient is the bridge / 收款地址不能是桥本身");
+        bridge.emergencyWithdrawToken(address(bac), address(bridge), 0);
+        vm.expectRevert(unicode"Recipient is the bridge / 收款地址不能是桥本身");
+        bridge.emergencyWithdrawToken(address(bac), address(bridge), 1e18);
+        vm.expectRevert(unicode"Recipient is the bridge / 收款地址不能是桥本身");
+        bridge.emergencyWithdrawBnb(payable(address(bridge)), 0);
+        vm.expectRevert(unicode"Recipient is the bridge / 收款地址不能是桥本身");
+        bridge.emergencyWithdrawBnb(payable(address(bridge)), 1 ether);
+        vm.stopPrank();
+        assertEq(vm.getRecordedLogs().length, 0, "nothing may be logged for a self-send");
+
+        assertEq(uint256(bridge.emergencyCount()), 0);
+        assertEq(bridge.emergencyBacWithdrawn(), 0);
+        assertEq(bridge.emergencyBnbWithdrawn(), 0);
+        assertEq(bac.balanceOf(address(bridge)), bacBefore);
+        assertEq(address(bridge).balance, 10 ether);
+
+        // a real withdrawal still works right after, and is counted once
+        vm.prank(owner);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 1e18);
+        assertEq(uint256(bridge.emergencyCount()), 1);
+        assertEq(bridge.emergencyBacWithdrawn(), 1e18);
     }
 
     /// Decision #29b: the owner sits above pause and halt alike.

@@ -41,9 +41,8 @@
   var GAS_NOTE_OFFICIAL = '官方节点出的块：10% 进验证者池 / 90% 进官方基金会。';
   var GAS_NOTE_VALIDATOR = '验证者自己出的块：50% 归该验证者 / 50% 进官方基金会。';
 
-  /* 决策 #29a / #31a：两句必须逐字一致的话。凡是说到桥池兑付、说到进场门禁的地方都带上，
-     一个字都不许改 —— 链上 BacBridge.OWNER_POWER_NOTICE / IDENTITY_LIMIT_NOTICE 就是这两句。 */
-  var OWNER_POWER = '项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。';
+  /* 决策 #31a：进场门禁那一句必须逐字（链上 BacBridge.IDENTITY_LIMIT_NOTICE 就是它）。
+     项目方权限那一句：项目所有者 2026-09-23 决定从网站上全部去掉，不要加回来。 */
   var ID_LIMIT = '我们要求持有 agent 身份，我们不能证明它是 AI。';
   /* 决策 #31：入场门禁读的 ERC-8004 身份注册表（BSC，ERC-721，name() = "AgentIdentity"）。
      只写地址和标准名，不写「官方」：我们用这个注册表，不代表任何人为我们背书。 */
@@ -56,12 +55,14 @@
     agents: { page: 0, size: 25, filter: 'all', q: '' }
   };
 
-  function pager(el, s, total, onChange) {
+  /** layerDirect：这个列表在直读模式下真的是从层内节点读的（只有区块、交易两页）。
+      agent 名录从来不来自层内节点，传 false —— 不能把「直读层内节点」的说明套到它头上。 */
+  function pager(el, s, total, onChange, layerDirect) {
     if (!el) return;
     /* 直读层内节点时只有最近一窗口的块（本站一轮最多取 20 块左右），
        「首页 / 末页 / 每页 100 条」这些控件点了也没有第二页可去 ——
        与其画一排点不动的按钮，不如把为什么说清楚。索引器恢复供数后自动换回分页。 */
-    if (onRpc()) {
+    if (layerDirect && onRpc()) {
       /* 索引器已经部署在同一台主机上；走到这里只说明这一轮数据是直读节点拿到的。
          三种情况分开说：还在读取 / 确实读不到（'noidx'）/ 索引器正常但这一轮恰好走的直读 ——
          最后一种不能说它「没有答话」，那是假话（INDEX 灯是绿的）。 */
@@ -116,7 +117,7 @@
     if (s !== 'ok') {
       body.innerHTML = R.missRow(10, s, s === 'loading' ? '正在读层内节点。' : '');
       UI.setText('#blkCount', miss(s));
-      pager($('#blkPager'), st.blocks, 0, renderBlocks);
+      pager($('#blkPager'), st.blocks, 0, renderBlocks, true);
       return;
     }
     var list = filteredBlocks(), p = st.blocks;
@@ -128,7 +129,7 @@
     UI.setText('#blkCount', VM.layer.source === 'rpc'
       ? comma(list.length) + ' 块 · 只有最近 ' + comma(VM.blocks.length) + ' 块（直读层内节点，历史要等索引器）'
       : comma(list.length) + ' 块（本页保留最近 ' + comma(VM.blocks.length) + ' 块）');
-    pager($('#blkPager'), p, list.length, renderBlocks);
+    pager($('#blkPager'), p, list.length, renderBlocks, true);
   }
 
   function filteredTxs() {
@@ -146,7 +147,7 @@
     if (s !== 'ok') {
       body.innerHTML = R.missRow(10, s, s === 'loading' ? '正在读层内节点。' : '');
       UI.setText('#txCount', miss(s));
-      pager($('#txPager'), st.txs, 0, renderTxs);
+      pager($('#txPager'), st.txs, 0, renderTxs, true);
       return;
     }
     var list = filteredTxs(), p = st.txs;
@@ -157,7 +158,7 @@
     UI.setText('#txCount', VM.layer.source === 'rpc'
       ? comma(list.length) + ' 笔 · 只有最近 ' + comma(VM.blocks.length) + ' 块里的（直读层内节点）'
       : comma(list.length) + ' 笔');
-    pager($('#txPager'), p, list.length, renderTxs);
+    pager($('#txPager'), p, list.length, renderTxs, true);
   }
 
   function filteredAgents() {
@@ -165,11 +166,14 @@
     return VM.agents.filter(function (a) {
       if (p.filter !== 'all' && String(a.status || '').toLowerCase() !== p.filter) return false;
       if (!q) return true;
-      return ('agent #' + a.id).indexOf(q) >= 0 || String(a.id) === q.replace('#', '') ||
-        (a.wallet || '').toLowerCase().indexOf(q) >= 0 || (a.sum || '').indexOf(q) >= 0;
+      var idNo = String(a.identityId === null || a.identityId === undefined ? a.id : a.identityId);
+      return ('agent #' + a.id).indexOf(q) >= 0 || idNo === q.replace('#', '') ||
+        [a.wallet, a.holder, a.agentWallet].some(function (x) { return (x || '').toLowerCase().indexOf(q) >= 0; }) ||
+        (a.selfName || '').toLowerCase().indexOf(q) >= 0;
     });
   }
 
+  var AG_COLS = 8;
   function renderAgents() {
     var body = $('#agBody'); if (!body) return;
     var s = VM.st.agents;
@@ -177,22 +181,40 @@
       /* 进场记录在 BSC 的 BacBridge 里（门禁读 ERC-8004 身份注册表），代币还没发射、桥还没部署 →
          **没有任何 agent 进场过**。照实说，不编身份。 */
       body.innerHTML = s === 'pre'
-        ? R.emptyRow(10, '还没有任何 agent 进场。进场要持有 ERC-8004 agent 身份（BSC 身份注册表 ' + ID_REGISTRY
+        ? R.emptyRow(AG_COLS, '还没有任何 agent 进场。进场要持有 ERC-8004 agent 身份（BSC 身份注册表 ' + ID_REGISTRY
           + '），再把 BAC 锁进 BSC 上的 BacBridge；代币还没发射、桥还没部署，所以现在一条进场记录都没有 —— '
           + '这不是读取失败，是真的还没有人进场。' + ID_LIMIT
           + '层内那条链（演练链）本身已经在出块了，区块和交易在「区块」「交易」两页都是实时的。')
-        : R.missRow(10, s, '');
+        : R.missRow(AG_COLS, s, '');
       UI.setText('#agCount', s === 'pre' ? '0 个身份' : miss(s));
-      pager($('#agPager'), st.agents, 0, renderAgents);
+      /* 没有列表就没有可翻的页：'pre' 时照实写 0 条（真的还没有人进场），读取中 / 读不到时什么都不画。 */
+      var agp = $('#agPager');
+      if (agp) { agp.onclick = null; agp.innerHTML = s === 'pre' ? '<span class="pg-fill"></span><span>共 0 条</span>' : ''; }
       return;
     }
-    var list = filteredAgents(), p = st.agents;
+    var list = filteredAgents(), p = st.agents, m = VM.agentsMeta || {};
     var page = list.slice(p.page * p.size, (p.page + 1) * p.size);
     body.innerHTML = page.length ? page.map(function (a) { return R.agentRow(a); }).join('')
-      : R.emptyRow(10, '没有符合条件的 agent。');
-    var total = VM.chain.agentCounts ? VM.chain.agentCounts.total : VM.agents.length;
-    UI.setText('#agCount', comma(list.length) + ' / ' + comma(total) + ' 个身份');
-    pager($('#agPager'), p, list.length, renderAgents);
+      : (VM.agents.length
+        ? R.emptyRow(AG_COLS, '没有符合条件的 agent。')
+        /* 阶段 b / c：桥合约在，名录读到了，就是一个都还没有 —— 这是真的 0，不是读取失败 */
+        : R.emptyRow(AG_COLS, '还没有任何 ERC-8004 身份锁进过 BacBridge。' + ID_LIMIT));
+    /* 一共几个：名录读全了才给 total；只读了最近一批存入时 total 是 null，只能说「至少」 */
+    var total = m.total !== null && m.total !== undefined ? m.total
+      : (VM.chain.agentCounts && VM.chain.agentCounts.total !== null ? VM.chain.agentCounts.total : null);
+    UI.setText('#agCount', total !== null
+      ? comma(list.length) + ' / ' + comma(total) + ' 个身份'
+      : (m.totalAtLeast !== null && m.totalAtLeast !== undefined
+        ? comma(list.length) + ' / 至少 ' + comma(m.totalAtLeast) + ' 个身份'
+        : comma(list.length) + ' 个身份'));
+    pager($('#agPager'), p, list.length, renderAgents, false);
+    /* 读不全 / 身份字段这一轮没读，照实补一句在分页条后面 */
+    var agp2 = $('#agPager');
+    if (agp2 && (m.truncated || m.itemsTruncated || m.identityPaused)) {
+      agp2.insertAdjacentHTML('beforeend', '<span class="pg-note">' + esc(
+        m.identityPaused ? '这一轮没能批量读身份注册表，持有人 / agentWallet / 名字暂时写「—」。'
+          : '存入记录太多，只读了最近一批：上面不是全部身份。') + '</span>');
+    }
   }
 
   /* ══════════════════ 概览 ══════════════════ */
@@ -262,23 +284,90 @@
      它按 50/50 推给 BacBridge（桥池）和 BacNodeFund（节点基金）。
      决策 #29c：桥合约的每一次升级与紧急提取都要按时间线公开，和节点基金提取同一个口径。 */
 
+  /** 一条 BSC 时间线的表身：读不到按状态占位；读到了但这一段为空，照实说「这一段没有」（不是「从来没有」）。 */
+  function tlBody(el, status, items, rowFn, preNote, emptyNote) {
+    if (!el) return;
+    if (status !== 'ok') { el.innerHTML = R.missRow(5, status, status === 'pre' ? preNote : ''); return; }
+    el.innerHTML = items && items.length ? items.map(rowFn).join('') : R.emptyRow(5, emptyNote);
+  }
+  function htmlOnce(el, html) {
+    if (el && el._src !== html) { el._src = html; el.innerHTML = html; }
+  }
+  /** BscScan 事件页的外链（只是一个链接，本站不去读它）。 */
+  function scanLink(url, text) {
+    return url ? '<a class="a-link" href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(text) + '</a>' : '';
+  }
+  /** 时间线全不全：全了就说全了；不全就说只看得到最近约 N 分钟，并给出 BscScan 事件页。 */
+  function tlCoverage(complete, truncated, windowMin, url, what) {
+    if (complete) return '<span class="cov-ok">从部署块起的每一条都在这里。</span>';
+    return '<span class="cov-part">' +
+      (windowMin ? '<span>只显示本站读得到的最近约</span> <b>' + windowMin + '</b> <span>分钟的 BSC 日志（公共节点不给更早的）。</span>'
+        : '<span>只显示本站读得到的最近一段 BSC 日志（公共节点不给更早的）。</span>') +
+      (truncated ? ' <span>条目太多，只保留了最新的一批。</span>' : '') +
+      (url ? ' <span>更早的记录请到</span> ' + scanLink(url, what) + ' <span>核对。</span>' : '') + '</span>';
+  }
+
   function renderTreasury() {
-    var body = $('#treBody');
-    if (body) {
-      var s = VM.treasury.eventsStatus || VM.st.treasury;
-      body.innerHTML = (s === 'ok' && VM.treasury.events && VM.treasury.events.length)
-        ? VM.treasury.events.map(R.treasuryRow).join('')
-        : R.missRow(5, s, s === 'pre' ? '这里会逐笔显示 BacTaxRouter 的 50/50 分账、桥池回购、节点基金提取，'
-          + '以及桥合约的每一次升级与紧急提取。' + OWNER_POWER : '');
+    var T = VM.treasury || {};
+    var ts = VM.st.timeline;
+    tlBody($('#flowBody'), ts, T.flow, R.flowRow,
+      '合约部署后，这里逐笔显示税收到账、BacTaxRouter 的 50/50 分账、推送与桥池回购。',
+      '这一段时间里没有税收流水。');
+    tlBody($('#nfBody'), ts, T.nodeFundEvents, R.nodeFundRow,
+      '合约部署后，这里逐笔显示节点基金的每一笔到账和每一次提取。',
+      '这一段时间里节点基金没有到账，也没有提取。');
+    var trunc = T.timelineTruncated || {};
+    /* 说明行内容没变就不动 DOM（翻译层不必每轮重译） */
+    htmlOnce($('#flowCov'), '<span>税收 → BacTaxRouter → 50/50 → 桥池与节点基金，每一步都发事件。</span>' +
+      (ts === 'ok' ? ' ' + tlCoverage(T.timelineComplete, trunc.flow, T.windowMin, T.routerEventsUrl, 'BscScan 上税收路由的事件页') : ''));
+    htmlOnce($('#nfCov'), '<span>节点基金的每一笔提取都发事件、都按时间列在这里，不隐藏（决策 #10 的披露要求）。</span>' +
+      (ts === 'ok' ? ' ' + tlCoverage(T.timelineComplete, trunc.nodeFund, T.windowMin, T.nodeFundEventsUrl, 'BscScan 上节点基金的事件页') : ''));
+    renderOwnerPowers();
+    var tk = $('#tkState');
+    if (tk) tk.textContent = VM.mode === 'demo' ? '演示模式' : (VM.token && VM.token.launched ? '已发射' : '地址已锁定 · 尚未发射');
+  }
+
+  /** 项目方权限记录（决策 #29c）：升级 / 紧急提取 / 换 owner / 暂停的时间线 + 这条时间线全不全。
+      计数器（升级次数、紧急提取次数）是合约里的全量；逐条记录来自浏览器读得到的日志窗口 + 索引器历史。
+      缺的时候照实说缺几条，并给 BscScan 桥合约的事件页。 */
+  function renderOwnerPowers() {
+    var O = VM.owner || {}, s = VM.st.owner;
+    tlBody($('#ownBody'), s, O.items, R.ownerRow,
+      '桥合约部署后，这里逐条显示它的每一次升级、紧急提取、换 owner 与暂停。',
+      '这一段时间里没有升级、紧急提取、换 owner 或暂停。');
+    var cov = $('#ownCov'); if (!cov) return;
+    if (s !== 'ok') { htmlOnce(cov, ''); return; }
+    var B = VM.bridge || {}, miss0 = O.missing || {}, seen = O.seen || {};
+    var html = '';
+    if (O.complete) {
+      html += '<p class="note"><b>这条时间线是完整的：</b><span>' +
+        (O.completeVia === 'indexer' ? '从桥合约部署起的每一条都在下面（索引器的全量历史 + 本站读到的 BSC 日志）。'
+          : '从桥合约部署起的每一条都在下面（本站直接读到的 BSC 日志）。') + '</span></p>';
+    } else {
+      html += '<p class="note warn-n"><b>这条时间线可能不完整：</b>' +
+        (O.windowMin ? '<span>浏览器只读得到最近约</span> <b>' + O.windowMin + '</b> <span>分钟的 BSC 日志（公共节点不给更早的），索引器的全量历史这一轮没能补齐。</span>'
+          : '<span>浏览器只读得到最近一段 BSC 日志（公共节点不给更早的），索引器的全量历史这一轮没能补齐。</span>') +
+        (O.eventsUrl ? ' <span>完整记录请到</span> ' + scanLink(O.eventsUrl, 'BscScan 上桥合约的事件页') + ' <span>核对。</span>' : '') + '</p>';
     }
-    var ch = $('#chTre2');
-    if (ch) {
-      if (VM.daily && VM.daily.treasury && VM.daily.treasury.length) {
-        C.draw(ch, { type: 'bar', data: VM.daily.treasury, labels: VM.daily.labels, unit: ' BNB', label: '近 30 日进税收路由', alt: true });
-      } else {
-        C.placeholder(ch, VM.st.treasury === 'pre' ? UI.TEXT.PRE : '没有日聚合数据源');
-      }
+    /* 计数器对账：合约说做过几次 vs 时间线里看到几次 */
+    if (B.upgradeCount !== null && B.upgradeCount !== undefined) {
+      html += '<p class="note"><b>合约计数器（全量）：</b><span>桥合约升级</span> <b>' + comma(B.upgradeCount) + '</b> <span>次，紧急提取</span> <b>' +
+        comma(B.emergencyCount === null || B.emergencyCount === undefined ? '—' : B.emergencyCount) + '</b> <span>次；下面的时间线里看到升级</span> <b>' +
+        comma(seen.upgrades || 0) + '</b> <span>次，紧急提取</span> <b>' + comma(seen.emergencies || 0) + '</b> <span>次。</span>' +
+        ((miss0.upgrades || miss0.emergencies)
+          ? ' <b class="bad-t">缺</b> <b>' + comma(miss0.upgrades || 0) + '</b> <span>次升级、</span><b>' + comma(miss0.emergencies || 0) +
+            '</b> <span>次紧急提取的逐条记录，请到 BscScan 核对。</span>'
+          : (O.upgradesAndWithdrawalsComplete ? ' <span>升级与紧急提取的逐条记录一条不缺。</span>' : '')) + '</p>';
     }
+    var un = O.unlogged && O.unlogged.total ? O.unlogged.total : 0;
+    if (un) {
+      html += '<p class="note warn-n"><b>发现</b> <b>' + un + '</b> <b>次没有留下 BridgeUpgraded 事件的换实现。</b>' +
+        '<span>owner 可以装任何实现合约（决策 #29），新实现不发 BridgeUpgraded 也照样能生效。</span></p>';
+    }
+    if (O.implementationMatchesLog === false) {
+      html += '<p class="note warn-n"><b>现在的实现合约和日志里最后一次换到的实现对不上。</b></p>';
+    }
+    htmlOnce(cov, html);
   }
 
   /* ══════════════════ 验证者页 ══════════════════ */
@@ -333,22 +422,31 @@
     var poolBps = VM.fees.officialValidatorBps || 1000;
     var toPool = total * BigInt(poolBps) / 10000n;
     var toFound = total - toPool;
+    /* 一个收据都没取到（索引器供数时的区块列表不带每块手续费）：合计、10%、90% 都是未知，写「—」，
+       绝不能拿初始值 0 冒充「这一窗口手续费是 0」。只取到一部分时，合计明说是「已知 n 块」的，不冒充整窗口。 */
+    var none = known === 0, partial = known > 0 && known < VM.blocks.length;
+    function amt(x) { return none ? '—' : bac(x, 9); }
     el.innerHTML =
-      '<div class="datum"><span class="d-l">这一窗口的手续费合计</span>' +
-      '<b class="grn">' + esc(bac(total, 9)) + '</b><u>BAC</u>' +
+      '<div class="datum"><span class="d-l">' + (partial ? '已知 ' + known + ' 块的手续费合计' : '这一窗口的手续费合计') + '</span>' +
+      '<b class="grn">' + esc(amt(total)) + '</b>' + (none ? '' : '<u>BAC</u>') +
       '<i>已取到收据 ' + known + ' / ' + VM.blocks.length + ' 块' +
       (span !== null ? ' · 跨度 ' + span + ' 秒' : '') + '</i></div>' +
       '<div class="mini">' +
       '<div class="mi"><i>区块</i><b>' + comma(VM.blocks.length) + '<u>块</u></b></div>' +
       '<div class="mi"><i>其中非空块</i><b>' + comma(nonEmpty) + '<u>块</u></b></div>' +
       '<div class="mi"><i>交易</i><b>' + comma(txs) + '<u>笔</u></b></div>' +
-      '<div class="mi"><i>→ 验证者池 ' + (poolBps / 100) + '%</i><b>' + esc(bac(toPool, 9)) + '<u>BAC</u></b></div>' +
-      '<div class="mi"><i>→ 官方基金会 ' + (100 - poolBps / 100) + '%</i><b>' + esc(bac(toFound, 9)) + '<u>BAC</u></b></div>' +
+      '<div class="mi"><i>→ 验证者池 ' + (poolBps / 100) + '%</i><b>' + esc(amt(toPool)) + (none ? '' : '<u>BAC</u>') + '</b></div>' +
+      '<div class="mi"><i>→ 官方基金会 ' + (100 - poolBps / 100) + '%</i><b>' + esc(amt(toFound)) + (none ? '' : '<u>BAC</u>') + '</b></div>' +
       '</div>' +
-      (known < VM.blocks.length
-        ? '<p class="note">有 ' + (VM.blocks.length - known) + ' 个块还没取到收据（本站一轮最多为最近几个非空块取收据），' +
-          '它们的手续费没有计入上面的合计 —— <b>没取到就是没取到，不拿 gas 上限估</b>。</p>'
-        : '');
+      (none
+        ? '<p class="note">' + (onRpc()
+          ? '这一窗口的 ' + VM.blocks.length + ' 个块一个收据都还没取到，'
+          : '这一轮的区块来自索引器，它的区块列表不带每块的手续费，') +
+          '所以上面的合计和两份分成都写「—」，不写 0 —— <b>没取到就是没取到，不拿 gas 上限估</b>。</p>'
+        : partial
+          ? '<p class="note">有 ' + (VM.blocks.length - known) + ' 个块还没取到收据（本站一轮最多为最近几个非空块取收据），' +
+            '它们的手续费没有计入上面的合计 —— <b>没取到就是没取到，不拿 gas 上限估</b>。</p>'
+          : '');
   }
 
   /* ══════════════════ 「这一块的 gas 费去哪了」 ══════════════════ */
@@ -600,61 +698,59 @@
     }
     UI.curAgent = a;
     var mine = VM.txs.filter(function (t) { return t.agentId === a.id; }).slice(0, 12);
-    /* 核对结果只有真的核过（true / false）才打徽章；null = 没核过，不许显示成「超时」 */
-    var badge = function (ok, yes, no) {
-      if (ok !== true && ok !== false) return '';
-      return '<span class="bd ' + (ok ? 'ok' : 'warn') + '">' + esc(ok ? yes : no) + '</span>';
-    };
-    /* 注册文件（ERC-8004 的 tokenURI）常见写法是一整段 data:…;base64，原样铺满一格没法读 */
-    var uriText = a.uri ? (a.uri.length > 120 ? a.uri.slice(0, 96) + '…' : a.uri) : '—';
     /* v2 的桥按 ERC-8004 身份编号记账（BacBridge.lock(agentId, …)），所以 agent #N 就是身份 #N */
     var idNo = a.identityId === null || a.identityId === undefined ? a.id : a.identityId;
+    var fromChain = a.source === 'chain';
+    /* 注册文件（ERC-8004 的 tokenURI）：只给类型与持有人自述的 name / description，
+       原始 URI 只做截短的纯文本预览，绝不当链接或图片渲染（外链会把访客 IP 交给对方服务器）。 */
+    var uriText = a.uri ? (a.uri.length > 120 ? a.uri.slice(0, 96) + '…' : a.uri) : null;
+    var kindZh = { data: 'data: URI（内嵌）', ipfs: 'ipfs:// 外部文件（本站不去读）', http: 'https:// 外部文件（本站不去读）', uri: '外部地址（本站不去读）', other: '其他格式' }[a.uriKind] || null;
     el.innerHTML =
       '<div class="crumbs"><a href="#/overview">概览</a>›<a href="#/agents">Agent</a>›<span>#' + a.id + '</span></div>' +
       '<div class="dtl-h"><h1>agent #' + a.id + '</h1>' + R.stTag(a.statusCls || 'dim', a.statusZh || '—') +
-      '<span class="sub">进场 ' + esc(UI.ago(a.joinedTs)) + '</span></div>' +
-      '<code class="dtl-id sm">' + esc(a.wallet || miss(s)) + '</code>' +
-      '<div class="srcline"><b>AGENT</b><code>GET /api/agent/' + a.id + '</code><code>/api/contracts?agentId=' + a.id + '</code></div>' +
+      (a.identityExists === false ? R.stTag('bad', '注册表里查不到这个身份') : '') +
+      '<span class="sub">首次锁入 ' + esc(UI.ago(a.joinedTs)) + '</span></div>' +
+      '<code class="dtl-id sm">' + esc(a.holder || a.wallet || miss(s)) + '</code>' +
+      (fromChain
+        ? '<div class="srcline"><b>AGENT</b><code>BacBridge.deposits / credited / exitedCredits</code><code>ERC-8004 ownerOf / getMetadata / tokenURI</code></div>'
+        : '<div class="srcline"><b>AGENT</b><code>GET /api/agent/' + a.id + '</code><code>/api/contracts?agentId=' + a.id + '</code></div>') +
       '<div class="dgrid">' +
       '<div class="panel"><div class="ph"><span class="ph-t big">身份与账目</span><span class="ph-fill"></span>' +
-      '<span class="ph-m">GET /api/agent/' + a.id + '</span></div>' +
+      '<span class="ph-m">' + esc(fromChain ? 'BSC 直读' : 'GET /api/agent/' + a.id) + '</span></div>' +
       '<table class="tbl kvt"><tbody>' +
-      kv('状态', R.stTag(a.statusCls || 'dim', a.statusZh || '—')) +
       kv('ERC-8004 身份', '<span class="n">#' + esc(String(idNo)) + '</span>' +
-        '<span class="hintline">BSC 身份注册表</span><span class="hintline n"><code>' + esc(ID_REGISTRY) + '</code></span>', 'wrap') +
-      kv('身份持有人', '<span class="n">' + esc(a.holder || '—') + '</span>' +
+        '<span class="hintline">BSC 身份注册表</span><span class="hintline n"><code translate="no">' + esc(ID_REGISTRY) + '</code></span>', 'wrap') +
+      kv('身份持有人', '<span class="n" translate="no">' + esc(a.holder || '—') + '</span>' +
         '<span class="hintline">身份是可转让的 ERC-721，持有人可能已经换过</span>', 'wrap') +
-      kv('BSC 控制地址', '<span class="n">' + esc(a.controller || '—') + '</span>', 'wrap') +
-      kv('层内钱包', '<span class="n">' + esc(a.wallet || '—') + '</span>', 'wrap') +
-      kv('进场时间', esc(UI.full(a.joinedTs)) + '<span class="hintline">持有 ERC-8004 身份的地址把 BAC 锁进 BacBridge 就算进场；' +
+      kv('agentWallet', '<span class="n" translate="no">' + esc(a.agentWallet || '—') + '</span>' +
+        '<span class="hintline">注册表里的 getMetadata(id, "agentWallet")，由持有人自己设置</span>', 'wrap') +
+      kv('BSC 控制地址', '<span class="n" translate="no">' + esc(a.controller || '—') + '</span>', 'wrap') +
+      kv('层内钱包', '<span class="n" translate="no">' + esc(a.wallet || '—') + '</span>', 'wrap') +
+      kv('首次锁入', esc(UI.full(a.joinedTs)) + '<span class="hintline">持有 ERC-8004 身份的地址把 BAC 锁进 BacBridge 就算进场；' +
         '门禁只核对持有（ownerOf），没有签名轮次。' + esc(ID_LIMIT) + '</span>') +
-      '<tr class="gap"><td>进桥积分</td><td class="r n">' + val(s, a.credited, UI.tokenAmt) + '<u>BAC</u></td></tr>' +
-      kv('层内余额', '<span class="n">' + val(s, a.balance, UI.tokenAmt) + '</span><u>BAC</u>') +
-      kv('层内已花掉', '<span class="n">' + val(s, a.spent, UI.tokenAmt) + '</span><u>BAC</u>' +
-        '<span class="hintline">gas + 交易 + AgentBook 发布费。进桥积分 − 已花掉 − 已退出 = 层内余额</span>') +
+      kv('最近一次锁入', esc(UI.full(a.lastLockTs))) +
+      kv('锁入次数', '<span class="n">' + (a.depositCount === null || a.depositCount === undefined ? '—' : comma(a.depositCount)) + '</span>') +
+      '<tr class="gap"><td>锁入积分</td><td class="r n">' + val(s, a.credited, UI.tokenAmt) + '<u>BAC</u></td></tr>' +
       kv('已退出积分', '<span class="n">' + val(s, a.exited, UI.tokenAmt) + '</span><u>BAC</u>' +
         (a.exited && a.exited !== 0n ? '<span class="hintline">退出当场锁定兑付率，按份额慢速领取桥回购来的 BAC</span>' : '')) +
-      '<tr class="gap"><td>部署合约</td><td class="r n">' + (a.deploys === null ? '—' : a.deploys) + '</td></tr>' +
-      kv('公告 / 动作', '<span class="n">' + (a.announces === null ? '—' : a.announces) + ' / ' + (a.actions === null ? '—' : a.actions) + '</span>') +
-      kv('心跳', '<span class="n">纪元 ' + (a.hbEpoch === null ? '—' : a.hbEpoch) + ' · 漏 ' + (a.missed === null ? '—' : a.missed) + '</span>') +
+      kv('层内余额', '<span class="n">' + (a.balance === null || a.balance === undefined ? '—' : UI.tokenAmt(a.balance)) + '</span><u>BAC</u>' +
+        '<span class="hintline">层内数据只有索引器给得出，读不到时写「—」</span>') +
+      kv('层内已花掉', '<span class="n">' + (a.spent === null || a.spent === undefined ? '—' : UI.tokenAmt(a.spent)) + '</span><u>BAC</u>' +
+        '<span class="hintline">gas + 交易 + AgentBook 发布费。锁入积分 − 已花掉 − 已退出 = 层内余额</span>') +
+      '<tr class="gap"><td>部署合约</td><td class="r n">' + (a.deploys === null || a.deploys === undefined ? '—' : a.deploys) + '</td></tr>' +
       '</tbody></table></div>' +
       '<div class="dstack">' +
-      /* ERC-8004 的注册文件（tokenURI）：名字、描述、服务地址全由身份持有人自己填，没有任何人核对过。
-         只当不可信文本显示，不取里面的图片（外链图片会把访客 IP 交给对方服务器）。 */
-      '<div class="panel"><div class="ph"><span class="ph-t">注册文件（自述）</span><span class="ph-fill"></span>' +
-      '<span class="ph-m">只做格式核对</span></div>' +
+      '<div class="panel"><div class="ph"><span class="ph-t">注册文件（持有人自述）</span><span class="ph-fill"></span>' +
+      '<span class="ph-m">不背书 · 不加载图片和链接</span></div>' +
       '<table class="tbl kvt"><tbody>' +
-      kv('tokenURI', '<span class="n" translate="no">' + esc(uriText) + '</span>', 'wrap') +
-      kv('URI 可达', a.uriOk === null || a.uriOk === undefined ? '<span class="sub">—</span>'
-        : (a.uriOk ? '<span class="st-tag ok">可达</span>' : '<span class="st-tag warn">超时</span>')) +
+      kv('名字', a.selfName ? '<span class="n self-n" translate="no" data-i18n-ignore>' + esc(a.selfName) + '</span><span class="hintline">持有人自述</span>' : '<span class="sub">—</span>', 'wrap') +
+      kv('简介', a.selfDesc ? '<span class="self-n" translate="no" data-i18n-ignore>' + esc(a.selfDesc.length > 600 ? a.selfDesc.slice(0, 599) + '…' : a.selfDesc) + '</span><span class="hintline">持有人自述</span>' : '<span class="sub">—</span>', 'wrap') +
+      kv('图片', a.selfHasImage === true ? '<span class="sub">注册文件里有图片，本站不加载</span>' : '<span class="sub">—</span>') +
+      kv('tokenURI 类型', kindZh ? esc(kindZh) + (a.uriTruncated ? '<span class="hintline">太长，只读了前一部分</span>' : '') : '<span class="sub">—</span>') +
+      kv('tokenURI 预览', uriText ? '<span class="n" translate="no" data-i18n-ignore>' + esc(uriText) + '</span>' : '<span class="sub">—</span>', 'wrap') +
       '</tbody></table>' +
-      '<div class="c-badges">' + badge(a.uriOk, 'URI 可达', 'URI 超时') + '</div>' +
-      '<div class="pf"><span>注册文件是 ERC-8004 身份的 tokenURI，由身份持有人自己填写，没有任何人核对过；本站只做格式核对，' +
+      '<div class="pf"><span>注册文件是 ERC-8004 身份的 tokenURI，由身份持有人自己填写，没有任何人核对过；本站只原样转义显示，' +
       '<b>不背书其中任何说法</b>。' + esc(ID_LIMIT) + '</span></div></div>' +
-      '<div class="panel"><div class="ph"><span class="ph-t">最近 30 个纪元的心跳</span><span class="ph-fill"></span>' +
-      '<span class="ph-m">█ 有 · ░ 漏</span></div>' +
-      '<div class="chart" data-h="70" id="chHb"></div>' +
-      '<div class="pf"><span>心跳只是在线记录：进场只看 ERC-8004 身份，退出不看身份，也不看心跳。</span></div></div>' +
       '</div></div>' +
       '<div class="dgrid dfull">' +
       '<div class="panel"><div class="ph"><span class="ph-t">部署的合约（' + (a.contracts ? a.contracts.length : 0) + '）</span>' +
@@ -694,10 +790,9 @@
           return '<tr><td class="l"><span class="tag dep">退出 ExitBurned</span></td><td class="r n">' + UI.tokenAmt(x.credits) + '<u>BAC</u></td>' +
             '<td class="l n">锚点纪元 ' + x.anchorEpoch + '</td><td class="l n"><code>' + esc(sa(x.layerTx)) + '</code></td>' +
             '<td class="r n">—</td></tr>';
-        }).join('')) || R.emptyRow(5, '还没有进出桥记录。')) +
+        }).join('')) || R.emptyRow(5, a.depositCount ? '逐笔的进桥与退出记录要索引器给；锁入次数与积分见上面「身份与账目」。' : '还没有进出桥记录。')) +
       '</tbody></table></div>' +
-      '<div class="pf"><span>退出拿到的是桥用桥池 BNB 在市场上回购来的 BAC，按份额兑付，<b>不承诺任何金额</b>，可能远低于投入价值。' +
-      esc(OWNER_POWER) + '</span></div></div>' +
+      '<div class="pf"><span>退出拿到的是桥用桥池 BNB 在市场上回购来的 BAC，按份额兑付，<b>不承诺任何金额</b>，可能远低于投入价值。</span></div></div>' +
       agentBuiltPanels(a);
   }
 
@@ -708,6 +803,19 @@
     var c = VM.contractMap[addr] || VM.contractMap[raw] ||
       (VM.detail.contract && String(VM.detail.contract.address).toLowerCase() === addr ? VM.detail.contract : null);
     if (!c) {
+      /* 这个地址已经问过、索引器回了错误：停在这里如实说，不在每次重画时再问一遍（那样页面会在
+         「读取中…」和「读不到」之间来回跳）。刷新页面会重新问。 */
+      var cerr = VM.detail.contractErr;
+      /* 有 HTTP 状态码的错误是索引器明确的回答，停住；没有状态码的（网络断了 / 退避中）30 秒后再问。 */
+      if (cerr && cerr.addr === addr && (cerr.status || Date.now() - cerr.at < 30000)) {
+        el.innerHTML = R.notFound('合约 ' + sa(raw || ''), cerr.status === 404
+          ? '索引器的合约名录里没有这个地址。它可能是一个普通层内地址（不是合约），也可能还没被扫到。'
+          : cerr.status
+            ? '索引器查这个地址的合约信息时返回了错误，没有给出结果。它可能是一个普通层内地址（不是合约）；本站不猜。'
+            : '这一次没有从索引器读到这个地址的合约信息，30 秒后自动再问一次。') +
+          '<p class="note"><a href="#/search/' + encodeURIComponent(raw || '') + '">在搜索里查这个地址 ›</a></p>';
+        return;
+      }
       if (s === 'ok' && canAskIdx()) { ask('contract', raw); el.innerHTML = R.pageMiss('合约 ' + sa(raw || ''), 'loading', '正在向索引器要这个地址。'); }
       else if (s === 'ok') el.innerHTML = R.notFound('合约 ' + sa(raw || ''), '这个地址不在合约名录里，也可能它只是一个普通层内地址。');
       else el.innerHTML = R.pageMiss('合约 ' + sa(raw || ''), s,
@@ -792,7 +900,9 @@
          索引器 API 里的 epoch 字段目前还按天编号：本站的区块纪元一律按块时间 ÷ 600 重算（bind.js），照实说一句 */
       '<span class="vh-m">epoch = floor(timestamp / 600)（10 分钟，与合约一致），由层内块时间推出，<b>当前纪元是实时的</b>' +
       '（索引器 API 里的 epoch 字段目前还按天编号，即 floor(timestamp / 86400)，本站不用它）；' +
-      '锚点要中继把退出根提交到 BSC 的 ChainAnchor，那个合约还没部署，所以下面这张表还是空的。' +
+      (VM.stage && VM.stage.stage !== 'none'
+        ? '锚点由中继把退出根提交到 BSC 的 ChainAnchor，下面这张表来自索引器。'
+        : '锚点要中继把退出根提交到 BSC 的 ChainAnchor，那个合约还没部署，所以下面这张表还是空的。') +
       /* 决策 #25a：2 分钟等于人工发现窗口归零，这段等待是给常驻 watchdog 的，照实说 */
       '<b>锚点等待：</b>锚点提交后要等 2 分钟才能兑付。2 分钟里人来不及发现问题，这段等待是给常驻的自动 watchdog 用的，不是给人用的</span></div>' +
       '<div class="srcline"><b>EPOCHS</b><code>GET /api/epochs?limit=30</code>' +
@@ -825,7 +935,7 @@
       '<p class="note">退出的叶子数据由 <code>GET /api/epoch/{n}/leaves</code> 公开，' +
       /* 只读同步现在就开放（决策 #36），但演练链上没有 L2Bridge：能从日志重建退出叶子的只有正式链 */
       '<b>任何跑了全节点的人都能从 <code>L2Bridge.ExitBurned</code> 日志自己重建</b>（L2Bridge 只在正式链上，演练链上没有）—— 我们的服务器不是这份数据的唯一来源。' +
-      '退出拿到的是桥用桥池 BNB 在市场上回购来的 BAC，按份额兑付，不承诺任何金额。' + esc(OWNER_POWER) + '</p>';
+      '退出拿到的是桥用桥池 BNB 在市场上回购来的 BAC，按份额兑付，不承诺任何金额。</p>';
   }
 
   function renderEpochDetail(n) {
@@ -1392,6 +1502,42 @@
   function getScope() { return SCOPE; }
   function wantScope(k) { return SCOPE === 'all' || SCOPE === k; }
 
+  /* 按名字搜得到的固定条目（决策 #22 / #35）：层内原生币、BSC 侧的 BAC、创世预置的中立工具与系统合约。
+     地址都是创世 / Portal 锁定下来的常量，不是链上读回来的。
+     **现在跑的是演练链，它的创世里这些合约一个都没有**（eth_getCode 实测 0x）：
+     rehearsal 为真时说明文字必须照实说「还没有」，链接指向解释这件事的那一页，
+     不能指向一个打开就是「找不到」的详情页，更不能让人以为现在链上有个 WBAC 可以买。 */
+  var NAMED = [
+    { a: ['bac', 'bnb agent chain', '原生币', 'gas'], t: 'token', ad: null,
+      v: 'BAC · 层内原生币', m: 'agent 在这一层付 gas 用的币：把 BSC 上的 BAC 锁进桥换来的',
+      pre: 'agent 在这一层付 gas 用的币：把 BSC 上的 BAC 锁进桥换来的', page: '#/overview' },
+    { a: ['bac', 'bnb agent chain'], t: 'token', ad: null,
+      v: 'BAC · BSC 侧代币', m: 'CA 0xA97452d175679B2bF5F25a9a382D22aff39b7777（BSC 主网）',
+      pre: 'CA 0xA974…7777 已锁定；发射前这个地址上没有合约，不要往里转账', page: '#/treasury' },
+    { a: ['wbac', 'wrapped bac', '包装币', '包装'], t: 'token',
+      ad: '0x0000000000000000000000000000000000000106',
+      v: 'WBAC · Wrapped BAC', m: '层内包装币：创世预置的中立工具，1:1 包装原生 BAC',
+      pre: '正式链创世预置的包装币（0x…0106）；现在跑的演练链上还没有', page: '#/tokens' },
+    { a: ['multicall3', 'multicall'], t: 'contract', ad: '0xcA11bde05977b3631167028862bE2a173976CA11',
+      v: 'Multicall3', m: '创世预置的中立工具：一次调用批量读多个合约',
+      pre: '正式链创世预置的中立工具；现在跑的演练链上还没有', page: '#/tokens' },
+    { a: ['create2', 'create2 部署器', '部署器'], t: 'contract', ad: '0x4e59b44847b379578588920cA78FbF26c0B4956C',
+      v: 'CREATE2 部署器', m: '创世预置的中立工具：确定性地址部署',
+      pre: '正式链创世预置的中立工具；现在跑的演练链上还没有', page: '#/tokens' },
+    { a: ['l2bridge', '层内桥'], t: 'contract', ad: '0x0000000000000000000000000000000000000101',
+      v: 'L2Bridge · 层内桥', m: '系统合约：层内一侧的进出场记账',
+      pre: '正式链创世的系统合约；现在跑的演练链上还没有', page: '#/treasury' },
+    { a: ['l2gate', '入场门禁', '门禁'], t: 'contract', ad: '0x0000000000000000000000000000000000000102',
+      v: 'L2Gate · 入场门禁', m: '系统合约：层内只有 agent 能发交易这条规则由它执行',
+      pre: '正式链创世的系统合约；现在跑的演练链上还没有（演练链上谁都能发交易）', page: '#/agents' },
+    { a: ['agentbook', 'agent 名录', '名录'], t: 'contract', ad: '0x0000000000000000000000000000000000000103',
+      v: 'AgentBook · Agent 名录', m: '系统合约：层内的 agent 名册',
+      pre: '正式链创世的系统合约；现在跑的演练链上还没有', page: '#/agents' },
+    { a: ['feesplitter', 'gas 分账', '分账'], t: 'contract', ad: '0x0000000000000000000000000000000000000104',
+      v: 'FeeSplitter · gas 分账', m: '系统合约：出块者的 gas 费按决策 #17 分账',
+      pre: '正式链创世的系统合约；现在跑的演练链上还没有', page: '#/validators' }
+  ];
+
   function searchAll(qraw) {
     var q = (qraw || '').trim().toLowerCase(), out = [];
     if (!q) return out;
@@ -1408,7 +1554,9 @@
         }
       }
       if (wantScope('agent') && VM.agentById[n]) {
-        out.push({ k: 'AGENT', v: 'agent #' + n, m: VM.agentById[n].statusZh + ' · 部署 ' + VM.agentById[n].deploys + ' 个合约',
+        out.push({ k: 'AGENT', v: 'agent #' + n, m: VM.agentById[n].deploys === null || VM.agentById[n].deploys === undefined
+            ? VM.agentById[n].statusZh + ' · ERC-8004 身份'
+            : VM.agentById[n].statusZh + ' · 部署 ' + VM.agentById[n].deploys + ' 个合约',
           blk: null, ts: VM.agentById[n].joinedTs, h: '#/agent/' + n });
       }
       if (wantScope('block') && VM.epochByN[n]) {
@@ -1458,10 +1606,53 @@
         });
       }
     }
+    /* ── 文字搜索（决策 #19 / #22）：代币的名字和符号，以及上面那张表里的固定条目 ──
+       代币的名字和符号是发它的 agent 自己写的，本站不核实、也不翻译：
+       raw 标记让搜索框和结果页把它包进 translate="no"。同名代币很多，说明里一律带上地址。 */
+    var isText = !/^0x/.test(q) && !/^\d+$/.test(bare);
+    if (isText) {
+      NAMED.forEach(function (e) {
+        if (!wantScope(e.t)) return;
+        var hit = false;
+        for (var i = 0; i < e.a.length; i++) { if (e.a[i].indexOf(q) >= 0) { hit = true; break; } }
+        if (!hit) return;
+        out.push({
+          k: e.t === 'token' ? '代币' : '合约', v: e.v,
+          m: VM.rehearsal ? e.pre : e.m, blk: null, ts: null,
+          h: (!e.ad || VM.rehearsal) ? e.page : (e.t === 'token' ? '#/token/' : '#/contract/') + e.ad
+        });
+      });
+    }
+    if (wantScope('token')) {
+      var seenTok = {};
+      var pushToken = function (t) {
+        var ad = String((t && t.address) || '').toLowerCase();
+        if (!ad || seenTok[ad]) return;
+        seenTok[ad] = 1;
+        out.push({
+          k: '代币', raw: true,
+          /* 没有符号就用短地址当标题：这一格是 translate="no"，放中文进去英文版会原样露出来 */
+          v: (t.symbol || sa(ad)) + (t.name ? ' · ' + t.name : ''),
+          m: (t.agentId === null || t.agentId === undefined ? '部署者未知' : 'agent #' + t.agentId + ' 部署') +
+            ' · 持有人 ' + comma(t.holders || 0) + ' · ' + sa(ad),
+          blk: t.deployBlock || null, ts: t.deployTs || null, h: '#/token/' + ad
+        });
+      };
+      /* 索引器按名字/符号在全链里找到的（bind.js 异步填进 VM.search），先放；
+         再补上本页已经载入的那一批 —— 索引器不在时就只剩后者。 */
+      if (VM.search && VM.search.q && VM.search.q.toLowerCase() === q) VM.search.items.forEach(pushToken);
+      (VM.built.tokens || []).forEach(function (t) {
+        if (!t) return;
+        var ok = isText
+          ? (String(t.symbol || '').toLowerCase().indexOf(q) >= 0 || String(t.name || '').toLowerCase().indexOf(q) >= 0)
+          : String(t.address || '').toLowerCase().indexOf(q) === 0;
+        if (ok) pushToken(t);
+      });
+    }
     return out.slice(0, 14);
   }
 
-  var SCOPE_ZH = { all: '全部', block: '区块', tx: '交易', addr: '地址', contract: '合约', agent: 'Agent' };
+  var SCOPE_ZH = { all: '全部', block: '区块', tx: '交易', addr: '地址', contract: '合约', agent: 'Agent', token: '代币' };
 
   function renderSearchPage(q) {
     var el = $('#v-search'); if (!el) return;
@@ -1474,7 +1665,9 @@
         '<th class="l">说明</th><th class="r">区块</th><th class="r">时间</th><th class="r">打开</th></tr></thead><tbody>' +
         res.map(function (r) {
           return '<tr data-go="' + esc(r.h) + '"><td class="l"><span class="tag">' + esc(r.k) + '</span></td>' +
-            '<td class="l n hx">' + esc(r.v) + '</td><td class="l">' + esc(r.m) + '</td>' +
+            /* 代币的名字和符号是部署者自己写的：原样显示，不翻译 */
+            '<td class="l n hx"' + (r.raw ? ' translate="no"' : '') + '>' + esc(r.v) + '</td>' +
+            '<td class="l">' + esc(r.m) + '</td>' +
             '<td class="r n">' + (r.blk ? '#' + comma(r.blk) : '—') + '</td>' +
             '<td class="r n">' + (r.ts ? esc(UI.hms(r.ts)) + '<span class="sub">' + esc(UI.ago(r.ts)) + '</span>' : '—') + '</td>' +
             '<td class="r"><span class="more">查看 →</span></td></tr>';
@@ -1482,10 +1675,22 @@
         : '<div class="empty-box"><b>没有匹配</b>' +
           (VM.st.blocks === 'pre'
             ? '还没有发射，链上还没有任何区块、交易或 agent 可以搜。'
-            : '搜索框接受：区块高度、交易哈希（0x + 64 位）、层内地址或合约地址（0x + 40 位）、agent 编号（例 #17）、纪元号。' +
+            : '搜索框接受：区块高度、交易哈希（0x + 64 位）、层内地址或合约地址（0x + 40 位）、agent 编号（例 #17）、纪元号、代币名或符号。' +
               (onRpc() ? '　现在是直读层内节点：区块高度与完整交易哈希可以直接查，' +
                 '按地址找历史、按前缀模糊匹配要等索引器。' : '')) +
-          '</div>') + '</div>';
+          '</div>') + searchNote(q) + '</div>';
+  }
+
+  /* 按名字找代币只有索引器答得出来（/api/tokens?q=）：它在读、没答话或答错了，都照实说一句，
+     免得「没有匹配」被读成「这条链上没有这个代币」。 */
+  function searchNote(qraw) {
+    var q = String(qraw || '').trim();
+    if (!q || /^0x/i.test(q) || /^#?\d+$/.test(q)) return '';
+    var s = VM.search && VM.search.status;
+    if (s === 'loading') return '<p class="pf"><span>正在问索引器按名字找代币…</span></p>';
+    if (s === 'noidx') return '<p class="pf"><span>索引器现在没有答话：按名字找代币要等它恢复，这一轮只匹配了本页已经载入的那一批。</span></p>';
+    if (s === 'error') return '<p class="pf"><span>索引器这次没答上来：按名字找代币失败了，这一轮只匹配了本页已经载入的那一批。</span></p>';
+    return '';
   }
 
   /* ══════════════════ 图表总刷新 ══════════════════ */

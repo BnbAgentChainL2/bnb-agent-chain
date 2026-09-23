@@ -568,6 +568,12 @@ contract BacForkLaunchTest is FlapBSCFixture {
         }
 
         // ── dispatch: the real keeper call, the real 1,000,000 gas budget ─────────────────
+        // Measured (review, 2026-09-23): the live TaxProcessor does NOT cap the beneficiary
+        // call at 50,000 gas - it forwards ~63/64 of what it has left (~900k of a 1M dispatch).
+        // The 50k bound in this suite and in BacTaxRouter's NatSpec is our own conservative
+        // budget, not Flap's. This expectation fails the day a Flap upgrade starts forwarding
+        // less than 50k, which is when the router's budget would become the real one.
+        vm.expectCallMinGas(address(router), pending, 50_000, "");
         uint256 received = _dispatch();
         assertGt(received, 0, "dispatch() delivered no BNB to the router");
         assertEq(received, pending, "router did not receive the whole market balance");
@@ -619,7 +625,10 @@ contract BacForkLaunchTest is FlapBSCFixture {
     // ======================================================================================
 
     function test_fork_receiveSucceedsUnder50kGasAndDispatchFitsTheKeeperBudget() public {
-        // The TaxProcessor pays us with call{gas: 50_000}: a cold receive() must complete in it.
+        // Our own conservative budget: a cold receive() must complete under call{gas: 50_000}.
+        // The live TaxProcessor forwards far more (~63/64 of its remaining gas, measured in
+        // test_fork_realTaxReachesTheRouterAndSplits5050), so the binding limit today is the
+        // keeper's outer dispatch gas; 50k keeps us safe if Flap ever introduces a cap.
         vm.deal(stranger, 10 ether);
         vm.startPrank(stranger);
         uint256 g = gasleft();
@@ -669,6 +678,27 @@ contract BacForkLaunchTest is FlapBSCFixture {
         emit log_named_uint("GAS router receive() warm", gasReceiveWarm);
         emit log_named_uint("GAS bridge.acceptRelease cold, through the proxy (budget PUSH_GAS)", gasAcceptCold);
         emit log_named_uint("GAS dispatch (whole call, budget 1,000,000)", gasDispatch);
+    }
+
+    /// @notice Why `receive()` must never revert, measured against the live TaxProcessor: a
+    ///         beneficiary that reverts does not make `dispatch()` fail or retry later — the
+    ///         market share is zeroed anyway and stays behind in the TaxProcessor as WBNB, out of
+    ///         our reach for good.
+    function test_fork_revertingBeneficiaryForfeitsTheShare() public {
+        _accrueTax(3, 0.4 ether);
+        uint256 pending = _pendingMarketBalance(token);
+        assertGt(pending, 0, "no market tax accrued");
+
+        vm.etch(address(router), hex"60006000fd"); // PUSH1 0 PUSH1 0 REVERT: rejects everything
+        ITaxProcessor(taxProcessor).dispatch{gas: 1_000_000}();
+
+        assertEq(_pendingMarketBalance(token), 0, "the market share was zeroed anyway");
+        assertEq(address(router).balance, 0, "and the beneficiary received nothing");
+        assertGe(IERC20(WBNB).balanceOf(taxProcessor), pending, "it stays behind in the TaxProcessor as WBNB");
+        // nothing is pending, so a later dispatch has nothing to retry
+        ITaxProcessor(taxProcessor).dispatch{gas: 1_000_000}();
+        assertEq(address(router).balance, 0, "no retry");
+        emit log_named_uint("market share forfeited by a reverting beneficiary (wei)", pending);
     }
 
     // ======================================================================================

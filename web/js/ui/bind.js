@@ -132,8 +132,8 @@
     };
   }
 
-  /* 决策 #29a 的那句，逐字。数据层（bac-view.js）的 treasury.disclosure 还是决策 #29 之前的旧
-     披露，已经不符合事实 —— 不照搬，这里只放现在的事实。 */
+  /* 决策 #29a 的那句，逐字 + 节点基金那一半。数据层 v2 的 treasury.disclosure 也是这一句开头（后半句带
+     Flap 协议费的实测比例）；这里固定一份，让页面文案不随协议费读数跳动。 */
   var DISCLOSURE = '项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。'
     + '节点基金这一半（税后 BNB 的 50%）由 BacNodeFund 的 owner 随时提取，用于服务器与节点搭建。';
 
@@ -141,23 +141,39 @@
   function opt(v) { return v === undefined || v === null || v === '' ? null : String(v); }
 
   function mapAgent(a) {
-    var spent = (a.credited !== null && a.exited !== null && a.layerBalance !== null)
-      ? a.credited - a.exited - a.layerBalance : null;
+    function nb(x) { return x === undefined ? null : x; }
+    var credited = nb(a.credited), exited = nb(a.exited), bal = nb(a.layerBalance);
+    var spent = (credited !== null && exited !== null && bal !== null) ? credited - exited - bal : null;
+    var sr = a.selfReported || null;
     return {
       /* v2（决策 #31）没有状态机：名录里的每一条都是锁进过桥的 ERC-8004 身份编号，
          没有休眠、封禁、入场验证中（L2Gate 里那几个状态码已经没有来源）。统一显示「已进场」。 */
       id: a.agentId, status: 'ENTERED', statusZh: '已进场', statusCls: 'ok',
-      wallet: a.wallet, controller: a.controller,
-      /* 决策 #31：进场门禁是 ERC-8004 身份。v2 的桥按身份编号记账（BacBridge.lock(agentId, …)），
-         数据层还没有单独的身份字段时，身份编号就是 agentId；持有人读不到就是 null（页面写「—」）。 */
+      wallet: opt(a.wallet), controller: opt(a.controller),
+      /* 决策 #31：一个 agent = 一个锁进过 BacBridge 的 ERC-8004 身份编号（BacBridge.lock(agentId, …)）。 */
       identityId: a.identityId === undefined || a.identityId === null ? null : Number(a.identityId),
+      /* ownerOf 回滚（编号没铸过 / 已销毁）→ identityExists === false；null = 这一轮没读到 */
+      identityExists: a.identityExists === undefined ? null : a.identityExists,
       holder: opt(a.identityOwner) || opt(a.holder),
-      joinedTs: a.activatedAt || a.registeredAt,
-      credited: a.credited, exited: a.exited, spent: spent, balance: a.layerBalance,
-      deploys: a.deploys, announces: a.announces, actions: null,
-      hbEpoch: a.lastHeartbeatEpoch, missed: a.missed,
+      /* ERC-8004 getMetadata(id, "agentWallet")：数据层只收 20 个裸字节，别的长度一律 null */
+      agentWallet: opt(a.agentWallet),
+      /* 持有人自述（tokenURI 里的 name / description）：不可信文本，页面一律转义并标「持有人自述」。
+         图片 URL 数据层从不交出来（hasImage 只说有没有）。 */
+      selfName: sr && sr.name ? String(sr.name) : null,
+      selfDesc: sr && sr.description ? String(sr.description) : null,
+      selfHasImage: sr && sr.hasImage !== undefined ? sr.hasImage : null,
+      uriKind: opt(a.tokenURIKind),
+      uriTruncated: !!a.tokenURITruncated,
+      joinedTs: nb(a.firstLockAt) !== null ? a.firstLockAt : (a.activatedAt || a.registeredAt || null),
+      lastLockTs: nb(a.lastLockAt),
+      depositCount: a.deposits === undefined || a.deposits === null || typeof a.deposits === 'object' ? null : Number(a.deposits),
+      lockedTotal: nb(a.lockedTotal),
+      credited: credited, exited: exited, spent: spent, balance: bal,
+      deploys: nb(a.deploys), announces: nb(a.announces), actions: null,
+      hbEpoch: nb(a.lastHeartbeatEpoch), missed: nb(a.missed),
       /* ERC-8004 的注册文件是 tokenURI；数据层还按旧名 agentURI 给的时候照旧读它。都是持有人自述。 */
       uri: opt(a.tokenURI) || opt(a.agentURI), uriOk: null,
+      source: a.source || null,
       sum: null, hb: [], contracts: [], deposits: [], exits: []
     };
   }
@@ -349,6 +365,8 @@
     var v = BAC.view;
     var cs = v.chainStats(), ag = v.agents({}), tr = v.treasury(), br = v.bridge(),
       va = v.validators(), ep = v.epoch(), fd = v.feed(), bk = v.blocks(), tx = v.txs(), ov = v.overview();
+    /* v2 的三个新视图（数据层没有它们时按「发射后公布」处理，不猜） */
+    var sg = v.stage ? v.stage() : null, tk = v.token ? v.token() : null, op = v.ownerPowers ? v.ownerPowers() : null;
     /* 质押合约没部署（site.config.js 里 staking 地址没配）时，索引器 /api/validators 仍会给出默认的 totalStaked = "0"：
        那不是「总质押 0 BAC」，是这份账还不存在。这时总质押 / 节点数一律置 null，页面按状态写「发射后公布」，绝不写 0。 */
     var stA = ov.addresses ? ov.addresses.staking : null;
@@ -358,19 +376,33 @@
 
     /* 层内链在出块 = 这个站是活的，哪怕 BSC 侧一个合约都还没部署。两个开关完全独立。 */
     VM.mode = (BAC.LIVE || BAC.LAYER_LIVE) ? 'live' : 'pre';
-    /* 演练链：配置里显式写了 rehearsal 就照它；没写就按「BSC 侧合约地址配没配」判断 ——
-       地址要等发射当天才填，那一天正式链会用新创世重建（HANDOFF §2）。 */
+    /* 演练链：配置里显式写了 rehearsal 就照它。没写时退回「代币还没发射」——
+       BSC 合约会先于代币部署，那时层内仍然是演练链（HANDOFF §2），不能拿「合约配没配」去猜。 */
     var cfgRehearsal = BAC.CFG && typeof BAC.CFG.rehearsal === 'boolean' ? BAC.CFG.rehearsal : null;
-    VM.rehearsal = cfgRehearsal === null ? !BAC.LIVE : cfgRehearsal;
+    VM.rehearsal = cfgRehearsal === null ? !BAC.TOKEN_LIVE : cfgRehearsal;
     VM.st.chain = cs.status;
     VM.st.blocks = bk.status;
     VM.st.txs = tx.status;
     VM.st.agents = ag.status;
     VM.st.epochs = ep.historyStatus || ep.status;
     VM.st.validators = va.status;
+    /* 合约那一半（contractStatus）：阶段 a 'pre'，阶段 b 起是真数（包括真的 0） */
     VM.st.treasury = tr.status;
     VM.st.bridge = br.status;
+    /* 代币那一半（tokenStatus）：阶段 a、b 都是 'pre'（价格 / 税率 / 待分发税这些数真的还不存在） */
+    VM.st.token = tk ? tk.status : (tr.tokenStatus || 'pre');
+    /* 时间线：税收流向 + 节点基金（treasury().timelineStatus）/ 项目方权限记录（ownerPowers().timelineStatus） */
+    VM.st.timeline = tr.timelineStatus || tr.status;
+    VM.st.owner = op ? (op.status !== 'ok' ? op.status : (op.timelineStatus || op.status)) : br.status;
     VM.st.feed = fd.status;
+
+    VM.stage = {
+      stage: sg ? sg.stage : (ov.stage || 'none'),
+      known: sg ? !!sg.known : !!ov.stageKnown,
+      contractsLive: sg ? !!sg.contractsLive : !!ov.contractsLive,
+      tokenLive: sg ? !!sg.tokenLive : !!ov.tokenLive,
+      tokenAddress: sg ? sg.tokenAddress : (ov.tokenAddress || null)
+    };
     /* 只有索引器算得出的那几段：它读不到时写 'noidx'（显示「—」+ 面板小标写明原因），
        **不写「发射后公布」** —— 链现在就在跑，那样说是骗人的。 */
     var idxOut = !!(BAC.state.indexer.degraded || BAC.state.indexer.error) || !BAC.HAS_INDEXER;
@@ -404,6 +436,12 @@
     VM.agents = ag.items.map(mapAgent);
     VM.agentById = {};
     VM.agents.forEach(function (x) { VM.agentById[x.id] = x; });
+    VM.agentsMeta = {
+      total: ag.total === undefined ? null : ag.total,
+      totalAtLeast: ag.totalAtLeast === undefined ? null : ag.totalAtLeast,
+      truncated: !!ag.truncated, itemsTruncated: !!ag.itemsTruncated,
+      identityPaused: !!ag.identityPaused, source: ag.source || null
+    };
 
     VM.epochs = (ep.history || []).map(mapEpoch);
     VM.epochByN = {};
@@ -424,26 +462,90 @@
       memberCount: stakeNodes, releaseBps: ep.releaseBps
     };
 
+    /* 浏览器读得到的日志窗口有多长（公共节点只给最近约 5000–6000 块）：时间线不全时照实写「约 N 分钟」 */
+    var winBlocks = (BAC.CFG && BAC.CFG.logWindowBlocks) || null;
+    var bscBlockSec = (BAC.C && BAC.C.BSC_BLOCK_TIME) || null;
+    var windowMin = winBlocks && bscBlockSec ? Math.round(winBlocks * bscBlockSec / 60) : null;
+    var addrs = ov.addresses || {};
+    function evUrl(a) {
+      return BAC.isAddr && BAC.isAddr(a) && BAC.links && BAC.links.addressEvents ? BAC.links.addressEvents(a) : null;
+    }
+    function u(x) { return x === undefined ? null : x; }
+
     VM.treasury = {
-      bridgeBps: tr.bridgeBps, nodeFundBps: tr.nodeFundBps, taxFeeRateBps: tr.taxFeeRateBps,
-      lifetimeTotal: tr.lifetimeTotal, toBridge: tr.lifetimeToBridge, toNodeFund: tr.lifetimeToNodeFund,
-      vaultBalance: tr.vaultBalance, vaultUnsplit: tr.vaultUnsplit,
-      stuckBridge: tr.stuckBridge, stuckNodeFund: tr.stuckNodeFund,
-      poolBalance: tr.poolBalance, nodeFundBalance: tr.nodeFundBalance,
-      nodeFundWithdrawn: tr.nodeFundWithdrawn,
+      bridgeBps: tr.bridgeBps, nodeFundBps: tr.nodeFundBps, taxFeeRateBps: u(tr.taxFeeRateBps),
+      lifetimeTotal: u(tr.lifetimeTotal), toBridge: u(tr.lifetimeToBridge), toNodeFund: u(tr.lifetimeToNodeFund),
+      /* BacTaxRouter 自己的数（v1 的 vault* 旧键名保留同值，给还没换名的插槽） */
+      routerBalance: u(tr.routerBalance), routerUnsplit: u(tr.routerUnsplit), routerAccounted: u(tr.routerAccounted),
+      vaultBalance: u(tr.routerBalance), vaultUnsplit: u(tr.routerUnsplit),
+      stuckBridge: u(tr.stuckBridge), stuckNodeFund: u(tr.stuckNodeFund),
+      poolBalance: u(tr.poolBalance), bridgeBnbHeld: u(tr.bridgeBnbHeld),
+      nodeFundBalance: u(tr.nodeFundBalance), nodeFundReceived: u(tr.nodeFundReceived),
+      nodeFundWithdrawn: u(tr.nodeFundWithdrawn), nodeFundOwner: u(tr.nodeFundOwner),
       releaseBps: br.lastPotBps === undefined ? null : br.lastPotBps,
-      releasable: br.lastPot, owedTotal: br.owedTotal,
-      disclosure: DISCLOSURE, splitBaseNote: tr.splitBaseNote,
-      /* GET /api/treasury 还没有进数据层的状态机：事件表只能显示占位 */
-      events: [], eventsStatus: BAC.LIVE ? 'error' : 'pre'
+      releasable: u(br.lastPot), owedTotal: u(br.owedTotal),
+      // 代币那一半：st.token（代币没发射时是「发射后公布」）
+      pendingTax: tk ? u(tk.pendingTax) : u(tr.pendingTax),
+      lifetimeTaxToRouter: tk ? u(tk.lifetimeTaxToRouter) : u(tr.lifetimeTaxToRouter),
+      disclosure: DISCLOSURE, splitBaseNote: u(tr.splitBaseNote),
+      // 时间线（最近窗口的 BSC 日志 + 节点基金那条的索引器历史），条目原样
+      flow: (tr.flow || []).slice(),
+      nodeFundEvents: (tr.nodeFundEvents || []).slice(),
+      timelineComplete: !!tr.timelineComplete,
+      timelineTruncated: tr.timelineTruncated || null,
+      windowMin: windowMin,
+      routerEventsUrl: evUrl(addrs.router),
+      nodeFundEventsUrl: evUrl(addrs.nodeFund),
+      /* 旧的合并事件表已拆成上面两条时间线 + 项目方权限记录；留空只为兼容 */
+      events: [], eventsStatus: VM.st.timeline
     };
 
+    var sf = br.shortfall || {};
     VM.bridge = {
-      totalLocked: br.totalLocked, totalIssued: br.totalIssued, totalExited: br.totalExited,
-      creditsOutstanding: br.creditsOutstanding, poolBalance: br.poolBalance, owedTotal: br.owedTotal,
-      weiPerCredit: br.weiPerCredit, lastPot: br.lastPot, releaseBps: br.lastPotBps,
-      paused: br.paused, halted: br.halted
+      address: u(br.address),
+      totalLocked: u(br.totalLocked), totalIssued: u(br.totalIssued), totalExited: u(br.totalExited),
+      creditsOutstanding: u(br.creditsOutstanding), poolBalance: u(br.poolBalance), owedTotal: u(br.owedTotal),
+      // 含义已变：BAC / 积分（1e18 定点），不是 BNB（数据层 bacPerCredit；weiPerCredit 是旧名）
+      weiPerCredit: u(br.bacPerCredit !== undefined ? br.bacPerCredit : br.weiPerCredit),
+      bacPerCredit: u(br.bacPerCredit !== undefined ? br.bacPerCredit : br.weiPerCredit),
+      lastPot: u(br.lastPot), releaseBps: u(br.lastPotBps),
+      lockedBac: u(br.lockedBac), buybackBac: u(br.buybackBac),
+      bnbBalance: u(br.bnbBalance), bnbHeld: u(br.bnbHeld),
+      paused: u(br.paused), halted: u(br.halted),
+      // 决策 #29：owner 权力 —— 谁、现在的实现、做过几次（计数器是合约里的全量）
+      owner: u(br.owner), pendingOwner: u(br.pendingOwner), implementation: u(br.implementation),
+      upgradeCount: u(br.upgradeCount), lastUpgradeAt: u(br.lastUpgradeAt),
+      emergencyCount: u(br.emergencyCount), lastEmergencyAt: u(br.lastEmergencyAt),
+      emergencyBnbWithdrawn: u(br.emergencyBnbWithdrawn), emergencyBacWithdrawn: u(br.emergencyBacWithdrawn),
+      shortfallBnb: u(sf.bnb), shortfallBac: u(sf.bac), shortfallSource: u(sf.source),
+      noticeMatches: u(br.noticeMatches)
     };
+
+    /* 项目方权限记录（决策 #29c）。complete = 整条时间线从部署起都在；不全时页面必须写明并链到 BscScan 事件页。 */
+    VM.owner = op ? {
+      items: (op.items || []).slice(),
+      complete: !!op.complete, completeVia: op.completeVia || null,
+      missing: op.missing || { upgrades: null, emergencies: null },
+      seen: op.seen || { upgrades: 0, emergencies: 0 },
+      upgradesAndWithdrawalsComplete: !!op.upgradesAndWithdrawalsComplete,
+      eventsUrl: op.eventsUrl || evUrl(addrs.bridge),
+      coverage: op.coverage || null,
+      unlogged: op.unlogged || null,
+      implementationMatchesLog: op.implementationMatchesLog === undefined ? null : op.implementationMatchesLog,
+      historyStatus: op.historyStatus || null,
+      windowMin: windowMin
+    } : VM.empty().owner;
+
+    /* 代币：CA 已锁定（决策 #35），其余字段发射后才有 */
+    var pt = tk && tk.portal ? tk.portal : null;
+    VM.token = tk ? {
+      address: tk.address || null, launched: !!tk.launched, explorerUrl: tk.explorerUrl || null,
+      name: u(tk.name), symbol: u(tk.symbol),
+      taxRate: u(tk.taxRate), buyTaxRate: u(tk.buyTaxRate), sellTaxRate: u(tk.sellTaxRate),
+      taxFeeRateBps: u(tk.taxFeeRateBps), marketAddressOk: u(tk.marketAddressOk),
+      portalStatusZh: pt ? u(pt.statusZh) : null, price: pt ? u(pt.price) : null, progress: pt ? u(pt.progress) : null,
+      bridgeBac: u(tk.bridgeBac), pendingTax: u(tk.pendingTax), lifetimeTaxToRouter: u(tk.lifetimeTaxToRouter)
+    } : VM.empty().token;
 
     /* TPS：拿**真实的时间跨度**除，不假设 3 秒一块。
        至少要两块、跨度要 > 0，否则就是 null（不知道），不编。 */
@@ -517,10 +619,10 @@
   }
 
   /* /api/fees 目前只有裸端点（bac-api.js 有 api.fees()，bac-view.js 还没有对应的 view）：
-     这里直接问数据层要，读不到就保持 null，**不猜**。 */
+     这里直接问数据层要，读不到就保持 null，**不猜**。BSC 合约（ChainAnchor 等）部署之后才问（CONTRACTS_LIVE）。 */
   var feesAt = 0;
   function pullFees() {
-    if (!BAC || !BAC.api || !BAC.api.fees || !BAC.HAS_INDEXER || !BAC.LIVE) return;
+    if (!BAC || !BAC.api || !BAC.api.fees || !BAC.HAS_INDEXER || !(BAC.CONTRACTS_LIVE || BAC.LIVE)) return;
     var t = Date.now();
     if (t - feesAt < 20000) return;
     feesAt = t;
@@ -654,6 +756,12 @@
           events: extra.events || []
         };
       };
+      /* 两个端点都回了错误（例如索引器对普通地址回 500）：记下来，页面停在「找不到」并如实说原因，
+         不在每次重画时再问一遍。成功读到就清掉。 */
+      var cAddr = String(arg || '').toLowerCase();
+      var contractFail = function (e) {
+        VM.detail.contractErr = { addr: cAddr, status: (e && e.status) || null, at: Date.now() };
+      };
       (BAC.api.contract ? BAC.api.contract(arg).then(function (j) {
         takeContract(j.contract || {}, {
           classified: j.classified || null,
@@ -667,7 +775,10 @@
       }, function () {
         return BAC.api.contracts({ address: arg }).then(function (j) { takeContract((j.items || [])[0]); });
       }) : BAC.api.contracts({ address: arg }).then(function (j) { takeContract((j.items || [])[0]); })
-      ).then(done, done);
+      ).then(function () {
+        if (VM.detail.contract && String(VM.detail.contract.address).toLowerCase() === cAddr) VM.detail.contractErr = null;
+        else contractFail({ status: 404 });
+      }, contractFail).then(done, done);
 
     /* ── agent 造出来的东西（决策 #19）：列表与详情 ─────────────────
        读不到就是读不到：VM.built 保持空，页面显示设计过的空状态，
@@ -763,6 +874,34 @@
     }, 3000);
   }
 
+  /* 搜索框按名字 / 符号找代币（决策 #19）：唯一的网络入口在这里，可视层自己不发请求。
+     只问 /api/tokens?q=（索引器做的是前缀字面匹配，不做模糊、不做排名）。
+     0x 开头和纯数字不走这里 —— 那两种 searchAll 本地就能判。
+     索引器不在或演示模式：status = 'noidx'，搜索框退回只匹配已经载入的那一页。 */
+  var searchSeq = 0;
+  function searchTokens(raw, done) {
+    var q = String(raw || '').trim();
+    done = typeof done === 'function' ? done : function () {};
+    if (!q || q.length < 2 || /^0x/i.test(q) || /^#?\d+$/.test(q)) {
+      VM.search = { q: q, items: [], status: 'idle' };
+      return done();
+    }
+    if (DEMO_ON || !BAC || !BAC.api || !BAC.api.tokens || !BAC.HAS_INDEXER) {
+      VM.search = { q: q, items: [], status: 'noidx' };
+      return done();
+    }
+    if (VM.search.q === q && (VM.search.status === 'ok' || VM.search.status === 'loading')) return done();
+    var seq = ++searchSeq;
+    VM.search = { q: q, items: [], status: 'loading' };
+    BAC.api.tokens({ q: q, pageSize: 8, sort: 'activity' }).then(function (j) {
+      if (seq !== searchSeq) return;
+      VM.search = { q: q, items: (j.items || []).map(mapToken), status: 'ok' };
+    }, function () {
+      if (seq !== searchSeq) return;
+      VM.search = { q: q, items: [], status: 'error' };
+    }).then(done, done);
+  }
+
   /* 演示模式的两个条件必须同时成立：BSC 侧没发射（BAC.LIVE === false）且 URL 带 ?demo=1。
      正式站点**永远不会**走到这里 —— 真实读数读不到时显示占位文字，绝不退回演示值。 */
   var DEMO_ON = !!(BAC && !BAC.LIVE && DEMO_WANTED && root.BAC_DEMO && root.BAC_DEMO.build);
@@ -779,7 +918,7 @@
   }
 
   root.BACBIND = {
-    pull: pull, load: load, repaint: repaint,
+    pull: pull, load: load, repaint: repaint, searchTokens: searchTokens,
     /* 详情页能不能按需再读一条。
        演示模式下没有任何真来源可问 → 直接说找不到，不要一直显示「读取中…」。
        索引器读不到但层内 RPC 答话时**照样能读**：区块和交易直接问层内节点。 */

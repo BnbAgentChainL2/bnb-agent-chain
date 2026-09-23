@@ -67,3 +67,4 @@ artifacts/**/shots.mjs
 # Session handoff notes: carry live server ops detail (login, key filename,
 # sudo policy, co-tenant workloads). Local only.
 HANDOFF.md
+docs/05-BRAND-COPY.md

@@ -1,0 +1,1129 @@
+{
+  "time": "2026-09-23T11:03:32.700Z",
+  "views": [
+    {
+      "width": 390,
+      "routes": [
+        {
+          "language": "zh-CN",
+          "route": "overview",
+          "overflow": 0,
+          "active": [
+            "v-overview"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "blocks",
+          "overflow": 0,
+          "active": [
+            "v-blocks"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "txs",
+          "overflow": 0,
+          "active": [
+            "v-txs"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "agents",
+          "overflow": 0,
+          "active": [
+            "v-agents"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "epochs",
+          "overflow": 0,
+          "active": [
+            "v-epochs"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "treasury",
+          "overflow": 0,
+          "active": [
+            "v-treasury"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "validators",
+          "overflow": 0,
+          "active": [
+            "v-validators"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "tokens",
+          "overflow": 0,
+          "active": [
+            "v-tokens"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "pairs",
+          "overflow": 0,
+          "active": [
+            "v-pairs"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "swaps",
+          "overflow": 0,
+          "active": [
+            "v-swaps"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "search/0x",
+          "overflow": 0,
+          "active": [
+            "v-search"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "block/1234567",
+          "overflow": 0,
+          "active": [
+            "v-block"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "tx/0x944faf8aef3a49e594e3779a88db4285c5d59156fe9bd5180fa3335e22f1981a",
+          "overflow": 0,
+          "active": [
+            "v-tx"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "agent/1",
+          "overflow": 0,
+          "active": [
+            "v-agent"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "epoch/2983602",
+          "overflow": 0,
+          "active": [
+            "v-epoch"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "token/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-token"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "pair/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-pair"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "overview",
+          "overflow": 0,
+          "active": [
+            "v-overview"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "blocks",
+          "overflow": 0,
+          "active": [
+            "v-blocks"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "txs",
+          "overflow": 0,
+          "active": [
+            "v-txs"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "agents",
+          "overflow": 0,
+          "active": [
+            "v-agents"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "epochs",
+          "overflow": 21,
+          "active": [
+            "v-epochs"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "treasury",
+          "overflow": 0,
+          "active": [
+            "v-treasury"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "validators",
+          "overflow": 0,
+          "active": [
+            "v-validators"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "tokens",
+          "overflow": 0,
+          "active": [
+            "v-tokens"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "pairs",
+          "overflow": 0,
+          "active": [
+            "v-pairs"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "swaps",
+          "overflow": 0,
+          "active": [
+            "v-swaps"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "search/0x",
+          "overflow": 0,
+          "active": [
+            "v-search"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "block/1234567",
+          "overflow": 0,
+          "active": [
+            "v-block"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "tx/0x944faf8aef3a49e594e3779a88db4285c5d59156fe9bd5180fa3335e22f1981a",
+          "overflow": 0,
+          "active": [
+            "v-tx"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "agent/1",
+          "overflow": 0,
+          "active": [
+            "v-agent"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "epoch/2983602",
+          "overflow": 0,
+          "active": [
+            "v-epoch"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "token/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-token"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "pair/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-pair"
+          ]
+        }
+      ],
+      "interactions": {
+        "freshChineseBrowserDefaultEnglish": true,
+        "verifyInitiallyClosed": true,
+        "verifyKeyboardOpen": true,
+        "copyCurl": true,
+        "verifyKeyboardClose": true,
+        "nav": true,
+        "search": true,
+        "searchEsc": true,
+        "zh": true,
+        "en": true
+      },
+      "errors": [],
+      "layout": {
+        ".app": {
+          "width": 390,
+          "height": 10126.109375,
+          "fontSize": "15px",
+          "lineHeight": "24px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(32, 46, 56)"
+        },
+        ".hero": {
+          "width": 358,
+          "height": 834.953125,
+          "fontSize": "15px",
+          "lineHeight": "24px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(243, 246, 247)"
+        },
+        ".hero h1": {
+          "width": 320,
+          "height": 126,
+          "fontSize": "30px",
+          "lineHeight": "42px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(255, 255, 255)"
+        },
+        ".hero p": {
+          "width": 320,
+          "height": 86.390625,
+          "fontSize": "16px",
+          "lineHeight": "28.8px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(197, 210, 216)"
+        },
+        ".ss i": {
+          "width": 147.5,
+          "height": 22.390625,
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(128, 103, 31)"
+        },
+        "#ssGasPrice": {
+          "width": 149.5,
+          "height": 29.6875,
+          "fontSize": "22px",
+          "lineHeight": "29.7px",
+          "font": "\"Segoe UI Variable Display\", \"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(36, 53, 65)"
+        },
+        ".tbl": {
+          "width": 749.734375,
+          "height": 645.953125,
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(32, 46, 56)"
+        }
+      },
+      "screenshot": "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\width-copy-after-390-top.png",
+      "fullScreenshot": "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\width-copy-after-390.png"
+    },
+    {
+      "width": 1440,
+      "routes": [
+        {
+          "language": "zh-CN",
+          "route": "overview",
+          "overflow": 0,
+          "active": [
+            "v-overview"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "blocks",
+          "overflow": 0,
+          "active": [
+            "v-blocks"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "txs",
+          "overflow": 0,
+          "active": [
+            "v-txs"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "agents",
+          "overflow": 0,
+          "active": [
+            "v-agents"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "epochs",
+          "overflow": 0,
+          "active": [
+            "v-epochs"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "treasury",
+          "overflow": 0,
+          "active": [
+            "v-treasury"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "validators",
+          "overflow": 0,
+          "active": [
+            "v-validators"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "tokens",
+          "overflow": 0,
+          "active": [
+            "v-tokens"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "pairs",
+          "overflow": 0,
+          "active": [
+            "v-pairs"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "swaps",
+          "overflow": 0,
+          "active": [
+            "v-swaps"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "search/0x",
+          "overflow": 0,
+          "active": [
+            "v-search"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "block/1234567",
+          "overflow": 0,
+          "active": [
+            "v-block"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "tx/0x944faf8aef3a49e594e3779a88db4285c5d59156fe9bd5180fa3335e22f1981a",
+          "overflow": 0,
+          "active": [
+            "v-tx"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "agent/1",
+          "overflow": 0,
+          "active": [
+            "v-agent"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "epoch/2983602",
+          "overflow": 0,
+          "active": [
+            "v-epoch"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "token/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-token"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "pair/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-pair"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "overview",
+          "overflow": 0,
+          "active": [
+            "v-overview"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "blocks",
+          "overflow": 0,
+          "active": [
+            "v-blocks"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "txs",
+          "overflow": 0,
+          "active": [
+            "v-txs"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "agents",
+          "overflow": 0,
+          "active": [
+            "v-agents"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "epochs",
+          "overflow": 0,
+          "active": [
+            "v-epochs"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "treasury",
+          "overflow": 0,
+          "active": [
+            "v-treasury"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "validators",
+          "overflow": 0,
+          "active": [
+            "v-validators"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "tokens",
+          "overflow": 0,
+          "active": [
+            "v-tokens"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "pairs",
+          "overflow": 0,
+          "active": [
+            "v-pairs"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "swaps",
+          "overflow": 0,
+          "active": [
+            "v-swaps"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "search/0x",
+          "overflow": 0,
+          "active": [
+            "v-search"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "block/1234567",
+          "overflow": 0,
+          "active": [
+            "v-block"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "tx/0x944faf8aef3a49e594e3779a88db4285c5d59156fe9bd5180fa3335e22f1981a",
+          "overflow": 0,
+          "active": [
+            "v-tx"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "agent/1",
+          "overflow": 0,
+          "active": [
+            "v-agent"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "epoch/2983602",
+          "overflow": 0,
+          "active": [
+            "v-epoch"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "token/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-token"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "pair/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-pair"
+          ]
+        }
+      ],
+      "interactions": {
+        "freshChineseBrowserDefaultEnglish": true,
+        "verifyInitiallyClosed": true,
+        "verifyKeyboardOpen": true,
+        "copyCurl": true,
+        "verifyKeyboardClose": true,
+        "nav": true,
+        "search": true,
+        "searchEsc": true,
+        "zh": true,
+        "en": true
+      },
+      "errors": [],
+      "layout": {
+        ".app": {
+          "width": 1440,
+          "height": 5065.390625,
+          "fontSize": "16px",
+          "lineHeight": "25.6px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(32, 46, 56)"
+        },
+        ".hero": {
+          "width": 1368,
+          "height": 614.140625,
+          "fontSize": "16px",
+          "lineHeight": "25.6px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(243, 246, 247)"
+        },
+        ".hero h1": {
+          "width": 596.359375,
+          "height": 89.84375,
+          "fontSize": "34.56px",
+          "lineHeight": "44.928px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(255, 255, 255)"
+        },
+        ".hero p": {
+          "width": 630.703125,
+          "height": 64.78125,
+          "fontSize": "18px",
+          "lineHeight": "32.4px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(197, 210, 216)"
+        },
+        ".ss i": {
+          "width": 224.390625,
+          "height": 24,
+          "fontSize": "15px",
+          "lineHeight": "24px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(128, 103, 31)"
+        },
+        "#ssGasPrice": {
+          "width": 224.40625,
+          "height": 35.09375,
+          "fontSize": "26px",
+          "lineHeight": "35.1px",
+          "font": "\"Segoe UI Variable Display\", \"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(36, 53, 65)"
+        },
+        ".tbl": {
+          "width": 670,
+          "height": 688.078125,
+          "fontSize": "16px",
+          "lineHeight": "25.6px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(32, 46, 56)"
+        }
+      },
+      "screenshot": "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\width-copy-after-1440-top.png"
+    },
+    {
+      "width": 1920,
+      "routes": [
+        {
+          "language": "zh-CN",
+          "route": "overview",
+          "overflow": 0,
+          "active": [
+            "v-overview"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "blocks",
+          "overflow": 0,
+          "active": [
+            "v-blocks"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "txs",
+          "overflow": 0,
+          "active": [
+            "v-txs"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "agents",
+          "overflow": 0,
+          "active": [
+            "v-agents"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "epochs",
+          "overflow": 0,
+          "active": [
+            "v-epochs"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "treasury",
+          "overflow": 0,
+          "active": [
+            "v-treasury"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "validators",
+          "overflow": 0,
+          "active": [
+            "v-validators"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "tokens",
+          "overflow": 0,
+          "active": [
+            "v-tokens"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "pairs",
+          "overflow": 0,
+          "active": [
+            "v-pairs"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "swaps",
+          "overflow": 0,
+          "active": [
+            "v-swaps"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "search/0x",
+          "overflow": 0,
+          "active": [
+            "v-search"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "block/1234567",
+          "overflow": 0,
+          "active": [
+            "v-block"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "tx/0x944faf8aef3a49e594e3779a88db4285c5d59156fe9bd5180fa3335e22f1981a",
+          "overflow": 0,
+          "active": [
+            "v-tx"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "agent/1",
+          "overflow": 0,
+          "active": [
+            "v-agent"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "epoch/2983602",
+          "overflow": 0,
+          "active": [
+            "v-epoch"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "token/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-token"
+          ]
+        },
+        {
+          "language": "zh-CN",
+          "route": "pair/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-pair"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "overview",
+          "overflow": 0,
+          "active": [
+            "v-overview"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "blocks",
+          "overflow": 0,
+          "active": [
+            "v-blocks"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "txs",
+          "overflow": 0,
+          "active": [
+            "v-txs"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "agents",
+          "overflow": 0,
+          "active": [
+            "v-agents"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "epochs",
+          "overflow": 0,
+          "active": [
+            "v-epochs"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "treasury",
+          "overflow": 0,
+          "active": [
+            "v-treasury"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "validators",
+          "overflow": 0,
+          "active": [
+            "v-validators"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "tokens",
+          "overflow": 0,
+          "active": [
+            "v-tokens"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "pairs",
+          "overflow": 0,
+          "active": [
+            "v-pairs"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "swaps",
+          "overflow": 0,
+          "active": [
+            "v-swaps"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "search/0x",
+          "overflow": 0,
+          "active": [
+            "v-search"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "block/1234567",
+          "overflow": 0,
+          "active": [
+            "v-block"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "tx/0x944faf8aef3a49e594e3779a88db4285c5d59156fe9bd5180fa3335e22f1981a",
+          "overflow": 0,
+          "active": [
+            "v-tx"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "agent/1",
+          "overflow": 0,
+          "active": [
+            "v-agent"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "epoch/2983602",
+          "overflow": 0,
+          "active": [
+            "v-epoch"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "token/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-token"
+          ]
+        },
+        {
+          "language": "en",
+          "route": "pair/0xffffffffffffffffffffffffffffffffffffffff",
+          "overflow": 0,
+          "active": [
+            "v-pair"
+          ]
+        }
+      ],
+      "interactions": {
+        "freshChineseBrowserDefaultEnglish": true,
+        "verifyInitiallyClosed": true,
+        "verifyKeyboardOpen": true,
+        "copyCurl": true,
+        "verifyKeyboardClose": true,
+        "nav": true,
+        "search": true,
+        "searchEsc": true,
+        "zh": true,
+        "en": true
+      },
+      "errors": [],
+      "layout": {
+        ".app": {
+          "width": 1920,
+          "height": 4811.484375,
+          "fontSize": "16px",
+          "lineHeight": "25.6px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(32, 46, 56)"
+        },
+        ".hero": {
+          "width": 1824,
+          "height": 659.328125,
+          "fontSize": "16px",
+          "lineHeight": "25.6px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(243, 246, 247)"
+        },
+        ".hero h1": {
+          "width": 795.140625,
+          "height": 119.78125,
+          "fontSize": "46.08px",
+          "lineHeight": "59.904px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(255, 255, 255)"
+        },
+        ".hero p": {
+          "width": 630.703125,
+          "height": 64.78125,
+          "fontSize": "18px",
+          "lineHeight": "32.4px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(197, 210, 216)"
+        },
+        ".ss i": {
+          "width": 315.59375,
+          "height": 24,
+          "fontSize": "15px",
+          "lineHeight": "24px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(128, 103, 31)"
+        },
+        "#ssGasPrice": {
+          "width": 315.59375,
+          "height": 35.09375,
+          "fontSize": "26px",
+          "lineHeight": "35.1px",
+          "font": "\"Segoe UI Variable Display\", \"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(36, 53, 65)"
+        },
+        ".tbl": {
+          "width": 898,
+          "height": 688.078125,
+          "fontSize": "16px",
+          "lineHeight": "25.6px",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "color": "rgb(32, 46, 56)"
+        }
+      },
+      "screenshot": "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\width-copy-after-1920-top.png",
+      "fullScreenshot": "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\width-copy-after-1920.png"
+    }
+  ],
+  "failures": [
+    {
+      "label": "overflow 390 en epochs",
+      "detail": {
+        "overflow": 21,
+        "active": [
+          "v-epochs"
+        ]
+      }
+    }
+  ],
+  "live": [
+    {
+      "width": 1920,
+      "state": {
+        "chain": "ok",
+        "blocks": "ok",
+        "txs": "loading",
+        "agents": "pre",
+        "epochs": "pre",
+        "validators": "pre",
+        "treasury": "pre",
+        "bridge": "pre",
+        "feed": "pre",
+        "contracts": "ok",
+        "fees": "pre",
+        "daily": "ok",
+        "idx": "ok",
+        "layer": "loading",
+        "built": "ok"
+      },
+      "source": "indexer",
+      "blocks": 20,
+      "latest": 22726,
+      "txs": 0,
+      "stateBarHidden": true,
+      "language": "en",
+      "overflow": 0,
+      "verifyOpen": false,
+      "loadError": null,
+      "errors": [],
+      "screenshot": "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\width-copy-live-1920-top.png"
+    },
+    {
+      "width": 390,
+      "state": {
+        "chain": "ok",
+        "blocks": "ok",
+        "txs": "loading",
+        "agents": "pre",
+        "epochs": "pre",
+        "validators": "pre",
+        "treasury": "pre",
+        "bridge": "pre",
+        "feed": "pre",
+        "contracts": "ok",
+        "fees": "pre",
+        "daily": "ok",
+        "idx": "ok",
+        "layer": "loading",
+        "built": "ok"
+      },
+      "source": "indexer",
+      "blocks": 20,
+      "latest": 22727,
+      "txs": 0,
+      "stateBarHidden": true,
+      "language": "en",
+      "overflow": 0,
+      "verifyOpen": false,
+      "loadError": null,
+      "errors": [],
+      "screenshot": "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\width-copy-live-390-top.png"
+    }
+  ]
+}

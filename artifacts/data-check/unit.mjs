@@ -202,7 +202,9 @@ function makeEnv({ config = {}, ethers, fetchImpl, autoStart = false, siteConfig
     ethers,
     fetch: fetchImpl,
     AbortController: class { constructor() { this.signal = { aborted: false }; } abort() { this.signal.aborted = true; } },
-    BAC_CONFIG: rawConfig ? undefined : Object.assign({ autoStart }, config)
+    // deployBlock 默认 0：真实的 site.config.js 填了主网部署区块（决策 #39），不隔离的话每个没自己指定
+    // deployBlock 的用例都会继承它，把夹具里区块号很小的日志当成「部署前」的滤掉。
+    BAC_CONFIG: rawConfig ? undefined : Object.assign({ autoStart, deployBlock: 0 }, config)
   };
   if (rawConfig) delete sandbox.BAC_CONFIG;
   vm.createContext(sandbox);

@@ -291,8 +291,30 @@
       st: {
         chain: 'ok', blocks: 'ok', txs: 'ok', agents: 'ok', epochs: 'ok', validators: 'ok',
         treasury: 'ok', bridge: 'ok', feed: 'ok', contracts: 'ok', fees: 'ok', daily: 'ok',
-        idx: 'ok', layer: 'ok'
+        idx: 'ok', layer: 'ok', token: 'ok', timeline: 'ok', owner: 'ok'
       },
+      /* v2 三阶段：演示数据按「已发射」画（合约和代币都有） */
+      stage: { stage: 'launched', known: true, contractsLive: true, tokenLive: true, tokenAddress: null },
+      token: {
+        address: null, launched: true, explorerUrl: null,
+        name: 'BNB Agent Chain', symbol: 'BAC', taxRate: 200, buyTaxRate: 200, sellTaxRate: 200,
+        taxFeeRateBps: 1000, marketAddressOk: true,
+        portalStatusZh: '内盘交易中', price: BigInt(31) * BigInt(1e9), progress: BigInt(42) * BigInt(1e16),
+        bridgeBac: BigInt(96352) * E18, pendingTax: BigInt(12) * BigInt(1e15), lifetimeTaxToRouter: toBridge + toNode
+      },
+      owner: {
+        items: [
+          { kind: 'emergency', ts: NOW - 70000, block: 123500000, tx: hash32(), asset: 'BNB', amount: E18, to: addr() },
+          { kind: 'upgrade', ts: NOW - 200000, block: 123490000, tx: hash32(), newImplementation: addr(), number: 1, implementationConfirmed: true },
+          { kind: 'ownership', ts: NOW - 400000, block: 123480000, tx: hash32(), from: '0x0000000000000000000000000000000000000000', to: addr() },
+          { kind: 'implementation', ts: NOW - 400000, block: 123480000, tx: hash32(), implementation: addr(), initial: true },
+          { kind: 'initialized', ts: NOW - 400000, block: 123480000, tx: hash32(), version: 1 }
+        ],
+        complete: true, completeVia: 'rpc', missing: { upgrades: 0, emergencies: 0 }, seen: { upgrades: 1, emergencies: 1 },
+        upgradesAndWithdrawalsComplete: true, eventsUrl: null, coverage: null,
+        unlogged: { total: 0 }, implementationMatchesLog: true, historyStatus: 'ok', windowMin: 38
+      },
+      agentsMeta: { total: 42, totalAtLeast: 42, truncated: false, itemsTruncated: false, identityPaused: false, source: 'demo' },
       /* 演示模式的来源标成 demo，绑定层和外壳都会照它显示「演示模式」，不会冒充真来源 */
       layer: { live: true, source: 'demo', endpoint: '（演示模式 · 没有连任何节点）', primary: null, note: null, stale: false, sections: { head: 'ok', blocks: 'ok', txs: 'ok' } },
       chain: {
@@ -355,6 +377,18 @@
         disclosure: '项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。'
           + '节点基金这一半（税后 BNB 的 50%）由 BacNodeFund 的 owner 随时提取，用于服务器与节点搭建。',
         splitBaseNote: '50/50 分的是扣掉 Flap 协议费之后的部分：(10000 − 1000)/10000',
+        routerBalance: BigInt(31) * BigInt(1e14), routerUnsplit: BigInt(31) * BigInt(1e14),
+        bridgeBnbHeld: BigInt(814) * BigInt(1e16), pendingTax: BigInt(12) * BigInt(1e15), lifetimeTaxToRouter: toBridge + toNode,
+        flow: [
+          { kind: 'split', ts: NOW - 1800, tx: hash32(), toBridge: BigInt(206) * BigInt(1e15), toNodeFund: BigInt(206) * BigInt(1e15) },
+          { kind: 'recognized', ts: NOW - 1900, tx: hash32(), amount: BigInt(412) * BigInt(1e15), from: addr() },
+          { kind: 'buyback', ts: NOW - 14400, tx: hash32(), bnbSpent: BigInt(150) * BigInt(1e15), bacBought: BigInt(4800) * E18, venueName: 'curve' }
+        ],
+        nodeFundEvents: [
+          { kind: 'withdraw', ts: NOW - 26400, tx: hash32(), amount: E18, to: addr() },
+          { kind: 'received', ts: NOW - 27000, tx: hash32(), amount: BigInt(206) * BigInt(1e15), balanceAfter: BigInt(4) * BigInt(1e17) }
+        ],
+        timelineComplete: true, timelineTruncated: null, windowMin: 38,
         eventsStatus: 'ok',
         events: [
           { ts: NOW - 1800, name: 'RevenueSplit', amount: BigInt(412) * BigInt(1e15), note: '桥池 0.206 / 节点基金 0.206', tx: hash32() },
@@ -373,7 +407,11 @@
         totalExited: BigInt(120000) * E18, creditsOutstanding: BigInt(4760000) * E18,
         poolBalance: BigInt(914) * BigInt(1e16), owedTotal: BigInt(96352) * E18,
         weiPerCredit: BigInt(1900000000), lastPot: BigInt(3199) * E18,
-        releaseBps: 350, paused: false, halted: false
+        releaseBps: 350, paused: false, halted: false,
+        address: addr(), owner: addr(), pendingOwner: null, implementation: addr(),
+        upgradeCount: 1, lastUpgradeAt: NOW - 200000, emergencyCount: 1, lastEmergencyAt: NOW - 70000,
+        emergencyBnbWithdrawn: E18, emergencyBacWithdrawn: 0n,
+        shortfallBnb: E18, shortfallBac: 0n, shortfallSource: 'contract', noticeMatches: true
       },
       daily: daily,
       addresses: {}, layerAddresses: {

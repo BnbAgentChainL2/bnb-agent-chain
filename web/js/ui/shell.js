@@ -34,7 +34,18 @@
     left: UI.hmsLeft,
     tps: function (v) { return Number(v).toFixed(2); },
     sec: function (v) { return Number(v).toFixed(1); },
-    raw: function (v) { return String(v); }
+    raw: function (v) { return String(v); },
+    /* v2 新增 */
+    addr: function (v) { return String(v); },                       // 完整地址（核对用，不缩写）
+    full: UI.full,                                                   // 北京时间的完整时刻
+    // Flap Portal 的内盘进度：0..1e18 = 0..100%
+    ppct: function (v) { return UI.units(v, 2, 16) + '%'; },
+    // 每个 BAC 折合多少 BNB（18 位定点），不是法币价格
+    price: function (v) { return UI.units(v, 12, 18); },
+    // TaxProcessor.marketAddress() 是不是 BacTaxRouter（决策 #30 的硬核对）
+    mkt: function (v) { return v === true ? '一致 · 税收落进 BacTaxRouter' : '不一致 · 税收没有落进 BacTaxRouter'; },
+    // BacBridge.OWNER_POWER_NOTICE 与决策 #29a 那句逐字比对
+    notice: function (v) { return v === true ? '与 #29a 逐字一致' : '与 #29a 不一致'; }
   };
 
   function paintSlots() {
@@ -83,9 +94,10 @@
       ? esc(UI.units(c.gasPrice, 4, 9)) + '<u>gwei</u>'
       : esc(miss(s)));
 
+    /* 桥池余额是 BacBridge.bnbBalance()（合约那一半）：阶段 b 起就是真数，哪怕是 0 */
     UI.setHTML('#ssPool', c.bridgePool !== null && c.bridgePool !== undefined
       ? UI.bnb(c.bridgePool) + '<u>BNB</u>'
-      : esc(miss(VM.st.treasury)));
+      : esc(miss(VM.st.bridge)));
 
     var epLink = $('#ssEpoch');
     if (epLink) {
@@ -129,6 +141,30 @@
     paintSource();
     paintBars();
     paintAddrs();
+    paintStage();
+  }
+
+  /** 静态文案里分阶段的那几句（[data-stage="none"] / [data-stage="deployed launched"] …）：
+      只显示和当前 BSC 阶段相符的那一句。没有 JS 时 HTML 里默认露出的是阶段 none 那一句（现在的事实）。
+      演示模式按「已发射」显示（演示数据里合约与代币都有）。 */
+  function paintStage() {
+    var stg = VM.mode === 'demo' ? 'launched' : ((VM.stage && VM.stage.stage) || 'none');
+    $$('[data-stage]').forEach(function (el) {
+      var want = (el.getAttribute('data-stage') || '').split(/\s+/);
+      var show = want.indexOf(stg) >= 0;
+      if (el.hidden === show) el.hidden = !show;
+    });
+  }
+
+  /** 「BSC 这一半的数字是谁给的」：按阶段照实写，不在合约部署之后还说「未部署」。 */
+  function bscLabel() {
+    if (VM.mode === 'demo') return '演示模式';
+    var stg = (VM.stage && VM.stage.stage) || 'none';
+    var s = VM.st.bridge;
+    if (stg === 'none') return 'BSC · 合约未部署';
+    if (s === 'error') return 'BSC · ' + UI.TEXT.ERR;
+    if (s === 'loading') return 'BSC · ' + UI.TEXT.LOADING;
+    return stg === 'launched' ? 'BSC · 合约直读' : 'BSC · 合约直读 · 代币未发射';
   }
 
   /** 「这个数字是谁给的」：面板小标 [data-src] 与页脚 / 状态栏的端点地址。
@@ -141,7 +177,7 @@
       var kind = el.getAttribute('data-src');
       if (kind === 'layer') el.textContent = label;
       else if (kind === 'idx') el.textContent = UI.idxLabel();
-      else if (kind === 'bsc') el.textContent = VM.mode === 'demo' ? '演示模式' : 'BSC · 合约未部署';
+      else if (kind === 'bsc') el.textContent = bscLabel();
       else if (kind === 'endpoint') el.textContent = shortEp(VM.layer && VM.layer.endpoint);
     });
     UI.setText('#sbRpc', shortEp(VM.layer && VM.layer.endpoint));
@@ -155,49 +191,17 @@
     catch (e) { return String(u); }
   }
 
-  /** 顶部横幅：说清楚现在**哪一半是实时的、哪一半还不存在**，不夸大。
-      现在出块的是演练链 —— 这一条必须照实写在最前面：创世预置了测试 BAC（桥里是 0），
-      预置账户的私钥是公开的 Hardhat 测试私钥（谁都能发交易），发射时重建、数据清空；
-      v1 只有官方一个验证者，但演练链的只读同步已经公开（HANDOFF §2），验证者发射后才开放。
-      数据源照实说：索引器在供数时区块与交易来自同一台主机上的索引 API，不是「直接读节点」；
-      「索引器读不到」只在 VM.st.idx === 'noidx' 时说，'loading'（第一轮还没回来）不算。
-      每一句单独一个元素：翻译表按整句匹配，句子之间不拼成一个文本节点。
-      手机上（≤620px）只留加粗那句和公开 RPC，其余（.bar-x）收在「详情」后面 ——
-      否则英文下这条横幅有近 300px 高，会把首屏的决策 #29a 那句挤到折线以下。 */
+  /** Show operational failures here; data-source labels stay with their metrics. */
   function paintBars() {
     var bar = $('#stateBar');
     if (bar) {
       var html = null;
       if (VM.mode === 'demo') html = null;                      // 演示模式有自己的横幅
       else if (VM.st.chain === 'error') html = esc(UI.TEXT.ERR + '：层内节点两个地址都没答话，区块与交易暂时读不到。');
-      else if (VM.rehearsal || VM.st.idx === 'noidx') {
-        /* 给人去核对的是**配置里的公开 RPC**：数据源切到索引器之后 VM.layer.endpoint 是索引器的根地址，
-           对它 POST eth_blockNumber 会 405。只有真在直读 RPC 时（可能是兜底 IP），才写实际在用的那个。 */
-        var ly = VM.layer || {};
-        var ep = (ly.source === 'rpc' && ly.endpoint) || ly.rpc || '—';
-        html = (VM.rehearsal
-          ? '<b>现在出块的是演练链。</b>'
-            + '<span class="bar-x">创世里预置了测试用的 BAC（没有一枚是从 BSC 桥过来的），预置账户用的是公开的 Hardhat 测试私钥，'
-            + '任何人都能用它发交易，币没有任何价值；正式发射时会用新的创世重建这条链，现在的区块、交易和余额届时全部清空。</span>'
-            + '<span class="bar-x">v1 只有一个官方验证者节点。演练链的同步已经公开，任何人都能照 </span>'
-            + '<code class="bar-x">' + esc(UI.NODE_JSON) + '</code>'
-            + '<span class="bar-x"> 自己跑一个只读节点（没有任何奖励）；质押 BAC 做验证者、分 gas 费发射后开放。</span>'
-          : '')
-          + '<span>区块、交易、块高、gas 是本站从层内节点（及同一台主机上的索引 API）读到的真数据，任何人都能向同一个公开 RPC 自己核对：</span>'
-          + '<code>' + esc(ep) + '</code><span>。</span> '
-          + (VM.st.idx === 'noidx' ? '<span class="bar-x">索引器现在读不到，所以历史检索、agent 名录、日聚合曲线暂时没有。</span>' : '')
-          + (VM.st.treasury === 'pre'
-            ? '<span class="bar-x">BSC 侧的代币还没发射，税收路由 / 桥 / 质押 / 锚点合约都还不存在，那些数字写「' + esc(UI.TEXT.PRE) + '」。</span>'
-            : '')
-          + '<button class="bar-more" type="button" aria-controls="stateBar">'
-          + '<span class="bm-o">详情</span><span class="bm-c">收起</span></button>';
-      }
       /* 每次刷新都会走到这里：内容没变就不动 DOM，免得翻译层每 6 秒重译一遍 */
       if (html) {
         bar.hidden = false;
         if (bar._src !== html) { bar._src = html; bar.innerHTML = html; }
-        var mb = bar.querySelector('.bar-more');
-        if (mb) mb.setAttribute('aria-expanded', bar.classList.contains('open') ? 'true' : 'false');
       } else { bar.hidden = true; bar._src = null; }
     }
     /* 旧的降级横幅只在数据层真的给了降级说明、且和上面那条不重复时才出现 */
@@ -311,7 +315,18 @@
     else if (v === 'pairs') P.renderPairs();
     else if (v === 'pair') P.renderPairDetail(arg);
     else if (v === 'swaps') P.renderSwaps();
-    else if (v === 'search') P.renderSearchPage(arg || '');
+    else if (v === 'search') {
+      /* 按名字找代币要问索引器（bind.js 的 searchTokens 是唯一的网络入口）：
+         先画一遍（固定条目和已载入的那批立刻就有），索引器答话后再画一遍。 */
+      P.renderSearchPage(arg || '');
+      askIndexer(arg || '', function () { if (curView === 'search' && curArg === arg) P.renderSearchPage(arg || ''); });
+    }
+  }
+
+  /* 搜索框 / 搜索页共用的异步入口：可视层不发请求，只是把词交给 bind.js。 */
+  function askIndexer(q, after) {
+    if (!root.BACBIND || !root.BACBIND.searchTokens) return;
+    root.BACBIND.searchTokens(q, function () { if (typeof after === 'function') after(); });
   }
 
   /** 数据变了：重画当前页 + 所有插槽。bind.js 每次拿到新数据都调它。 */
@@ -344,7 +359,7 @@
   }
   function hintText() {
     if (VM.st.blocks === 'pre') return '还没有发射：链上还没有区块、交易或 agent 可以搜。';
-    var base = '可以输入：区块高度、0x 开头的交易哈希 / 地址 / 合约地址、agent 编号（如 #17）、纪元号。';
+    var base = '可以输入：区块高度、0x 开头的交易哈希 / 地址 / 合约地址、agent 编号（如 #17）、纪元号、代币名或符号。';
     /* 现在是直读层内节点（索引器读不到或还没回话）：块高和完整交易哈希能直接查，其余的等索引器 —— 照实说 */
     if (VM.layer && VM.layer.source === 'rpc') {
       base += '现在是直读层内节点，能查的是区块高度和完整交易哈希。';
@@ -363,8 +378,9 @@
       return;
     }
     sresList.innerHTML = suggList.map(function (r, i) {
+      /* 代币名和符号是发币的 agent 自己写的：原样显示，不翻译（raw 由 P.searchAll 标） */
       return '<a role="option" id="sg' + i + '" href="' + esc(r.h) + '" data-i="' + i + '"><i>' + esc(r.k) + '</i>' +
-        '<span class="sv">' + esc(r.v) + '</span><em>' + esc(r.m) + '</em></a>';
+        '<span class="sv"' + (r.raw ? ' translate="no"' : '') + '>' + esc(r.v) + '</span><em>' + esc(r.m) + '</em></a>';
     }).join('');
     sresN.innerHTML = '<b>' + suggList.length + '</b> 个结果　回车打开第一个　↑↓ 选择　Esc 关闭';
     sres.hidden = false; suggIdx = -1;
@@ -388,7 +404,17 @@
   function wireSearch() {
     qEl = $('#q'); sres = $('#sres'); sresList = $('#sresList'); sresN = $('#sresN'); sErr = $('#serr');
     if (!qEl) return;
-    qEl.addEventListener('input', paintSugg);
+    /* 输入时本地先画（区块高度、哈希、固定条目、已载入的代币都立刻有），
+       再防抖问索引器要全链的代币名匹配，答回来了并且输入框没变就重画一次。 */
+    var askT;
+    qEl.addEventListener('input', function () {
+      paintSugg();
+      clearTimeout(askT);
+      var typed = qEl.value;
+      askT = setTimeout(function () {
+        askIndexer(typed, function () { if (qEl.value === typed) paintSugg(); });
+      }, 220);
+    });
     qEl.addEventListener('focus', function () { if (qEl.value.trim()) paintSugg(); });
     qEl.addEventListener('keydown', function (e) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -438,6 +464,11 @@
       var res = P.searchAll(raw);
       if (res.length === 1) { closeSres(); qEl.blur(); location.hash = res[0].h; return; }
       if (res.length) { closeSres(); qEl.blur(); location.hash = '#/search/' + encodeURIComponent(raw); return; }
+      /* 文字（代币名 / 符号）本地一条都没匹配上：照样进搜索页 —— 那一页会问索引器，
+         并且在索引器读不到时照实说明，不要在这里把它判成「看不懂」。 */
+      if (!/^0x/i.test(raw) && !/^#?\d+$/.test(raw) && raw.length >= 2) {
+        closeSres(); qEl.blur(); location.hash = '#/search/' + encodeURIComponent(raw); return;
+      }
       searchError('看不懂「' + raw + '」。' + hintText());
     });
     document.addEventListener('keydown', function (e) {
@@ -479,12 +510,6 @@
       if (tr && !e.target.closest('a')) { location.hash = tr.dataset.go; return; }
       var a = e.target.closest('a[aria-disabled="true"]');
       if (a) e.preventDefault();
-      /* 顶部横幅在手机上的「详情 / 收起」：只切一个 class，内容不重画 */
-      var mb = e.target.closest('#stateBar .bar-more');
-      if (mb) {
-        var open = mb.parentElement.classList.toggle('open');
-        mb.setAttribute('aria-expanded', open ? 'true' : 'false');
-      }
     });
 
     wireChips('#blkChips', P.state.blocks, P.renderBlocks);
@@ -544,7 +569,7 @@
 
   UI.shell = {
     boot: boot, refresh: refresh, route: route,
-    paintSlots: paintSlots, paintStrip: paintStrip, markFades: markFades
+    paintSlots: paintSlots, paintStrip: paintStrip, paintStage: paintStage, markFades: markFades
   };
   UI.refresh = refresh;
 })(typeof window !== 'undefined' ? window : globalThis);

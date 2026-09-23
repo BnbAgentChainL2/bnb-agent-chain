@@ -1,4 +1,629 @@
 {
   "errors": [],
-  "unique": []
+  "unique": [
+    {
+      "label": "overview",
+      "text": "桥合约已升级",
+      "selector": "i.",
+      "ancestor": "mi"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "次",
+      "selector": "u.",
+      "ancestor": "r n"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "紧急提取",
+      "selector": "span.st-tag bad",
+      "ancestor": "l"
+    },
+    {
+      "label": "overview",
+      "text": "紧急提走 · BNB",
+      "selector": "i.",
+      "ancestor": "mi"
+    },
+    {
+      "label": "overview",
+      "text": "项目方权限记录 →",
+      "selector": "a.pf-r a-link",
+      "ancestor": "pf"
+    },
+    {
+      "label": "overview",
+      "text": "纪元边界；纪元结束后中继向 ChainAnchor 提交锚点",
+      "selector": "span.",
+      "ancestor": ""
+    },
+    {
+      "label": "agents-noidx",
+      "text": "名录 = 锁进过 BacBridge 的 ERC-8004 身份编号，本站直接读 BSC",
+      "selector": "b.",
+      "ancestor": "vh-m"
+    },
+    {
+      "label": "agent-built",
+      "text": "名字",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "agents-noidx",
+      "text": "持有人自述",
+      "selector": "span.sub",
+      "ancestor": "l"
+    },
+    {
+      "label": "agent-built",
+      "text": "首次锁入",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "agent-built",
+      "text": "锁入积分",
+      "selector": "td.",
+      "ancestor": "gap"
+    },
+    {
+      "label": "agents-noidx",
+      "text": "名录怎么来的：",
+      "selector": "b.",
+      "ancestor": "note"
+    },
+    {
+      "label": "agents-noidx",
+      "text": "一个 agent = 一个锁进过 BacBridge 的 ERC-8004 身份编号。编号、持有人（ownerOf）和 agentWallet 由本站直接读 BSC 上的 ERC-8004 身份注册表",
+      "selector": "p.note",
+      "ancestor": "view"
+    },
+    {
+      "label": "agents-noidx",
+      "text": "；名字来自这个身份的 tokenURI，是持有人自述，本站只原样转义显示，不背书其中任何说法，也不加载其中的图片和链接。我们要求持有 agent 身份，我们不能证明它是 AI：这个身份是一枚普通的 ERC-721，人也能铸。",
+      "selector": "p.note",
+      "ancestor": "view"
+    },
+    {
+      "label": "agents-noidx",
+      "text": "锁入积分与已退出积分直接读 BacBridge 的",
+      "selector": "p.note",
+      "ancestor": "view"
+    },
+    {
+      "label": "agents-noidx",
+      "text": "；层内余额、部署数这些层内数据只有索引器给得出，读不到时写「—」。",
+      "selector": "p.note",
+      "ancestor": "view"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "未结算（等人调 settle）",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "推送失败卡住 → 桥池",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "推送失败卡住 → 节点基金",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "待分发税（Flap 税收处理器）",
+      "selector": "td.",
+      "ancestor": "gap"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "累计送进税收路由的税",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "桥池当前余额（账面）",
+      "selector": "td.",
+      "ancestor": "gap"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "桥地址实际持有",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "税收路由的余额取决于有没有人调",
+      "selector": "span.",
+      "ancestor": "pf"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "：没有任何合约或定时器会自动调它。「推送失败卡住」是 50/50 推送没成功、留在路由里等重推的那部分。",
+      "selector": "span.",
+      "ancestor": "pf"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "税收流向时间线",
+      "selector": "span.ph-t",
+      "ancestor": "ph"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "50/50 分账",
+      "selector": "span.st-tag ok",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "桥池",
+      "selector": "span.",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "税收到账",
+      "selector": "span.st-tag ok",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "来自",
+      "selector": "span.",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "回购 BAC",
+      "selector": "span.st-tag vio",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "买到",
+      "selector": "span.",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "税收 → BacTaxRouter → 50/50 → 桥池与节点基金，每一步都发事件。",
+      "selector": "span.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "从部署块起的每一条都在这里。",
+      "selector": "span.cov-ok",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "节点基金时间线",
+      "selector": "span.ph-t",
+      "ancestor": "ph"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "提到",
+      "selector": "span.",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "节点基金到账",
+      "selector": "span.st-tag ok",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "余额变为",
+      "selector": "span.",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "节点基金的每一笔提取都发事件、都按时间列在这里，不隐藏（决策 #10 的披露要求）。",
+      "selector": "span.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "桥合约 · 项目方权限",
+      "selector": "span.ph-t big",
+      "ancestor": "ph"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "桥合约（ERC1967 代理）",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "owner（可升级、可紧急提取）",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "待接手的 owner",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "当前实现合约",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "已升级",
+      "selector": "td.",
+      "ancestor": "gap"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "最近一次升级",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "最近一次紧急提取",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "累计紧急提走 BNB",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "累计紧急提走 BAC",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "缺口 · BNB（账面 − 实有）",
+      "selector": "td.",
+      "ancestor": "gap"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "缺口 · BAC（账面 − 实有）",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "链上声明 OWNER_POWER_NOTICE",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "与 #29a 逐字一致",
+      "selector": "span.",
+      "ancestor": "r n"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "次数、最近一次的时间和累计提走的数额直接读桥合约里的计数器，是全量的。「缺口」不为 0 说明桥里实际持有的少于账面（例如被紧急提取过）。",
+      "selector": "span.",
+      "ancestor": "pf"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "代币 BAC",
+      "selector": "span.ph-t big",
+      "ancestor": "ph"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "合约地址（CA）",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "名称 / 符号",
+      "selector": "td.",
+      "ancestor": "gap"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "买入税 / 卖出税（链上）",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "税收接收地址",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "一致 · 税收落进 BacTaxRouter",
+      "selector": "span.",
+      "ancestor": "r n"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "Flap 内盘状态",
+      "selector": "td.",
+      "ancestor": "gap"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "内盘交易中",
+      "selector": "span.",
+      "ancestor": "r n"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "内盘进度",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "价格（每个 BAC 折合）",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "桥里的 BAC",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "价格是 Flap Portal 给的「每个 BAC 折合多少 BNB」，不是法币价格。代币发射之前，这些数都还不存在。",
+      "selector": "span.",
+      "ancestor": "pf"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "项目方权限记录",
+      "selector": "span.ph-t big",
+      "ancestor": "ph"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "这条时间线是完整的：",
+      "selector": "b.",
+      "ancestor": "note"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "从桥合约部署起的每一条都在下面（本站直接读到的 BSC 日志）。",
+      "selector": "span.",
+      "ancestor": "note"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "合约计数器（全量）：",
+      "selector": "b.",
+      "ancestor": "note"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "次，紧急提取",
+      "selector": "span.",
+      "ancestor": "note"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "次；下面的时间线里看到升级",
+      "selector": "span.",
+      "ancestor": "note"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "次。",
+      "selector": "span.",
+      "ancestor": "note"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "升级与紧急提取的逐条记录一条不缺。",
+      "selector": "span.",
+      "ancestor": "note"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "升级桥合约",
+      "selector": "span.st-tag warn",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "新实现",
+      "selector": "span.",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "第 1 次",
+      "selector": "span.sub",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "初始 owner",
+      "selector": "span.st-tag ok",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "设为",
+      "selector": "span.",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "初始实现",
+      "selector": "span.st-tag ok",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "代理部署时装上的实现",
+      "selector": "span.",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "初始化（部署）",
+      "selector": "span.st-tag ok",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "版本",
+      "selector": "span.",
+      "ancestor": "l"
+    },
+    {
+      "label": "treasury-noidx",
+      "text": "每一次升级、紧急提取、换 owner、暂停都发事件，本站按时间列在这里，不隐藏（决策 #29c）。",
+      "selector": "span.",
+      "ancestor": "pf"
+    },
+    {
+      "label": "validators-noidx",
+      "text": "里的命令就能自己跑一个只读节点、从创世块同步全部历史，但它不出块、不见证、拿不到任何奖励。",
+      "selector": "p.",
+      "ancestor": "notice v-when"
+    },
+    {
+      "label": "validators-noidx",
+      "text": "BSC 上的质押合约还没部署。",
+      "selector": "span.",
+      "ancestor": ""
+    },
+    {
+      "label": "validators-noidx",
+      "text": "BSC 上的质押合约已经部署，代币发射后才能质押。",
+      "selector": "span.",
+      "ancestor": ""
+    },
+    {
+      "label": "validators-noidx",
+      "text": "BSC 上的质押合约已经部署。",
+      "selector": "span.",
+      "ancestor": ""
+    },
+    {
+      "label": "validators-noidx",
+      "text": "全链累计口径来自 BSC 上",
+      "selector": "span.",
+      "ancestor": "rc-m"
+    },
+    {
+      "label": "validators-noidx",
+      "text": "的 FINAL 锚点与正式链创世里的分账合约；演练链上没有分账合约，上面那块是现在就能核的层内实测",
+      "selector": "span.",
+      "ancestor": "rc-m"
+    },
+    {
+      "label": "epochs",
+      "text": "（索引器 API 里的 epoch 字段目前还按天编号，即 floor(timestamp / 86400)，本站不用它）；锚点由中继把退出根提交到 BSC 的 ChainAnchor，下面这张表来自索引器。",
+      "selector": "span.vh-m",
+      "ancestor": "vhead"
+    },
+    {
+      "label": "agent-built",
+      "text": "首次锁入 3 天前",
+      "selector": "span.sub",
+      "ancestor": "dtl-h"
+    },
+    {
+      "label": "agent-built",
+      "text": "注册表里的 getMetadata(id, \"agentWallet\")，由持有人自己设置",
+      "selector": "span.hintline",
+      "ancestor": "r wrap"
+    },
+    {
+      "label": "agent-built",
+      "text": "最近一次锁入",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "agent-built",
+      "text": "锁入次数",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "agent-built",
+      "text": "层内数据只有索引器给得出，读不到时写「—」",
+      "selector": "span.hintline",
+      "ancestor": "r "
+    },
+    {
+      "label": "agent-built",
+      "text": "gas + 交易 + AgentBook 发布费。锁入积分 − 已花掉 − 已退出 = 层内余额",
+      "selector": "span.hintline",
+      "ancestor": "r "
+    },
+    {
+      "label": "agent-built",
+      "text": "注册文件（持有人自述）",
+      "selector": "span.ph-t",
+      "ancestor": "ph"
+    },
+    {
+      "label": "agent-built",
+      "text": "不背书 · 不加载图片和链接",
+      "selector": "span.ph-m",
+      "ancestor": "ph"
+    },
+    {
+      "label": "agent-built",
+      "text": "简介",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "agent-built",
+      "text": "图片",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "agent-built",
+      "text": "tokenURI 类型",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "agent-built",
+      "text": "tokenURI 预览",
+      "selector": "td.",
+      "ancestor": ""
+    },
+    {
+      "label": "agent-built",
+      "text": "注册文件是 ERC-8004 身份的 tokenURI，由身份持有人自己填写，没有任何人核对过；本站只原样转义显示，",
+      "selector": "span.",
+      "ancestor": "pf"
+    }
+  ]
 }

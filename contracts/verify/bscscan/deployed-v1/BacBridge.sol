@@ -273,16 +273,8 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
 
     /// @notice Lifetime BNB / BAC taken out by the two emergency withdrawals. The books above are
     ///         NOT written down when the owner withdraws: they go on saying what the bridge owed,
-    ///         and these counters say what left THROUGH THOSE TWO FUNCTIONS, so the public timeline
+    ///         and these counters say what left, so `shortfall()` is exact and the public timeline
     ///         (#29c) can show both numbers side by side instead of one quietly rewritten one.
-    /// @dev    They are NOT the complete record of money leaving the bridge. An upgrade can move
-    ///         the whole pool without touching them: `upgradeToAndCall` runs arbitrary new code in
-    ///         the same transaction, after `BridgeUpgraded` has already snapshotted the books, and
-    ///         that code can also rewrite the books themselves (so `shortfall()` would read 0).
-    ///         Anyone reconstructing withdrawals must also diff the bridge's PHYSICAL BNB and BAC
-    ///         balances around every `BridgeUpgraded` / `Upgraded` transaction (review finding,
-    ///         2026-09-23). Decision #29a already discloses the power; this is about not
-    ///         overstating what the counters prove.
     uint256 public emergencyBnbWithdrawn;
     uint256 public emergencyBacWithdrawn;
     uint64 public emergencyCount;
@@ -290,34 +282,9 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
     uint64 public upgradeCount;
     uint64 public lastUpgradeAt;
 
-    // ------------------------------------------------------------------ v1.1: per-debt maturity
-
-    /// @dev One point of an address's claim history: `cum` is the total BAC ever locked for it by
-    ///      `claimExit` up to and including time `at`.
-    struct ClaimPoint {
-        uint64 at;
-        uint192 cum;
-    }
-
-    /// @notice Every `claimExit` in favour of an address, as a running total (one point per block).
-    /// @dev    Maturity is a property of each DEBT, not of the address. With the single per-address
-    ///         `lastClaimAt` that v1 used, anybody could send a dust exit to someone else's address
-    ///         (`L2Bridge.exit` lets the exiter name any recipient and `claimExit` is
-    ///         permissionless) and make that address's whole, long-matured claim immature again:
-    ///         demotable by `sweepImmatureOwed` after a cause-2/3 halt and revocable by the watchdog
-    ///         (review finding, 2026-09-23). The history lets `_maturedOwed` count only what was
-    ///         really claimed before the cut-off, whatever was added afterwards.
-    ///         Added by the first upgrade (slot 350); `lastClaimAt` is still written, for display.
-    mapping(address => ClaimPoint[]) internal claimHistory;
-    /// @notice BAC paid to an address against its owed (`collect`, `claimOwedAfterHalt`). Payments
-    ///         are counted against the OLDEST debt first, which can only ever make the matured part
-    ///         smaller, never larger. Slot 351.
-    mapping(address => uint256) public owedPaid;
-
     /// @dev Room for the next versions. Adding a variable ABOVE this line is a storage-layout
     ///      break; adding one immediately above it and dropping `__gap` by the same count is not.
-    ///      42 in the first deployed version; the two mappings above took slots 350 and 351.
-    uint256[40] private __gap;
+    uint256[42] private __gap;
 
     // ==================================================================
     //  OWNER RULES  (decision #29) — shared, so they hold in both contracts
@@ -434,65 +401,6 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
         uint256 u = owed[who] - unclaimed[who];
         if (u != 0) unclaimed[who] += u - _unreleased(who);
         releaseSnap[who] = releaseIndex;
-    }
-
-    /// @dev Appends `amount` of new debt for `to` to its claim history, at the current time. The
-    ///      first point of an address that already holds owed from before the history existed (an
-    ///      upgrade over live claims) carries that old debt at its old `lastClaimAt`, so the upgrade
-    ///      itself can never make an existing claim younger. Call BEFORE `owed[to]` grows.
-    function _noteClaim(address to, uint256 amount) internal {
-        ClaimPoint[] storage h = claimHistory[to];
-        uint256 n = h.length;
-        uint256 cum;
-        if (n == 0) {
-            cum = owed[to] + owedPaid[to];
-            if (cum != 0) {
-                h.push(ClaimPoint(lastClaimAt[to], uint192(cum)));
-                n = 1;
-            }
-        } else {
-            cum = h[n - 1].cum;
-        }
-        cum += amount;
-        if (n != 0 && h[n - 1].at == uint64(block.timestamp)) {
-            h[n - 1].cum = uint192(cum);
-        } else {
-            h.push(ClaimPoint(uint64(block.timestamp), uint192(cum)));
-        }
-    }
-
-    /// @dev The part of `owed[who]` that was claimed at or before `cutoff` and has not been paid:
-    ///      the matured, senior part when `cutoff` is `OWED_MATURITY` before the moment that
-    ///      matters. Payments are counted against the oldest debt first; a revoke or a demotion
-    ///      shrinks `owed` itself, and the `min` keeps the result within it.
-    function _maturedOwed(address who, uint256 cutoff) internal view returns (uint256) {
-        uint256 o = owed[who];
-        if (o == 0) return 0;
-        ClaimPoint[] storage h = claimHistory[who];
-        uint256 hi = h.length;
-        uint256 claimed;
-        if (hi == 0) {
-            // owed from before the history existed: one debt, dated by `lastClaimAt`
-            if (lastClaimAt[who] <= cutoff) claimed = o + owedPaid[who];
-        } else {
-            // the last point at or before `cutoff` (binary search over a sorted history)
-            uint256 lo;
-            while (lo < hi) {
-                uint256 mid = (lo + hi) / 2;
-                if (h[mid].at <= cutoff) lo = mid + 1;
-                else hi = mid;
-            }
-            if (lo != 0) claimed = h[lo - 1].cum;
-        }
-        uint256 paid = owedPaid[who];
-        if (claimed <= paid) return 0;
-        claimed -= paid;
-        return claimed < o ? claimed : o;
-    }
-
-    /// @dev `t - OWED_MATURITY`, floored at 0.
-    function _maturityCutoff(uint256 t) internal pure returns (uint256) {
-        return t > OWED_MATURITY ? t - OWED_MATURITY : 0;
     }
 
     /// @dev Time of the current (or last, expired-but-unsettled) pause that is not yet counted.
@@ -631,18 +539,6 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
 ///         in one asset never strands the other). Sending the asset back refills the hole: BAC by
 ///         plain transfer, BNB by force-send (there is no `receive`, and `acceptRelease` books its
 ///         value as new revenue) or by an upgrade.
-///
-///         THE EVENTS ARE NOT THE WHOLE STORY. `EmergencyWithdraw` and the `emergency*` counters
-///         record the two emergency functions and nothing else. An upgrade can move every wei
-///         in the same transaction (`upgradeToAndCall` runs new code after `BridgeUpgraded` has
-///         snapshotted the books), and new code can rewrite the books and `shortfall()` with it.
-///         A complete withdrawal record therefore has to diff the bridge's physical BNB and BAC
-///         balances around every upgrade as well (#29c).
-///
-///         MATURITY IS PER DEBT (v1.1). `OWED_MATURITY` is measured from the claim of each debt,
-///         through `claimHistory`, not from an address's latest claim: a dust exit that anybody
-///         routes to your address adds a young debt of its own and leaves your older, matured
-///         claim senior (see `_maturedOwed`).
 contract BacBridge is BacBridgeCore {
     /// @notice The code of the rarely-called paths (see `BacBridgeCore`). Fixed per
     ///         implementation: deployed by this implementation's constructor, so it can only ever
@@ -1090,13 +986,10 @@ contract BacBridge is BacBridgeCore {
         // Harvest first: the new debt joins `to`'s unreleased part at the CURRENT index, so it gets
         // no share of any pot settled before it existed (B15).
         _harvest(to);
-        // The new debt gets its OWN age; `to`'s older debt keeps its own (`_maturedOwed`). Anyone
-        // can submit an exit that pays `to`, so this line must never make `to`'s old claims young.
-        _noteClaim(to, lockedBacAmt);
         owed[to] += lockedBacAmt;
         owedTotal += lockedBacAmt;
         epochOwed[anchorEpoch][to] += lockedBacAmt;
-        lastClaimAt[to] = uint64(block.timestamp); // display only since v1.1; maturity is per debt
+        lastClaimAt[to] = uint64(block.timestamp);
         exitClaimed[exitId] = true;
 
         // Attribution is truncated at what this agent actually put in, so the escape weight
@@ -1145,7 +1038,6 @@ contract BacBridge is BacBridgeCore {
         // `owed - unclaimed` (the unreleased part) does not change, so the snapshot stays valid
         unclaimed[msg.sender] -= paid;
         owed[msg.sender] -= paid;
-        owedPaid[msg.sender] += paid;
         owedTotal -= paid;
         reservedTotal -= paid;
         buybackBac -= paid;
@@ -1226,15 +1118,6 @@ contract BacBridge is BacBridgeCore {
         return _unreleased(who);
     }
 
-    /// @notice The matured (senior) part of `who`'s owed: debt claimed at least `OWED_MATURITY`
-    ///         before the halt, or before now while the bridge runs. This part can never be revoked
-    ///         by the watchdog or demoted by `sweepImmatureOwed`, and after a halt it is what
-    ///         `claimOwedAfterHalt` pays at once. Each debt ages on its own: a later exit paid to
-    ///         `who` (by anyone) does not make older debt young again.
-    function maturedOwed(address who) external view returns (uint256) {
-        return _maturedOwed(who, _maturityCutoff(halted ? haltedAt : block.timestamp));
-    }
-
     /// @notice 1e18-fixed BAC per credit. A view only — nothing is ever promised.
     function currentRate() external view returns (uint256 bacPerCredit) {
         uint256 outstanding = totalCreditsIssued - totalCreditsExited;
@@ -1243,14 +1126,9 @@ contract BacBridge is BacBridgeCore {
     }
 
     /// @notice What the books say the bridge holds minus what it actually holds, per asset; 0
-    ///         when nothing is missing. It becomes non-zero when funds leave without the books: an
-    ///         owner emergency withdrawal (#29), which deliberately leaves the books alone, or
-    ///         upgraded code that moved funds and kept these books. `bacShort` is measured against
+    ///         when nothing is missing. Non-zero only after an owner emergency withdrawal (#29),
+    ///         because those deliberately leave the books alone. `bacShort` is measured against
     ///         `bacAccounted()`, i.e. unburned deposits plus the buyback bucket.
-    /// @dev    Only as honest as the implementation answering it. An upgrade can take funds AND
-    ///         rewrite the books it is computed from, and then this reads (0, 0) over an empty pool.
-    ///         An independent check compares the physical balances with the books as they were
-    ///         logged before the upgrade (`BridgeUpgraded`).
     function shortfall() external view returns (uint256 bnbShort, uint256 bacShort) {
         uint256 bal = address(this).balance;
         if (bnbBalance > bal) bnbShort = bnbBalance - bal;
@@ -1484,8 +1362,6 @@ contract BacBridgeExtension is BacBridgeCore {
     ///      `bnbBalance` or any accumulator — see the contract NatSpec and `shortfall()`.
     function emergencyWithdrawBnb(address payable to, uint256 amount) external onlyDelegated onlyOwner nonReentrant {
         require(to != address(0), unicode"Zero recipient / 收款地址为零");
-        // A withdrawal to the bridge itself moves nothing, yet would be logged and counted as one.
-        require(to != address(this), unicode"Recipient is the bridge / 收款地址不能是桥本身");
         uint256 bal = address(this).balance;
         if (amount == 0) amount = bal;
         require(amount != 0, unicode"Nothing to withdraw / 没有可提取的金额");
@@ -1505,10 +1381,6 @@ contract BacBridgeExtension is BacBridgeCore {
     ///      no books, so both `bookAtWithdraw` and `lifetimeWithdrawn` are emitted as 0.
     function emergencyWithdrawToken(address token, address to, uint256 amount) external onlyDelegated onlyOwner nonReentrant {
         require(to != address(0), unicode"Zero recipient / 收款地址为零");
-        // A self-transfer succeeds and moves nothing: without this it would log a withdrawal that
-        // never happened (with a false `balanceAfter`) and inflate the lifetime counters, as often
-        // as the owner liked (review finding, 2026-09-23).
-        require(to != address(this), unicode"Recipient is the bridge / 收款地址不能是桥本身");
         // A typed call: a `token` without code reverts here instead of "succeeding" silently.
         uint256 bal = IERC20(token).balanceOf(address(this));
         if (amount == 0) amount = bal;
@@ -1625,31 +1497,23 @@ contract BacBridgeExtension is BacBridgeCore {
     /// @dev At a 120-second wait, `pause()` alone only delays a loss — the forged exits have
     ///      already locked their rate and will be payable the moment the pause lifts. This is the
     ///      function that actually undoes them. Two hard limits keep it from being a power over
-    ///      honest money: only debts younger than `OWED_MATURITY` can be touched (the matured part
-    ///      of an address's owed is never revoked), and the voided BAC goes back to the bucket —
-    ///      there is no recipient parameter and no path to the caller.
-    ///
-    ///      Maturity is per debt (`_maturedOwed`): what can be revoked from `who` is at most the
-    ///      part of its owed that is still young. Under v1 one fresh claim made the whole address
-    ///      young, so a dust exit routed to an honest address let this reach its matured claim.
+    ///      honest money: only debts younger than `OWED_MATURITY` can be touched (a matured claim
+    ///      is skipped, never revoked), and the voided BAC goes back to the bucket — there is no
+    ///      recipient parameter and no path to the caller.
     function revokeEpochOwed(uint64 epoch, address[] calldata holders) external onlyDelegated returns (uint256 revoked) {
         require(msg.sender == watchdog, unicode"Only watchdog / 仅限看门狗");
         require(!halted, unicode"Already halted / 已停机");
         (bool paused,,) = isPaused();
         require(paused, unicode"Bridge not paused / 桥未处于暂停");
 
-        uint256 cutoff = _maturityCutoff(block.timestamp);
         for (uint256 i; i < holders.length; ++i) {
             address who = holders[i];
             uint256 amount = epochOwed[epoch][who];
             if (amount == 0) continue;
             // A matured claim is senior and untouchable, exactly as it is after a halt.
-            uint256 young = owed[who] - _maturedOwed(who, cutoff);
-            if (young == 0) continue;
-            // Zeroed even when only part is taken: the rest of this epoch's debt is matured or
-            // already paid, and neither can ever become revocable again.
+            if (uint256(lastClaimAt[who]) + OWED_MATURITY <= block.timestamp) continue;
             epochOwed[epoch][who] = 0;
-            if (amount > young) amount = young;
+            if (amount > owed[who]) amount = owed[who];
             // Fold everything already released for this address into one number first, so the
             // part of `reservedTotal` that was standing behind the revoked debt can be handed
             // back exactly. Clamping `reservedTotal` to `owedTotal` instead would cut into the
@@ -1763,23 +1627,19 @@ contract BacBridgeExtension is BacBridgeCore {
     }
 
     /// @notice Senior claim after a halt: matured `owed` is paid in full, in BAC.
-    /// @dev Pays the part of the caller's owed that was claimed at least `OWED_MATURITY` before the
-    ///      halt, debt by debt (`_maturedOwed`). The younger rest stays owed: under cause 2/3 it is
-    ///      demoted by `sweepImmatureOwed`, under any other cause it is paid by a later call once
-    ///      `OWED_MATURITY` has passed since the halt.
     function claimOwedAfterHalt(address to) external onlyDelegated nonReentrant returns (uint256 paid) {
         require(to != address(0), unicode"Zero recipient / 收款地址为零");
         require(halted, unicode"Bridge not halted / 桥尚未停机");
-        uint256 o = owed[msg.sender];
-        require(o > 0, unicode"Nothing to collect / 没有可领取的金额");
-        paid = haltCause != 2 && haltCause != 3 && block.timestamp >= haltedAt + OWED_MATURITY
-            ? o
-            : _maturedOwed(msg.sender, _maturityCutoff(haltedAt));
-        require(paid > 0, unicode"Owed not matured / 债权尚未成熟");
+        require(
+            lastClaimAt[msg.sender] + OWED_MATURITY <= haltedAt
+                || (haltCause != 2 && haltCause != 3 && block.timestamp >= haltedAt + OWED_MATURITY),
+            unicode"Owed not matured / 债权尚未成熟"
+        );
+        paid = owed[msg.sender];
+        require(paid > 0, unicode"Nothing to collect / 没有可领取的金额");
 
-        owed[msg.sender] = o - paid;
-        owedPaid[msg.sender] += paid;
-        if (unclaimed[msg.sender] > o - paid) unclaimed[msg.sender] = o - paid;
+        owed[msg.sender] = 0;
+        unclaimed[msg.sender] = 0;
         owedTotal -= paid;
         buybackBac -= paid;
 
@@ -1790,22 +1650,16 @@ contract BacBridgeExtension is BacBridgeCore {
     /// @notice Permissionless: under cause 2/3 an immature `owed` is demoted to the junior pot.
     /// @dev cause 2/3 are the only "the root may be forged" signals; the fraud path can only ever
     ///      produce `owed` younger than `OWED_MATURITY` (attack-funds #3).
-    ///      Demotes ONLY the immature part: the debt claimed less than `OWED_MATURITY` before the
-    ///      halt. The matured part stays owed and payable by `claimOwedAfterHalt`, whatever was
-    ///      added to the same address later — v1 demoted the whole address as soon as any part
-    ///      of it was young, so a dust exit sent to someone else's address took their senior
-    ///      claim into the junior pot (review finding, 2026-09-23).
     function sweepImmatureOwed(address who) external onlyDelegated {
         require(halted, unicode"Bridge not halted / 桥尚未停机");
         require(haltCause == 2 || haltCause == 3, unicode"Halt cause keeps priority / 该停机原因保留优先级");
         require(block.timestamp >= haltedAt + OWED_MATURITY, unicode"Owed not matured / 债权尚未成熟");
-        uint256 o = owed[who];
-        require(o > 0, unicode"Nothing to demote / 没有可降级的债权");
-        uint256 amount = o - _maturedOwed(who, _maturityCutoff(haltedAt));
-        require(amount > 0, unicode"Owed already matured / 该债权已成熟");
+        require(lastClaimAt[who] + OWED_MATURITY > haltedAt, unicode"Owed already matured / 该债权已成熟");
+        uint256 amount = owed[who];
+        require(amount > 0, unicode"Nothing to demote / 没有可降级的债权");
 
-        owed[who] = o - amount;
-        if (unclaimed[who] > o - amount) unclaimed[who] = o - amount;
+        owed[who] = 0;
+        unclaimed[who] = 0;
         owedTotal -= amount;
         if (escapeTotalWeight > 0) accPerWeightBac += (amount * 1e18) / escapeTotalWeight;
         emit OwedDemoted(who, amount);

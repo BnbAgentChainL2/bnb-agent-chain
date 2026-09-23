@@ -157,20 +157,146 @@
     return '<span class="spk">' + s + '</span>';
   }
 
+  /** 持有人自述的名字（ERC-8004 tokenURI 里的 name）：不可信文本 —— 转义、截短、不翻译，旁边标「持有人自述」。 */
+  function selfName(a, max) {
+    if (!a.selfName) return '<span class="sub">—</span>';
+    var s = a.selfName.length > (max || 40) ? a.selfName.slice(0, (max || 40) - 1) + '…' : a.selfName;
+    return '<span class="self-n" translate="no" data-i18n-ignore>' + esc(s) + '</span><span class="sub">持有人自述</span>';
+  }
+
+  /** ERC-8004 名录的一行（决策 #31）：身份编号 / 持有人 / agentWallet / 自述名字 / 首次锁入 / 锁入与已退出积分 / 层内余额。
+      v2 没有状态机、心跳、签名轮次 —— 这些列已经去掉，不画空列。 */
   function agentRow(a, status) {
     var st = status || VM.st.agents;
+    var idNo = a.identityId === null || a.identityId === undefined ? a.id : a.identityId;
     return '<tr data-go="#/agent/' + a.id + '">' +
-      '<td class="l n">agent #' + a.id + '</td>' +
-      '<td class="l">' + stTag(a.statusCls || 'dim', a.statusZh || '—') + '</td>' +
-      '<td class="l n hide-m"><code>' + esc(a.wallet ? sa(a.wallet) : '—') + '</code></td>' +
+      '<td class="l n">#' + esc(String(idNo)) + '</td>' +
+      '<td class="l n">' + (a.holder ? '<code translate="no">' + esc(sa(a.holder)) + '</code>' : '<span class="sub">—</span>') +
+      (a.identityExists === false ? stTag('bad', '注册表里查不到这个身份') : '') + '</td>' +
+      '<td class="l n hide-m">' + (a.agentWallet ? '<code translate="no">' + esc(sa(a.agentWallet)) + '</code>' : '<span class="sub">—</span>') + '</td>' +
+      '<td class="l">' + selfName(a) + '</td>' +
       '<td class="n">' + esc(UI.ago(a.joinedTs)) + '</td>' +
       '<td class="r n">' + val(st, a.credited, UI.tokenAmt) + '<u>BAC</u></td>' +
-      '<td class="r n">' + val(st, a.balance, UI.tokenAmt) + '<u>BAC</u></td>' +
-      '<td class="r n">' + (a.deploys === null || a.deploys === undefined ? '—' : a.deploys) + '</td>' +
-      '<td class="r n hide-m">' + (a.announces === null || a.announces === undefined ? '—' : a.announces) + '</td>' +
-      '<td class="r n hide-m">' + (a.hbEpoch === null || a.hbEpoch === undefined ? '—' : a.hbEpoch) +
-      (a.missed ? '<span class="sub">漏 ' + a.missed + '</span>' : '') + '</td>' +
-      '<td class="r n hide-m">' + hbSpark(a) + '</td></tr>';
+      '<td class="r n">' + val(st, a.exited, UI.tokenAmt) + '<u>BAC</u></td>' +
+      '<td class="r n hide-m">' + (a.balance === null || a.balance === undefined ? '—' : UI.tokenAmt(a.balance) + '<u>BAC</u>') + '</td></tr>';
+  }
+
+  /* ── BSC 时间线（税收流向 / 节点基金 / 项目方权限记录）──────────────
+     条目是数据层 shapeEvent 的原样：{kind, block, tx, logIndex, ts, …金额 BigInt}。
+     ts 可能是 null（日志里只有块号）：那就写 BSC 块号，不编时间。
+     说明列里中文与地址 / 数字分开放：中文是固定短语（有译文），地址与数字不翻译。 */
+  function tlTime(it) {
+    if (it.ts !== null && it.ts !== undefined) {
+      return '<td class="l n">' + esc(UI.ymd(it.ts)) + ' ' + esc(UI.hms(it.ts)) + '</td>';
+    }
+    return '<td class="l n"><span class="sub">BSC #' + (it.block === null || it.block === undefined ? '—' : comma(it.block)) + '</span></td>';
+  }
+  function tlTx(it) {
+    if (!it.tx) return '<td class="r n">—</td>';
+    var ex = (VM.links && VM.links.explorer) || 'https://bscscan.com';
+    return '<td class="r n"><a class="a-link" href="' + esc(ex + '/tx/' + it.tx) + '" target="_blank" rel="noopener"><code translate="no">' +
+      esc(sa(it.tx)) + '</code></a></td>';
+  }
+  function tlAddr(a) { return a ? '<code translate="no">' + esc(sa(a)) + '</code>' : '<span class="sub">—</span>'; }
+  function tlBnb(v) { return v === null || v === undefined ? '—' : UI.bnb(v, 6) + '<u>BNB</u>'; }
+  function tlBac(v) { return v === null || v === undefined ? '—' : UI.tokenAmt(v) + '<u>BAC</u>'; }
+  function tlRow(it, tag, cls, amount, note) {
+    return '<tr>' + tlTime(it) + '<td class="l">' + stTag(cls, tag) + '</td>' +
+      '<td class="r n">' + amount + '</td><td class="l">' + (note || '') + '</td>' + tlTx(it) + '</tr>';
+  }
+  var ZERO_ADDR = /^0x0{40}$/i;
+  function ownershipRow(it) {
+    if (it.kind === 'ownershipStarted') {
+      return tlRow(it, '发起转移 owner', 'warn', '—', '<span>从</span> ' + tlAddr(it.from) + ' <span>转给</span> ' + tlAddr(it.to));
+    }
+    if (typeof it.from === 'string' && ZERO_ADDR.test(it.from)) {
+      return tlRow(it, '初始 owner', 'ok', '—', '<span>设为</span> ' + tlAddr(it.to));
+    }
+    return tlRow(it, 'owner 变更', 'warn', '—', '<span>从</span> ' + tlAddr(it.from) + ' <span>转给</span> ' + tlAddr(it.to));
+  }
+
+  /** 税收流向：税收到账 → 50/50 分账 → 推送 → 桥收到 → 回购 */
+  function flowRow(it) {
+    switch (it.kind) {
+      case 'recognized':
+        return tlRow(it, '税收到账', 'ok', tlBnb(it.amount), '<span>来自</span> ' + tlAddr(it.from));
+      case 'split': {
+        var tot = (it.toBridge !== null && it.toBridge !== undefined && it.toNodeFund !== null && it.toNodeFund !== undefined)
+          ? it.toBridge + it.toNodeFund : null;
+        return tlRow(it, '50/50 分账', 'ok', tlBnb(tot),
+          '<span>桥池</span> <b>' + esc(UI.bnb(it.toBridge, 6)) + '</b> · <span>节点基金</span> <b>' + esc(UI.bnb(it.toNodeFund, 6)) + '</b>');
+      }
+      case 'push': {
+        var to = it.target === 'bridge' ? '→ 桥池' : (it.target === 'nodeFund' ? '→ 节点基金' : '→ 其他地址');
+        return tlRow(it, it.ok ? '推送成功' : '推送失败', it.ok ? 'ok' : 'bad', tlBnb(it.amount),
+          '<span>' + to + '</span>' + (it.ok ? '' : ' <span class="sub">留在路由里等重推</span>'));
+      }
+      case 'bridgeReceived':
+        return tlRow(it, '桥池收到', 'ok', tlBnb(it.amount), '<span>桥的 BNB 账面变为</span> <b>' + esc(UI.bnb(it.bnbAfter, 6)) + '</b>');
+      case 'buyback':
+        return tlRow(it, '回购 BAC', 'vio', tlBnb(it.bnbSpent),
+          '<span>买到</span> <b>' + esc(UI.tokenAmt(it.bacBought)) + '</b> BAC' +
+          (it.venueName ? ' <span class="sub" translate="no">' + esc(it.venueName) + '</span>' : ''));
+      default:
+        return tlRow(it, it.event || '—', 'dim', '—', '');
+    }
+  }
+
+  /** 节点基金：到账 / 项目方提取 / 换 owner */
+  function nodeFundRow(it) {
+    switch (it.kind) {
+      case 'received':
+        return tlRow(it, '节点基金到账', 'ok', tlBnb(it.amount), '<span>余额变为</span> <b>' + esc(UI.bnb(it.balanceAfter, 6)) + '</b>');
+      case 'withdraw':
+        return tlRow(it, '项目方提取', 'warn', tlBnb(it.amount), '<span>提到</span> ' + tlAddr(it.to));
+      case 'ownershipStarted':
+      case 'ownership':
+        return ownershipRow(it);
+      default:
+        return tlRow(it, it.event || '—', 'dim', '—', '');
+    }
+  }
+
+  /** 项目方权限记录（决策 #29c）：升级 / 换实现 / 紧急提取 / 换 owner / 暂停 / 停机 / 逃生通道 */
+  function ownerRow(it) {
+    function when(ts) { return ts === null || ts === undefined ? '—' : esc(UI.full(ts)); }
+    switch (it.kind) {
+      case 'upgrade':
+        return tlRow(it, '升级桥合约', 'warn', '—',
+          '<span>新实现</span> ' + tlAddr(it.newImplementation) +
+          (it.number !== null && it.number !== undefined ? ' <span class="sub">第 ' + it.number + ' 次</span>' : '') +
+          (it.implementationConfirmed === false ? ' ' + stTag('bad', '和同一笔的 Upgraded 事件对不上') : ''));
+      case 'implementation':
+        return it.initial
+          ? tlRow(it, '初始实现', 'ok', '—', '<span>代理部署时装上的实现</span> ' + tlAddr(it.implementation))
+          : tlRow(it, '换实现 · 没留 BridgeUpgraded 事件', 'bad', '—', '<span>新实现</span> ' + tlAddr(it.implementation));
+      case 'emergency': {
+        var amt = it.asset === 'BNB' ? tlBnb(it.amount)
+          : (it.asset === 'BAC' ? tlBac(it.amount)
+            : (it.amount === null || it.amount === undefined ? '—' : esc(String(it.amount)) + '<u>最小单位</u>'));
+        return tlRow(it, '紧急提取', 'bad', amt, '<span>提到</span> ' + tlAddr(it.to) +
+          (it.asset === 'TOKEN' ? ' <span>代币</span> ' + tlAddr(it.token) : ''));
+      }
+      case 'ownershipStarted':
+      case 'ownership':
+        return ownershipRow(it);
+      case 'pause':
+        return tlRow(it, '暂停', 'warn', '—', '<span>暂停到</span> <b>' + when(it.until) + '</b>');
+      case 'unpause':
+        return tlRow(it, '解除暂停', 'ok', '—', '');
+      case 'halt':
+        return tlRow(it, '停机', 'bad', '—', '<span>原因代码</span> <b>' + (it.cause === null || it.cause === undefined ? '—' : it.cause) + '</b>');
+      case 'escapeArmed':
+        return tlRow(it, '武装逃生通道', 'bad', '—', '<span>生效时间</span> <b>' + when(it.effectiveAt) + '</b>');
+      case 'escapeArmCancelled':
+        return tlRow(it, '取消逃生武装', 'ok', '—', '');
+      case 'owedRevoked':
+        return tlRow(it, '撤销纪元待领', 'bad', tlBac(it.revoked), '<span>纪元</span> <b>' + (it.epoch === null || it.epoch === undefined ? '—' : it.epoch) + '</b>');
+      case 'initialized':
+        return tlRow(it, '初始化（部署）', 'ok', '—', '<span>版本</span> <b>' + (it.version === null || it.version === undefined ? '—' : it.version) + '</b>');
+      default:
+        return tlRow(it, it.event || '—', 'dim', '—', '');
+    }
   }
 
   /* ── 验证者行 ─────────────────────────────────────────── */
@@ -246,7 +372,8 @@
   UI.rows = {
     missRow: missRow, emptyRow: emptyRow, stTag: stTag, methodTag: methodTag,
     toCell: toCell, propCell: propCell, splitCell: splitCell, gasCell: gasCell,
-    blockRow: blockRow, txRow: txRow, agentRow: agentRow, hbSpark: hbSpark,
+    blockRow: blockRow, txRow: txRow, agentRow: agentRow, hbSpark: hbSpark, selfName: selfName,
+    flowRow: flowRow, nodeFundRow: nodeFundRow, ownerRow: ownerRow,
     validatorRow: validatorRow, epochRow: epochRow, epStateTag: epStateTag,
     treasuryRow: treasuryRow, kv: kv, notFound: notFound, pageMiss: pageMiss
   };

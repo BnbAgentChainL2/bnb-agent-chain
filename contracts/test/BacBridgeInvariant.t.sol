@@ -69,6 +69,10 @@ contract BridgeHandler is Test {
     bool public gUpgradeMovedState;
     uint256 public gUpgrades;
 
+    // ---- ghosts added with v1.1 (per-debt maturity) ----
+    bool public gMaturedTakenBack; // a revoke or a demotion reached a matured claim: must stay false
+    uint256 public gMaturityChecks; // how often a revoke / demotion ran against a non-zero matured part
+
     uint256 internal nextExitId = 1;
 
     struct LastExit {
@@ -377,14 +381,46 @@ contract BridgeHandler is Test {
     }
 
     /// @dev The watchdog's 120-second tool: void immature owed locked against one anchor epoch.
+    ///      v1.1: whatever it voids, the matured part of the address's owed must survive.
     function revokeEpochOwed(uint256 actorSeed) public {
         if (!last.set) return;
         address[] memory who = new address[](1);
         who[0] = _actor(actorSeed);
+        uint256 matured = bridge.maturedOwed(who[0]);
         vm.prank(bridge.watchdog());
         try bridge.revokeEpochOwed(last.epoch, who) returns (uint256 revoked) {
             if (revoked > 0) gHarvests++;
+            _noteMaturedKept(who[0], matured);
         } catch {}
+    }
+
+    /// @dev v1.1 regression: a dust exit routed by one actor to ANOTHER actor's address. v1 reset
+    ///      the recipient's `lastClaimAt` for its whole owed, so its matured claim became
+    ///      revocable and demotable (review finding, 2026-09-23).
+    function dustExitTo(uint256 fromSeed, uint256 toSeed) public {
+        uint256 outstanding = bridge.creditsOutstanding();
+        if (outstanding == 0) return;
+        address to = _actor(toSeed);
+        uint256 agentId = _agentOf(fromSeed);
+        uint256 credits = outstanding < 1e15 ? outstanding : 1e15;
+        uint256 exitId = nextExitId;
+        uint64 e = _epoch();
+        anchor.setAnchor(e, _leaf(exitId, agentId, to, credits), 3, IChainAnchor.State.FINAL);
+        bytes32[] memory proof = new bytes32[](0);
+        uint256 matured = bridge.maturedOwed(to);
+        vm.prank(_actor(fromSeed));
+        try bridge.claimExit(e, exitId, agentId, to, credits, proof) {
+            nextExitId++;
+            gHarvests++;
+            last = LastExit(e, exitId, agentId, to, credits, true);
+            if (bridge.maturedOwed(to) < matured) gMaturedTakenBack = true; // new debt aged old debt
+        } catch {}
+    }
+
+    function _noteMaturedKept(address who, uint256 maturedBefore) internal {
+        if (maturedBefore == 0) return;
+        gMaturityChecks++;
+        if (bridge.owed(who) < maturedBefore) gMaturedTakenBack = true;
     }
 
     function setHaltReason(uint256 seed) public {
@@ -417,7 +453,11 @@ contract BridgeHandler is Test {
     }
 
     function sweepImmatureOwed(uint256 actorSeed) public {
-        try bridge.sweepImmatureOwed(_actor(actorSeed)) {} catch {}
+        address a = _actor(actorSeed);
+        uint256 matured = bridge.maturedOwed(a);
+        try bridge.sweepImmatureOwed(a) {
+            _noteMaturedKept(a, matured);
+        } catch {}
     }
 
     /// @dev The escape claim is `agentController`'s, whichever actor the fuzzer picked. Requirement
@@ -611,7 +651,8 @@ contract BacBridgeInvariantTest is Test {
 
         handler = new BridgeHandler(bridge, bac, identity, anchor, portal, router, actors);
 
-        bytes4[] memory selectors = new bytes4[](24);
+        bytes4[] memory selectors = new bytes4[](25);
+        selectors[24] = BridgeHandler.dustExitTo.selector;
         selectors[0] = BridgeHandler.lock.selector;
         selectors[1] = BridgeHandler.release.selector;
         selectors[2] = BridgeHandler.forcePushAndSweep.selector;
@@ -715,9 +756,7 @@ contract BacBridgeInvariantTest is Test {
             claims,
             "B3: reserved below the claims it backs by more than floor dust"
         );
-        assertLe(
-            bridge.reservedTotal(), claims + handler.gHarvests(), "B3: a reservation that no address can collect"
-        );
+        assertLe(bridge.reservedTotal(), claims + handler.gHarvests(), "B3: a reservation that no address can collect");
         assertLe(claims, bridge.owedTotal(), "B3: claims exceed the debt they are paid from");
         for (uint256 i = 0; i < 4; i++) {
             address a = handler.actorAt(i);
@@ -838,6 +877,17 @@ contract BacBridgeInvariantTest is Test {
     /// release, per elapsed epoch (capped at 144).
     function invariant_B15_PerAddressRateLimit() public view {
         assertFalse(handler.gCapViolated(), "B15: per-address cap breached");
+    }
+
+    /// v1.1: maturity is per debt. No later exit (by anyone) makes an address's matured claim
+    /// young again, and neither `revokeEpochOwed` nor `sweepImmatureOwed` ever takes an address's
+    /// owed below the matured part it had right before the call.
+    function invariant_MaturedOwedIsNeverTakenBack() public view {
+        assertFalse(handler.gMaturedTakenBack(), "a matured claim was aged, revoked or demoted");
+        for (uint256 i = 0; i < 4; i++) {
+            address a = handler.actorAt(i);
+            assertLe(bridge.maturedOwed(a), bridge.owed(a), "matured part above the owed");
+        }
     }
 
     /// B17: the pause budget is bounded and exhausting it is a halt condition.

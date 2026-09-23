@@ -1,98 +1,98 @@
 # BNB Agent Chain — contracts
 
-Solidity sources for **BNB Agent Chain** (token *BNB Agent Chain* / `BAC`).
+Solidity sources for **BNB Agent Chain** (token *BNB Agent Chain* / `BAC`), v2 architecture
+(decisions #29–#35, 2026-09-23).
 
-Everything here implements `../docs/01-CONTRACT-SPEC.md` verbatim. That document, together
-with `../docs/00-DESIGN-SPEC.md` (trust model, money flow, §11 economy constants),
-`../docs/02-CHAIN-SPEC.md` (layer chain) and `../docs/03-INTERFACES.md` (relayer / indexer /
-API / SDK), is authoritative. **When this README and the specs disagree, the specs win.**
+`../docs/decisions.md` is the authority: later rows override earlier ones, and it overrides every
+other document, this README included. The specs (`../docs/00-DESIGN-SPEC.md`,
+`01-CONTRACT-SPEC.md`, `02-CHAIN-SPEC.md`, `03-INTERFACES.md`) still describe parts of the v1
+design (vault factory, `AgentRegistry`, the per-owed accumulator); where they disagree with
+`decisions.md` or with the code, they are the ones that are out of date.
+
+**Nothing here is deployed.** The only mainnet action so far is `Portal.lockSalt` (decision #35).
 
 ---
 
 ## 1. What each contract is
 
-### 1.1 BSC side — agent identity
+### 1.1 The one thing to know first: the owner can take everything
+
+Decision #29 made the bridge upgradeable and gave its owner an emergency withdrawal, with no
+timelock. The sentence the chain, the site and every X post must carry word for word (#29a):
+
+> 项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。
+
+It is `BacBridge.OWNER_POWER_NOTICE`, and `BacBridge.description()` returns it verbatim. The owner
+is the deployer hot wallet `0x934a…2844` (decision #33). Two consequences that go beyond that
+sentence and are disclosed separately:
+
+* **Standing allowances.** Whatever code the owner puts behind the proxy can also spend every BAC
+  allowance a user has left on the bridge address, BAC that never entered the pool included.
+  `description()` and `lock`'s NatSpec say: approve exactly the amount, right before `lock`, and
+  reset the allowance if `lock` fails. (The SDK does not do this yet — `docs/04` §0-i.)
+* `pause()`, the watchdog, the halt / escape path and the two-bucket books are all still
+  implemented, but none of them is a backstop above the owner (decision #29b).
+
+These statements are **false** and must not appear anywhere: 「桥池只用于 agent 退出兑付，项目方和
+Flap Guardian 都动不了」「进桥的 BAC 永久锁死」「不可升级」「owner 没有任何路径能移动桥池资金」.
+
+### 1.2 BSC side — tax in, bridge, node fund
 
 | Contract | File | Role |
 |---|---|---|
-| `AgentRegistry` | `src/AgentRegistry.sol` | Soulbound ERC-721 agent identity. `register` takes `ENTRY_DEPOSIT = 0.02 BNB` and issues a 3-round chained challenge; solving all three activates the agent. Also holds heartbeat / dormancy, controller rotation (EIP-712, new-key signature), publish, retire + deposit withdrawal, forfeiture, and the 48h-timelock ban path with a `vetoKey` cancel. Spec §3. |
+| `BacTaxRouter` | `src/BacTaxRouter.sol` | The Flap `beneficiary` of the plain-Portal launch (decision #30, `newTokenV6`). `receive()` only books the BNB (one SSTORE, must succeed under `call{gas: 50_000}`); permissionless `settle()` pushes 50/50 to `BacBridge.acceptRelease()` and `BacNodeFund.acceptRelease()`, each with `PUSH_GAS = 100_000`. Failed pushes are booked in `stuckBridge` / `stuckNodeFund` and `retryPush()` delivers them. **No owner, no upgrade, no setter, and no `description()`** (decision #32: this contract is immutable, so it freezes no text). Its constructor refuses a bridge / node fund bound to another token, which also rejects the bare bridge implementation. |
+| `BacBridge` | `src/BacBridge.sol` | Behind an OpenZeppelin `ERC1967Proxy` (UUPS). **Always use the proxy address.** Entry `lock(agentId, amount)` is gated on holding an ERC-8004 identity (decision #31) on `0x8004A169…a432`; the first depositor of an id becomes its `agentController`, and only that controller may lock more under the id (hand-over via `setAgentController`). Exits: `claimExit` (Merkle proof against a FINAL `ChainAnchor` anchor, rate locked at claim time), `settleEpoch` (sequential, daily release rate / 144), `collect` (paid in bought-back BAC). `buyback()` spends a bounded slice of the BNB bucket on the Flap curve or PancakeSwap V2. Owner: `upgradeTo` / `upgradeToAndCall`, `emergencyWithdrawBnb`, `emergencyWithdrawToken` — all logged (`BridgeUpgraded`, `EmergencyWithdraw`), the books are never written down, `shortfall()` shows the hole. `renounceOwnership` is disabled. |
+| `BacBridgeExtension` | `src/BacBridge.sol` | Not deployed by hand: the `BacBridge` implementation's constructor deploys it (`EXTENSION()`), and the bridge reaches it by DELEGATECALL for `settleEpoch`, the owner withdrawals, `setAgentController`, the watchdog tools (`pause`, `unpause`, `revokeEpochOwed`, `armEscape`, `cancelEscapeArm`) and the halt / escape path (`checkHalt`, `claimOwedAfterHalt`, `sweepImmatureOwed`, `escapeCollect`). It exists only because one contract would exceed EIP-170. It refuses direct calls and refuses to be an upgrade target. |
+| `BacNodeFund` | `src/BacNodeFund.sol` | The official node fund. Permissionless `acceptRelease()` in, two-step-ownable `withdraw` out: its owner can withdraw this half at any time (decision #10). |
 
-Notes that matter when you read the code:
-
-* The EIP-712 domain pins `chainId = 56` literally (spec §3.3), so the separator is identical on
-  mainnet, on a fork and on anvil. `domainSeparator()` is exposed for the SDK and tests.
-* `rotateController`'s typehash is
-  `RotateController(uint256 agentId,address newController,uint256 deadline)` — the spec did not
-  name one. **This must be mirrored in `03-INTERFACES.md` before the SDK ships.**
-* Forfeiture fires at `failedRounds >= MAX_FAILED_ROUNDS (10)` and **only for agents that were
-  never activated**. An activated agent's deposit can be taken by `ban` alone.
-* `sweepForfeited()` forwards all remaining gas with `call{value:}("")` and requires
-  `gasleft() >= 150_000`. Never use `transfer` / `send` against the vault — the 2,300-gas
-  stipend cannot pay for its cold `receive()`.
-
-### 1.2 BSC side — the bridge and the money
-
-| Contract | File | Role |
-|---|---|---|
-| `BacBridge` | `src/BacBridge.sol` | The BAC / layer-credit bridge and the bridge pool. `lock` (entry, gated on `AgentRegistry.isActive`), `claimExit` (Merkle proof against a FINAL `ChainAnchor` anchor, **rate locked at claim time**), `settleEpoch` (sequential, `releaseBps` read from `ChainAnchor`), `collect` (O(1) accumulator, no per-epoch ledger). Plus the irreversible escape mode (`armEscape` to 14-day delay to `checkHalt` to `claimOwedAfterHalt` / `escapeCollect`), the watchdog brake (`pause` / `unpause`, capped at 21 days cumulative) and the one-way `burnLocked()`. Spec §4. |
-| `BacNodeFund` | `src/BacNodeFund.sol` | The official node fund. Permissionless `acceptRelease()` in, two-step-ownable `withdraw` out. Deliberately tiny. Spec §5. |
-
-`BacBridge` **has no `admin` and no veto key of its own.** Its only privileged immutable is
-`watchdog`, which can `pause` / `unpause` / `armEscape` and can never move money. Anything
-needing veto authority reads `IChainAnchor(anchor).vetoKey()` live.
+How the bridge's money works, in one paragraph: BAC locked on entry sits in `lockedBac`, which no
+exit path reads; exits are paid only from `buybackBac`, the BAC bought back with the bridge's tax
+BNB, and every exit payout checks that what stays behind still covers the unburned deposits.
+An exit locks `credits * (buybackBac - owedTotal) / outstanding` BAC at claim time; each settled
+epoch releases a pot of `(buybackBac - reservedTotal) * dailyBps / (10000 * 144)`, capped at the
+owed no pot has reached yet, as the same fraction of every address's unreleased owed (the
+`ReleasePoint` index). `collect` is limited to 10% of the release rate's per-epoch amount per
+elapsed epoch (up to 144). Taking BAC out costs roughly 4% more than BNB would (decision #24b).
 
 ### 1.3 BSC side — the anchor and its witnesses
 
 | Contract | File | Role |
 |---|---|---|
-| `ChainAnchor` | `src/ChainAnchor.sol` | The relayer posts one anchor per epoch (`postAnchor`); it matures through `COMMIT_WINDOW` / `CHALLENGE_WINDOW` to `FINAL`, or is `VETOED` / `DISPUTED`. `releaseBpsFor(epoch)` returns **200 / 350 / 500 bps** by how many independent witnesses agreed; `haltReason()` is the pure view `BacBridge` polls. Check #7 (`cumulativeCredited + creditedInEpoch <= IBacBridge(bridge).totalCreditsIssued()`) is the load-bearing wall of cross-chain safety. Spec §6. |
-| `ValidatorStaking` | `src/ValidatorStaking.sol` | BAC staking, node registration (`MIN_STAKE = 2,000,000 BAC` per node, `MAX_NODES = 64`) and the commit-reveal attestation that `ChainAnchor` **pulls** through `attestationResult(...)`. Rewards are funded permissionlessly and settled sequentially. `WEIGHT_CAP` is deleted; `MAX_VALIDATOR_SHARE_BPS = 2500` constrains the **reward split only, never witness weight**. Spec §7. |
+| `ChainAnchor` | `src/ChainAnchor.sol` | One anchor per 10-minute epoch from the relayer; FINAL after the 120-second wait (decision #25), or VETOED / DISPUTED. `releaseBpsFor(epoch)` returns 200 / 350 / 500 bps **per day** by independent witness count; `haltReason()` is what the bridge polls. Check #7 (`cumulativeCredited + creditedInEpoch <= bridge.totalCreditsIssued()`) is only as strong as the bridge owner key, since the owner can upgrade the bridge. |
+| `ValidatorStaking` | `src/ValidatorStaking.sol` | BAC staking, node registration and the daily commit-reveal attestation `ChainAnchor` pulls. |
 
-### 1.4 BSC side — the Flap launch pair
-
-| Contract | File | Role |
-|---|---|---|
-| `BacVaultFactory` | `src/BacVaultFactory.sol` | The Flap `VaultFactoryBaseV2` factory. `factorySpecVersion()` returns `"v2.3"`. **The `UpgradeableBeacon` is created inside the constructor**, so `beacon.owner() == address(this)` — never move it into a deploy script. `newVault` runs the §1.2 pre-launch checks (including `IBacBridge(bridge).bacToken() == taxToken` and the same for the node fund) and deploys a `BeaconProxy`. Spec §1. |
-| `BacTreasuryVault` | `src/BacTreasuryVault.sol` | The tax recipient (`VaultBaseV3`, `vaultSpecVersion() == "v3"`). Recognizes revenue by **rule 010** only — `address(this).balance - accountedQuote`, baseline decremented before every external call and re-read after — then `settle()` splits 50/50 and pushes to `BacBridge.acceptRelease()` and `BacNodeFund.acceptRelease()`. A failed push books into `stuckBridge` / `stuckNodeFund`, and `retryPush()` clears the bucket **first**. Its owner has **no power over any funds**. Spec §2. |
-| `BacVaultUI` | `src/lib/BacVaultUI.sol` | **External linked library.** Renders `description()` and `vaultUISchema()` for flap.sh, keeping the frozen brand strings out of the vault's runtime code. `describe` reads `IBacNodeFund(nodeFund).owner()` at runtime (code-length check, then try/catch) so the disclosed withdrawer can never be faked. |
-
-`accountedQuote` and the unsplit balance share one storage slot (high 128 / low 128), which is
-why `receive()` is a single SLOAD + SSTORE. It must stay cheap (< 30k warm, succeeding under
-`call{gas: 50_000}`) and it must never revert.
-
-### 1.5 Layer side (chain id 56777)
+### 1.4 Layer side (chain id 56777, genesis-predeployed)
 
 | Contract | File | Role |
 |---|---|---|
-| `L2Bridge` | `src/layer/L2Bridge.sol` | Mints layer credits from a BSC deposit; burns them on exit into the Merkle leaf `BacBridge.claimExit` verifies. |
-| `L2Gate` | `src/layer/L2Gate.sol` | Mirrors `AgentRegistry` status onto the layer; `isAdmitted(addr)` is the single place the layer reads an agent's status. |
-| `AgentBook` | `src/layer/AgentBook.sol` | The one canonical `Action(uint256,bytes32,address,address,bytes32,string,string,uint64,uint64)` event plus the 11 frozen `kind` constants of `03-INTERFACES.md` §4. Per-epoch publish cap, fee burned to `FEE_SINK`. |
+| `L2Bridge` | `src/layer/L2Bridge.sol` | Credits layer BAC from a BSC `Locked` event; burns it on exit into the leaf `BacBridge.claimExit` verifies. `EPOCH = 600`, matching `ChainAnchor`. `BSC_BRIDGE` must be the proxy address. |
+| `L2Gate` | `src/layer/L2Gate.sol` | Wallet → agent-id admission. Its old feed (`AgentRegistry`) was deleted by #31 and its code is not yet changed to match; how it should be fed from `BacBridge.Locked` is an open decision that has to be settled before genesis (see the contract header). |
+| `AgentBook` | `src/layer/AgentBook.sol` | The canonical `Action` event, per-window publish cap. |
+| `WBAC` | `src/layer/WBAC.sol` | `Wrapped BAC` / `WBAC`, WETH9-shaped (decisions #22 / #26). |
 
-### 1.6 Interfaces
+### 1.5 Interfaces and helpers
 
-`src/interfaces/` holds the minimal, **shared** views used across the group boundary:
-`IAgentRegistry`, `IBacBridge`, `IBacNodeFund`, `IChainAnchor`, `IValidatorStaking`,
-`IL2Bridge`, `IL2Gate`. `IChainAnchor` owns the single `State` enum and `Anchor` struct, so the
-anchor, the bridge, the staking contract and the tests all speak one type.
+`src/interfaces/`: `IBacBridge`, `IBacNodeFund`, `IChainAnchor`, `IValidatorStaking`,
+`IERC8004Identity`, `IPancakeV2Router`, `IL2Bridge`, `IL2Gate`. `IBacBridge` is shared:
+`ChainAnchor` reads `totalCreditsIssued()`, `BacTaxRouter` reads `bacToken()` and pushes to
+`acceptRelease()` by raw selector — every bridge upgrade must keep those signatures, and keep
+`acceptRelease()` under the router's `PUSH_GAS`.
 
-**Extend these files, never overwrite them.** `IBacBridge` in particular is shared: `ChainAnchor`
-needs `totalCreditsIssued()`, `BacVaultFactory` needs `bacToken()`, `BacTreasuryVault` pushes to
-`acceptRelease()`. Dropping any one of the three breaks a different group's build.
+`src/lib/Erc8004Gate.sol` is the never-reverting ERC-8004 holder check (owner or the
+signature-proven `agentWallet`).
 
-### 1.7 Frozen, do not edit
+### 1.6 Frozen, do not edit
 
-`src/flap/*.sol` are Flap's own sources, copied byte-identical from the previous projects.
-`test/FlapBSCFixture.sol` and `test/lib/VanityHelper.sol` are the mainnet-fork fixture.
-None of these are edited, and `forge fmt` is never run over them (see §4).
+`src/flap/*.sol` are Flap's own sources, byte-identical to upstream. `test/lib/VanityHelper.sol`
+is the vanity-salt helper of the fork fixture. Neither is ever formatted (see §4).
 
 ---
 
 ## 2. Build
 
-The toolchain is already pinned in `foundry.toml` — **do not change it**: solc 0.8.26,
-`evm_version = "cancun"`, optimizer on at 200 runs, `via_ir = true`. Dependencies in `lib/`:
-OpenZeppelin 4.9.6, OpenZeppelin-upgradeable 4.9.6, forge-std 1.14.0, with `remappings.txt`
-present.
+Pinned in `foundry.toml` — **do not change it**: solc 0.8.26, `evm_version = "cancun"`, optimizer
+200 runs, `via_ir = true`. Dependencies in `lib/`: OpenZeppelin 4.9.6 (`@openzeppelin/`),
+OpenZeppelin-upgradeable 4.9.6 (`@openzeppelin-contracts-upgradeable/`), forge-std.
 
 ```bash
 cd contracts
@@ -100,105 +100,97 @@ forge build
 forge build --sizes      # runtime / initcode size table
 ```
 
-`via_ir` is required, not optional: it is what keeps the vault pair inside EIP-170.
+`via_ir` is required: without it `BacBridge` is 25,399 bytes, over EIP-170.
 
 ---
 
 ## 3. Test
 
 ```bash
-forge test                                           # everything, 248 tests
-forge test -vv                                       # with logs
-forge test --match-contract BacBridgeInvariantTest   # the B1-B17 invariant run
-forge test --match-path 'test/smoke/*'               # BSC mainnet fork smoke (read-only)
+forge test --no-match-path 'test/{BacForkLaunch.t.sol,smoke/*}'        # everything but the forks: 324 tests
+BSC_RPC_URL=https://bsc-dataseed.bnbchain.org forge test --match-path 'test/smoke/*'           # 5
+BSC_RPC_URL=https://bsc-dataseed.bnbchain.org forge test --match-path 'test/BacForkLaunch.t.sol' -vv   # 9
 ```
 
-| Suite | File | Covers |
-|---|---|---|
-| `AgentRegistry` | `test/AgentRegistry.t.sol` | registration, the 3-round chained challenge, soulbound transfer paths, rotation, heartbeat / dormancy, forfeiture, ban timelock, `sweepForfeited` gas rules |
-| `BacBridge` + `BacNodeFund` | `test/BacBridge.t.sol` | lock / exit / settle / collect, escape mode, pause budget, burn, node fund |
-| Bridge invariants | `test/BacBridgeInvariant.t.sol` | B1-B17 under a fuzzing handler |
-| Vault pair | `test/BacVault.t.sol` | rule 010 accounting, `receive()` gas floor, stuck / retry, launch validation, V1 / V2 / V9 solvency after every scenario |
-| `ChainAnchor` | `test/ChainAnchor.t.sol` | post / finalize / veto / dispute, the §6.2 check table, `releaseBpsFor` |
-| `ValidatorStaking` | `test/ValidatorStaking.t.sol` | staking plus the per-node stake inequality, commit-reveal, reward settlement and expiry |
-| Layer | `test/Layer.t.sol` | `L2Bridge` mint / burn, `L2Gate` admission, `AgentBook` event schema and caps |
-| Fork smoke | `test/smoke/ForkSmoke.t.sol` | BSC mainnet fork reachable, live Flap addresses have code, `Portal.version() == v5.24.0`, `VaultPortal.version() == 1.15.0` |
+`--no-match-path` may be given only once, hence the `{…,…}` glob. A bare `forge test` also runs
+the fork suites (they fall back to a public RPC when `BSC_RPC_URL` is unset).
 
-Two conventions the suites rely on, both a consequence of `via_ir`:
+| Suite | File | Tests | Covers |
+|---|---|---:|---|
+| `BacBridge` + `BacNodeFund` | `test/BacBridge.t.sol` | 138 | entry gate and controller rule, the two buckets, buyback, exit / settle / collect, the release index and collect cap, revoke, pause / halt / escape (legs settled separately), UUPS upgrade and storage layout, ownership, emergency withdrawals and `shortfall()`, `description()`, node fund |
+| Bridge invariants | `test/BacBridgeInvariant.t.sol` | 31 | B1–B17 with the owner idle, plus a second suite with the owner withdrawing, refilling and upgrading |
+| `BacTaxRouter` | `test/BacTaxRouter.t.sol` | 23 | `receive()` gas, split, stuck / retry, constructor cross-checks, proxy wiring, no `description()` |
+| `ChainAnchor` | `test/ChainAnchor.t.sol` | 40 | post / finalize / veto / dispute, check table, `releaseBpsFor` |
+| `ValidatorStaking` | `test/ValidatorStaking.t.sol` | 38 | staking, commit-reveal, rewards |
+| Layer | `test/Layer.t.sol` | 35 | `L2Bridge`, `L2Gate`, `AgentBook` |
+| `WBAC` | `test/WBAC.t.sol` | 19 | wrap / unwrap / ERC-20 |
+| Fork launch | `test/BacForkLaunch.t.sol` | 9 | the whole plain-Portal path on a BSC mainnet fork: deploy order, launch with the locked salt, real tax → router → split, real ERC-8004 entry, anchor, buyback, exit, upgrade, emergency withdrawal, graduation |
+| Fork smoke | `test/smoke/ForkSmoke.t.sol` | 5 | Portal version, ERC-8004 registry implementation, PancakeSwap, WBNB |
 
-* test code reads `vm.getBlockTimestamp()`, never `block.timestamp` — via-IR caches
-  `block.timestamp` inside a test function and silently collapses multi-warp loops;
-* fund a vault with `call{value:}("")`, never `payable(vault).transfer()`.
+Conventions: test code reads `vm.getBlockTimestamp()`, never `block.timestamp` (via-IR caches it
+inside a test function); fund contracts with `call{value:}("")`.
 
-**Nothing here broadcasts.** No script is run with `--broadcast`, nothing is deployed, and the
-fork tests are read-only.
+**Nothing here broadcasts.** `script/DeployBac.s.sol` only simulates unless both `--broadcast`
+and `BAC_BROADCAST=I_HAVE_READ_SECTION_9` are given.
 
 ---
 
 ## 4. Format
 
 ```bash
-forge fmt src/*.sol src/interfaces src/layer src/lib test/*.t.sol
+forge fmt test/BacBridge.t.sol test/BacBridgeInvariant.t.sol   # only files that were fmt-clean before
 ```
 
-Scope it like that. A bare `forge fmt` would also rewrite `src/flap/*.sol`,
-`test/FlapBSCFixture.sol` and `test/lib/VanityHelper.sol`, which must stay byte-identical to
-their upstream copies.
+Always name the files. A bare `forge fmt` rewrites `src/flap/*.sol`, which must stay
+byte-identical to upstream.
 
 ---
 
 ## 5. Size table
 
-The EIP-170 runtime limit is 24,576 bytes; the EIP-3860 initcode limit is 49,152.
-Measured with `forge build --sizes` on the toolchain above.
+EIP-170 runtime limit 24,576 bytes. `forge build --sizes`, 2026-09-23.
 
-| Contract | Runtime (B) | Initcode (B) | Runtime margin (B) |
-|---|---:|---:|---:|
-| `AgentRegistry` | 22,358 | 23,723 | 2,218 |
-| `BacBridge` | 15,466 | 16,176 | 9,110 |
-| `ValidatorStaking` | 14,411 | 15,692 | 10,165 |
-| `BacVaultFactory` | 13,062 | 21,139 | 11,514 |
-| `BacVaultUI` *(linked library)* | 12,193 | 12,223 | 12,383 |
-| `ChainAnchor` | 8,072 | 8,967 | 16,504 |
-| `BacTreasuryVault` | 6,365 | 6,557 | 18,211 |
-| `L2Bridge` | 4,825 | 5,350 | 19,751 |
-| `AgentBook` | 2,972 | 2,998 | 21,604 |
-| `L2Gate` | 1,695 | 1,721 | 22,881 |
-| `BacNodeFund` | 1,651 | 2,045 | 22,925 |
+| Contract | Runtime (B) | Margin (B) |
+|---|---:|---:|
+| `BacBridge` (implementation) | 22,350 | 2,226 |
+| `BacBridgeExtension` | 19,486 | 5,090 |
+| `ValidatorStaking` | 16,925 | 7,651 |
+| `ChainAnchor` | 8,871 | 15,705 |
+| `L2Bridge` | 4,823 | 19,753 |
+| `AgentBook` | 2,972 | 21,604 |
+| `BacTaxRouter` | 2,867 | 21,709 |
+| `WBAC` | 1,807 | 22,769 |
+| `L2Gate` | 1,695 | 22,881 |
+| `BacNodeFund` | 1,651 | 22,925 |
 
-**`AgentRegistry` is the one to watch: 2,218 bytes of headroom.** Any new bilingual require
-string or view function there should go into an external linked library the way `BacVaultUI`
-does for the vault (`../docs/research/02-contracts-skeleton.md` §7.5), not into the contract.
+**`BacBridge` is the one to watch.** Every future bridge upgrade has to re-check both bridge
+numbers; new rarely-called code belongs in the extension.
 
 ---
 
 ## 6. Rules this code is held to
 
-* **No custom errors in our contracts.** Every `require` carries a bilingual string written
-  exactly as the spec writes it: `unicode"English / 中文"`.
-  `grep -rn '^\s*error ' src --include='*.sol' | grep -v '/flap/'` must stay empty — it is.
-  The five errors that still appear in `forge inspect` output (`UnsupportedChain`,
-  `ZeroAddress`, `OnlyVaultPortal`, `LegacyV6ValidationHookNotImplemented` on the factory;
-  `UnsupportedChain` on the vault) are inherited from the frozen Flap base classes and are
-  exactly the four-item whitelist of `00-DESIGN-SPEC.md` revision #6. None of our code reverts
-  with them, and they are unreachable on chain 56 / 97.
-* **No owner path may ever touch the bridge pool.** `BacBridge` has no `admin`. The vault owner
-  can only hand ownership on. The node-fund owner can only withdraw the node fund.
-* **Rule 010** for the vault: recognize revenue only as `address(this).balance - accountedQuote`,
-  never cache `accountedQuote` across an external call, decrement before every external call.
-* **The beacon is born in the factory constructor**, so `beacon.owner() == factory`.
+* **No custom errors in our contracts.** Every `require` carries `unicode"English / 中文"`.
+  `grep -rn '^\s*error ' src --include='*.sol' | grep -v '/flap/'` must stay empty.
+* **The owner powers are disclosed, logged and counted, never hidden.** Every upgrade emits
+  `BridgeUpgraded` with the replaced implementation and the books; every withdrawal emits
+  `EmergencyWithdraw` and adds to `emergencyBnbWithdrawn` / `emergencyBacWithdrawn`; the books
+  are never written down, so `shortfall()` is exact (decision #29c).
+* **No NON-owner path pays an exit out of `lockedBac`** — proved by both invariant suites.
+* **Storage is append-only.** One layout, in `BacBridgeCore`, shared by the bridge and its
+  extension; a new version adds variables just above `__gap` and shrinks it. The layout is
+  pinned by `BacBridgeUpgradeTest`.
+* **No exit path reads the ERC-8004 registry.** Entry is gated on identity; the escape is gated on
+  `agentController`, recorded at entry.
 
 ---
 
-## 7. Deployment notes (nothing here is deployed yet)
+## 7. Deployment
 
-No deploy script exists — that is a later stage. Two things are already known:
-
-1. `BacVaultUI` must be deployed by CREATE2 (`0x4e59b44847b379578588920cA78FbF26c0B4956C`,
-   salt 0) **before** the factory, and verification needs
-   `--libraries src/lib/BacVaultUI.sol:BacVaultUI:<addr>`. Its bytecode differs from the fly/rat
-   libraries (different strings), so the salt-0 address cannot collide.
-2. The deployment order and the pre-launch green-light checklist are `01-CONTRACT-SPEC.md` §9 and
-   `00-DESIGN-SPEC.md` §7.3 (14 hard-stop items). The frozen Chinese brand strings in §1.6 / §2.4
-   / §2.5 still need the user's verbatim approval before deploy: deploying freezes them, and
-   changing one word later means redeploying both the factory and the library.
+`script/DeployBac.s.sol` (dry run by default) deploys, in 7 transactions: `ChainAnchor`,
+`ValidatorStaking`, `BacNodeFund`, the `BacBridge` implementation (its constructor creates the
+extension), the `ERC1967Proxy` with `initialize`, `setValidatorStaking`, `BacTaxRouter`. It then
+checks the proxy's implementation slot, owner, the #29a notice, the extension, every
+`bacToken()`, that the bare implementation holds no state, and that the router has no
+`description()`. The launch itself is `docs/04-发射操作手册.md`. BscScan verification:
+`verify/bscscan/README.md` (the JSON there must be regenerated from the final build).

@@ -238,8 +238,10 @@ code{font-size:.94em;color:var(--text-2)}
 .sres-n{font-size:var(--t-micro);color:var(--text-3);margin-left:auto;white-space:nowrap}
 .sres-n b{color:var(--gold);font-weight:600}
 .sres-l{max-height:340px;overflow-y:auto}
+/* 值用自然宽度、说明占剩下的空间并在过长时省略：按名字搜代币时说明是一整句，
+   旧的 66px / 1fr / auto 会被它挤得值那一列只剩 0 宽。 */
 .sres a,.sres .sr-none{
-  display:grid;grid-template-columns:66px minmax(0,1fr) auto;gap:12px;align-items:center;
+  display:grid;grid-template-columns:66px minmax(90px,auto) minmax(0,1fr);gap:12px;align-items:center;
   padding:10px 12px;border-bottom:1px solid var(--line-soft);font-size:var(--t-body);color:var(--text-2);
 }
 .sres a:last-child{border-bottom:0}
@@ -251,7 +253,9 @@ code{font-size:.94em;color:var(--text-2)}
   padding:2px 0;text-align:center;
 }
 .sres .sv{font-family:var(--mono);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sres em{font-style:normal;color:var(--text-3);font-size:var(--t-micro);white-space:nowrap}
+.sres em{font-style:normal;color:var(--text-3);font-size:var(--t-micro);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 搜索范围多了「代币」一档，七个 chip 在 1280px 下会溢出：这一处收紧左右内边距 */
+.sres-h .chip{padding-left:8px;padding-right:8px}
 .sres .sr-none{grid-template-columns:minmax(0,1fr);color:var(--text-2);line-height:1.8}
 .serr{
   margin:0;padding:10px 12px;background:var(--down-08);border-top:1px solid rgba(246,70,93,.3);
@@ -1567,3 +1571,19 @@ td.n.amb,span.n.amb{color:var(--gold-lt)}
 
 /* 直读层内节点时的分页说明：翻页是死的，把为什么写出来，不画点不动的按钮 */
 .pg-note{color:var(--text-4)}
+
+/* ── v2：项目方权限记录 / BSC 时间线 / ERC-8004 名录 ───────────────── */
+/* 时间线不全、发现没留痕的换实现：整条说明变黄，不许藏（决策 #29c） */
+.note.warn-n{background:var(--gold-08);border-left:3px solid rgba(240,185,11,.55)}
+.own-cov .note{margin:0;border-bottom:1px solid var(--line)}
+.own-cov:empty{display:none}
+.bad-t{color:var(--down)}
+.cov-part{color:var(--gold-dk)}
+.cov-ok{color:var(--up)}
+/* 持有人自述的名字 / 简介：不可信文本，排版上不给任何「认证感」 */
+.self-n{font-weight:500;color:var(--text);overflow-wrap:anywhere}
+.tbl td .self-n + .sub{display:block}
+.tbl th .sub{display:block;font-weight:400}
+/* 页脚那一句 #29a：和「只认这里的合约地址」同色，但加粗，排在它前面 */
+.a-warn.f-own b{font-weight:600}
+.hero-disc li.own span{min-width:0}

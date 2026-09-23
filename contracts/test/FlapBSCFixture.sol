@@ -148,8 +148,10 @@ abstract contract FlapBSCFixture is Test, VanityHelper {
     ///
     ///      The `_dispatchTax()` helper uses a tighter 1_000_000 gas cap because dispatch
     ///      is expected to be a simple BNB transfer fan-out. The beneficiary's `receive()` is
-    ///      reached inside that dispatch with `call{gas: 50_000}` and a revert there forfeits
-    ///      the share for good, so it must do nothing but bookkeeping.
+    ///      reached inside that dispatch with ~63/64 of the remaining gas (measured: the live
+    ///      TaxProcessor sets no 50,000 cap; our tests use 50k as a conservative budget of our
+    ///      own), and a revert there forfeits the share for good, so it must do nothing but
+    ///      bookkeeping.
     uint256 internal constant MAX_OP_GAS = 10_000_000;
 
     // ──────────────────────────────────────────────────────────────────────────

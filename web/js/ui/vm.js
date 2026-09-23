@@ -20,8 +20,8 @@
          哪怕 BSC 侧的代币还没发射。两者完全独立。 */
       mode: 'pre',
       /* 现在出块的是不是**演练链**（HANDOFF §2）：创世预置了测试用 BAC、桥里是 0，
-         发射时用新创世重建，数据全部清空。BSC 侧合约地址没配（BAC.LIVE === false）就一定是演练链；
-         bind.js 负责写它，外壳横幅照它如实披露。 */
+         发射时用新创世重建，数据全部清空。BSC 合约部署之后层内仍是演练链，直到正式创世：
+         bind.js 照 site.config.js 的 rehearsal 写它（没写时退回「代币还没发射」）。 */
       rehearsal: true,
       /* 每一段的状态，渲染器照它选占位文案。
          'pre'   发射后公布（BSC 侧那些还不存在的合约）
@@ -33,7 +33,25 @@
         validators: 'pre', treasury: 'pre', bridge: 'pre', feed: 'pre',
         contracts: 'loading', fees: 'pre', daily: 'loading', idx: 'loading', layer: 'loading',
         /* agent 造出来的东西（代币 / 交易对 / 成交）：只有索引器解得出来 */
-        built: 'loading'
+        built: 'loading',
+        /* v2 三阶段（数据层 BAC.STAGE）：合约那一半 / 代币那一半 / 时间线各看各的状态。
+           token    价格、税率、内盘进度、待分发税、桥里的 BAC —— 代币地址上有代码之后才存在（阶段 c）
+           timeline 税收流向 + 节点基金时间线（BSC 日志窗口 + 索引器历史）
+           owner    项目方权限记录（决策 #29c：升级 / 紧急提取 / 换 owner / 暂停） */
+        token: 'pre', timeline: 'pre', owner: 'pre'
+      },
+
+      /* BSC 侧三阶段：'none' 什么都没部署 / 'deployed' 合约部署了、代币没发射 / 'launched' 代币发射了。
+         [data-stage] 的静态文案按它显示或隐藏（shell.js paintStage）。 */
+      stage: { stage: 'none', known: false, contractsLive: false, tokenLive: false, tokenAddress: null },
+
+      /* 代币（决策 #35：CA 已锁定，发射前地址上没有代码）。除了 address / launched，其余字段发射后才存在。 */
+      token: {
+        address: null, launched: false, explorerUrl: null,
+        name: null, symbol: null, taxRate: null, buyTaxRate: null, sellTaxRate: null,
+        taxFeeRateBps: null, marketAddressOk: null,
+        portalStatusZh: null, price: null, progress: null,
+        bridgeBac: null, pendingTax: null, lifetimeTaxToRouter: null
       },
 
       /* ── 层内直读的来源信息（面板小标上如实写清楚数字是谁给的）───── */
@@ -96,19 +114,49 @@
       treasury: {
         bridgeBps: 5000, nodeFundBps: 5000, taxFeeRateBps: null,
         lifetimeTotal: null, toBridge: null, toNodeFund: null,
+        routerBalance: null, routerUnsplit: null, routerAccounted: null,
         vaultBalance: null, vaultUnsplit: null, stuckBridge: null, stuckNodeFund: null,
-        poolBalance: null, nodeFundBalance: null, nodeFundWithdrawn: null,
+        poolBalance: null, bridgeBnbHeld: null, nodeFundBalance: null, nodeFundReceived: null, nodeFundWithdrawn: null,
+        nodeFundOwner: null,
         releaseBps: null, releasable: null, owedTotal: null,
+        // 代币那一半（st.token）：TaxProcessor 里还没分发的税 / 累计送进路由的税
+        pendingTax: null, lifetimeTaxToRouter: null,
         disclosure: null, splitBaseNote: null,
+        /* 时间线（st.timeline）：税收 → 路由 → 50/50 → 推送 / 桥收到 / 回购；节点基金到账 / 提取 / 换 owner。
+           条目是数据层 bac-chain.js shapeEvent 的原样（kind / block / tx / ts / 金额 BigInt）。 */
+        flow: [], nodeFundEvents: [],
+        timelineComplete: false, timelineTruncated: null, windowMin: null,
+        routerEventsUrl: null, nodeFundEventsUrl: null,
         events: [], eventsStatus: 'pre'
       },
 
+      /* 桥（BacBridge：UUPS 代理，决策 #29 owner 可升级 + 紧急提取全部桥池）。
+         合约那一半（st.bridge）：阶段 b 起就是真数，哪怕全是 0。 */
       bridge: {
+        address: null,
         totalLocked: null, totalIssued: null, totalExited: null,
         creditsOutstanding: null, poolBalance: null, owedTotal: null,
-        weiPerCredit: null, lastPot: null, releaseBps: null,
-        paused: null, halted: null
+        weiPerCredit: null, bacPerCredit: null, lastPot: null, releaseBps: null,
+        lockedBac: null, buybackBac: null, bnbBalance: null, bnbHeld: null,
+        paused: null, halted: null,
+        owner: null, pendingOwner: null, implementation: null,
+        upgradeCount: null, lastUpgradeAt: null, emergencyCount: null, lastEmergencyAt: null,
+        emergencyBnbWithdrawn: null, emergencyBacWithdrawn: null,
+        shortfallBnb: null, shortfallBac: null, shortfallSource: null,
+        noticeMatches: null
       },
+
+      /* 项目方权限记录（决策 #29c）：数据层 BAC.view.ownerPowers() 的原样 + 几个给页面用的派生量。
+         complete / missing 必须照实显示：浏览器只看得到最近一个日志窗口，缺的去 BscScan 事件页核对。 */
+      owner: {
+        items: [], complete: false, completeVia: null,
+        missing: { upgrades: null, emergencies: null }, seen: { upgrades: 0, emergencies: 0 },
+        upgradesAndWithdrawalsComplete: false, eventsUrl: null, coverage: null,
+        unlogged: null, implementationMatchesLog: null, historyStatus: 'pre', windowMin: null
+      },
+
+      /* agent 名录的元信息（ERC-8004）：total 可能是 null（读的不是全部存入时不猜），这时看 totalAtLeast */
+      agentsMeta: { total: null, totalAtLeast: null, truncated: false, itemsTruncated: false, identityPaused: false, source: null },
 
       /* ── agent 造出来的东西：代币 / 交易对 / 成交（决策 #19，03 §7）──────
          全部是**启发式解码**的结果：会漏也会错。detection 是索引器原样给的那一块，
@@ -129,6 +177,12 @@
         tokenErr: null, pairErr: null
       },
 
+      /* 搜索框按名字 / 符号问索引器要的代币（决策 #19）：agent 自己发的币，名字是它自己写的。
+         只有索引器答得出来（/api/tokens?q=）；它不在时 status = 'noidx'，
+         搜索框仍然能本地匹配已经载入的那一页，页面必须照实说「只搜了已载入的部分」。
+         status: idle | loading | ok | error | noidx */
+      search: { q: '', items: [], status: 'idle' },
+
       /* 30 日序列：索引器目前没有日聚合端点，正式站点一律为 null（见 README / 报告） */
       daily: null,
 
@@ -141,7 +195,7 @@
          blockErr / txErr 记的是「这一条确实读过、但节点说没有或读失败了」——
          有它才能显示「找不到」，没有它就只会一直转圈。 */
       detail: { block: null, tx: null, agent: null, epoch: null, contract: null,
-        blockErr: null, txErr: null },
+        blockErr: null, txErr: null, contractErr: null },
 
       updatedAt: null,
       warnings: []

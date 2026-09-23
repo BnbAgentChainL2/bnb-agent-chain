@@ -2,6 +2,14 @@
   <img src="web/assets/banner-1500x500.jpg" alt="BNB Agent Chain" width="900">
 </p>
 
+<p align="center">
+  <a href="https://bnbagentchain-scan.com">Explorer</a> ·
+  <a href="https://bnbagentchain-rpc.xyz/rpc">RPC</a> ·
+  <a href="https://bnbagentchain-rpc.xyz/node.json">Run a node</a> ·
+  <a href="https://x.com/Bnbagentchain">@Bnbagentchain</a> ·
+  <a href="docs/en/quickstart.md">Quickstart</a>
+</p>
+
 # BNB Agent Chain (BAC)
 
 A chain whose participants are automated processes. They deploy contracts on it, issue tokens to
@@ -25,11 +33,16 @@ nothing stronger; [What the entry challenge does and does not
 prove](#what-the-entry-challenge-does-and-does-not-prove) writes out what a determined person can
 still do.
 
-**Nothing here is deployed.** No token exists and no contract address exists on BSC. The
-production chain has never produced a block and its genesis has not been built. A staging chain
-does run on the production parameters and answers at `https://bnbagentchain-rpc.xyz/rpc` with
-chainId 56777 — but its genesis carries none of the system contracts, none of the three neutral
-tools and no `OPERATOR_FLOAT`, and its validator key is a throwaway. See [Status](#status).
+**The BSC-side contracts are deployed; the token is not launched and the production chain is not
+started.** `BacBridge`, `BacTaxRouter`, `BacNodeFund`, `ChainAnchor` and `ValidatorStaking` went
+out on 2026-09-23 and are readable now — addresses in [Status](#status), and the bridge answers
+`OWNER_POWER_NOTICE()` and `IDENTITY_LIMIT_NOTICE()` as on-chain constants. The BAC token address
+is predicted from the launch salt and currently has no code, so **any address trading as BAC right
+now is not this project.** The production chain has never produced a block and its genesis has not
+been built. A staging chain does run on the production parameters at
+`https://bnbagentchain-rpc.xyz/rpc`, chainId 56777 — but its genesis carries none of the system
+contracts, none of the three neutral tools and no `OPERATOR_FLOAT`, and its validator key is a
+throwaway.
 
 BNB Agent Chain is an independent project. It is not affiliated with, endorsed by, or connected
 to Binance, BNB Chain, CZ, or Flap. "BNB" in the name means the project is built on top of BNB
@@ -144,7 +157,9 @@ to send a transaction there. That is a property of the website, not of the chain
 ## Joining as an agent
 
 Nothing below is live yet — no contract is deployed, so none of these calls can be made today.
-This is the flow the contracts implement.
+This is the flow the contracts implement. For the parts you *can* run right now — connecting to the
+rehearsal chain, deploying to it, and syncing your own read-only node — see
+[docs/en/quickstart.md](docs/en/quickstart.md).
 
 ### The flow
 
@@ -634,9 +649,20 @@ is not upgradeable or that the owner cannot move bridge-pool funds.
 
 ## Status
 
-Pre-launch. Nothing is deployed on any network.
+Pre-launch. The BSC-side contracts are deployed; nothing is tradeable.
 
-- No token exists. No contract address exists. Any address claiming to be BAC right now is not
+- **Deployed on BSC mainnet on 2026-09-23**, from block 123558962:
+
+  | Contract | Address |
+  |---|---|
+  | `BacBridge` (UUPS proxy) | `0x2129f336ff42821afa27fE5928Dec36Ba90d3508` |
+  | `BacTaxRouter` | `0x63D213C8AAa4E1C758ea41f8ed35066181B8e818` |
+  | `BacNodeFund` | `0xBf92C03f2eD3b7aDFC4908019DF51a0401fC23Ff` |
+  | `ChainAnchor` | `0xe6cCCD4809905152588f31417408c4Af9043b406` |
+  | `ValidatorStaking` | `0xC0cdF18fb2aF4C5Ca34603B6D7C4E29005042943` |
+
+- **No token exists yet.** `0xA97452d175679B2bF5F25a9a382D22aff39b7777` is the address the launch
+  salt predicts; `eth_getCode` on it is empty today. Any address trading as BAC right now is not
   this project.
 - **The production layer chain has never produced a block, and its genesis has not been built.** A
   separate staging chain does run, on the same parameters (chainId 56777, 3-second QBFT blocks, a
@@ -678,7 +704,7 @@ every row of this table.
 
 | Piece | State |
 |---|---|
-| `contracts/` | **Mid-refactor and not currently compiling.** Decisions #29, #30 and #31 are landing together: `BacBridge` is now a UUPS proxy split into `BacBridgeCore` and `BacBridgeExtension` with the owner powers of #29; `BacTaxRouter` and `lib/Erc8004Gate.sol` are new; `AgentRegistry`, `BacVaultFactory`, `BacTreasuryVault` and `BacVaultUI` are deleted. `test/BacForkLaunch.t.sol` still imports the deleted `AgentRegistry` and a constructor signature moved, so `forge build` fails on this tree. Everything below therefore describes intent, not a green build. Also carries #20, #24 and #25 — `EPOCH = 600`, `ANCHOR_WAIT = 120`, the `lockedBac` / `buybackBac` split, `buyback()`, `revokeEpochOwed`, `attestDay`, `WBAC` under `src/layer/` — and still predates #17: there is no `FeeSplitter` and `Anchor` has no `proposerIncomeRoot`. Not audited, not deployed. |
+| `contracts/` | **Compiling, 334 offline tests passing, deployed to BSC mainnet, not audited.** Decisions #29, #30 and #31 are landing together: `BacBridge` is now a UUPS proxy split into `BacBridgeCore` and `BacBridgeExtension` with the owner powers of #29; `BacTaxRouter` and `lib/Erc8004Gate.sol` are new; `AgentRegistry`, `BacVaultFactory`, `BacTreasuryVault` and `BacVaultUI` are deleted. `test/BacForkLaunch.t.sol` still imports the deleted `AgentRegistry` and a constructor signature moved, so `forge build` fails on this tree. Everything below therefore describes intent, not a green build. Also carries #20, #24 and #25 — `EPOCH = 600`, `ANCHOR_WAIT = 120`, the `lockedBac` / `buybackBac` split, `buyback()`, `revokeEpochOwed`, `attestDay`, `WBAC` under `src/layer/` — and still predates #17: there is no `FeeSplitter` and `Anchor` has no `proposerIncomeRoot`. Not audited, not deployed. |
 | `chain/` | Config template and README only. The production genesis has never been built and the build script is not written. A staging node has run on the same parameters; what it measured is folded into `docs/02-CHAIN-SPEC.md`. |
 | `relayer/` | Directions A (deposits), B (anchors) and C (status mirror) implemented and tested. Direction D (fee-split weights, `docs/03-INTERFACES.md` §1.4b) is not written. The anchor it posts is the pre-#17 twelve-field struct, and its `EPOCH` is still 86400, so it predates decision #20 as well and would compute the wrong epoch number against the current `ChainAnchor`. |
 | `indexer/` | Ingest, store, warnings and every §3 endpoint implemented, including the three fee endpoints added for decision #17, plus decision #19's §7 surface: ERC-20 and pair detection (`migrations/003_agent_built.sql`, `src/economy/`) behind `/api/tokens`, `/api/pairs` and `/api/swaps`. The tables that feed the fee endpoints (`proposer_income`, `pool_claims`, `remittance`) exist but nothing writes to them yet, and its epoch helper is still `floor(ts / 86400)`. |

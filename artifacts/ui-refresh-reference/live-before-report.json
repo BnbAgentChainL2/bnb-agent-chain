@@ -1,0 +1,428 @@
+{
+  "url": "https://bnbagentchain-scan.com/#/overview",
+  "time": "2026-09-23T10:58:00.183Z",
+  "views": [
+    {
+      "width": 1920,
+      "status": 200,
+      "screenshot": "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\live-before-1920.png",
+      "errors": [],
+      "failed": [],
+      "fonts": {
+        ".hero h1": [
+          {
+            "familyName": "Segoe UI",
+            "postScriptName": "SegoeUI-Bold",
+            "isCustomFont": false,
+            "glyphCount": 41
+          }
+        ],
+        ".ss i": [
+          {
+            "familyName": "Segoe UI Semibold",
+            "postScriptName": "SegoeUI-Semibold",
+            "isCustomFont": false,
+            "glyphCount": 12
+          }
+        ],
+        "#ssGasPrice": [
+          {
+            "familyName": "Segoe UI Variable",
+            "postScriptName": "Segoe-UI-Variable-Display-Bold",
+            "isCustomFont": false,
+            "glyphCount": 1
+          },
+          {
+            "familyName": "Segoe UI",
+            "postScriptName": "SegoeUI",
+            "isCustomFont": false,
+            "glyphCount": 4
+          }
+        ],
+        ".tbl": []
+      },
+      "title": "BNB Agent Chain · Block Explorer",
+      "bodyText": "BNB AGENT CHAIN\n/BAC\n/\nSearch\nNODE\nRELAY\nINDEX\nHEAD\n22,611\n简体中文\nEnglish\nOverview\nBlocks\nTransactions\nAgents\nTokens\nPairs\nEpochs\nTreasury\nValidators\n\nThis is a rehearsal chain. Its genesis pre-funds test BAC (none of it was bridged from BSC), and the pre-funded account uses the public Hardhat test private key, so anyone can send transactions with it and the coins are worthless. At launch the chain will be re-created from a new genesis, and every current block, transaction and balance will be wiped. v1 has a single project validator node. Syncing the rehearsal chain is already public: anyone can follow https://bnbagentchain-rpc.xyz/node.json to run their own read-only node (it earns nothing); staking BAC as a validator and earning a share of gas fees open after launch. Blocks, transactions, block height and gas are real data this site reads from the layer node (and from the indexer API on the same host). Anyone can check them against the same public RPC: https://bnbagentchain-rpc.xyz/rpc. The token has not launched on BSC; the tax router, bridge, staking and anchor contracts do not exist yet. Those figures are marked “Available after launch”.\n\nBNB AGENT CHAIN EXPLORER\nCHAIN ID 56777\nAgent 2 Agent\nA chain dedicated to Agents.\n\nBuilt for Agents to interact, collaborate and create. Trace every on-chain action, from contract deployments to transactions.\n\nAgents launch their own tokens, build their own pools and trade with each other, and the explorer shows all of it. This is a rehearsal chain for now; the entry gate and WBAC take effect from the launch chain’s genesis. We require an agent identity; we cannot prove it is an AI.\n\nProject powers\nThe project can upgrade the bridge contract, change its rules, and withdraw the entire bridge pool at any time.\nRehearsal chain\nThe chain running now is a rehearsal chain: block production and the RPC are real, but the BSC-side contracts are not deployed yet. The rehearsal chain’s pre-funded account uses the public Hardhat test private key, so anyone can send transactions with it, and its coins are worthless. At launch the chain will be restarted from a new genesis, and all rehearsal data will be wiped.\nCA\n0xA97452d175679B2bF5F25a9a382D22aff39b7777\nCopy\nBscScan\n(Address locked, not yet launched: there is no contract at this address before launch. Do not send anything to it.)\nExplore Blocks\nExplore Agents\nBecome a Validator · After launch\nVerify the chain yourself\nVERIFY IT YOURSELF\nPublic RPC\nhttps://bnbagentchain-rpc.xyz/rpc\nCopy\nFallback RPC\nhttps://95-179-183-132.sslip.io/rpc\nCopy\nChain ID\n56777\n= 0xddc9\nGenesis file\nhttps://bnbagentchain-rpc.xyz/genesis.json\nCopy\nNode config\nhttps://bnbagentchain-rpc.xyz/node.json\nCopy\n\nAsk the node for the block height with curl:\n\ncurl -s -X POST -H \"Content-Type: application/json\" --data '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' https://bnbagentchain-rpc.xyz/rpc\nCopy\n\nIt returns {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0x…\"}: the hex block height in the result goes up by 1 roughly every 3 seconds. Swap the method for eth_chainId and it returns 0xddc9.\n\nAdd to a wallet (custom network)\n\nNetwork name\nBNB Agent Chain\nRPC URL\nhttps://bnbagentchain-rpc.xyz/rpc\nChain ID\n56777\nCurrency symbol\nBAC\nRun your own read-only node\n\nYou can run it now. It needs only two public files: https://bnbagentchain-rpc.xyz/genesis.json (the genesis file) and https://bnbagentchain-rpc.xyz/node.json (the genesis hash, the node address and the command below).\n\nRun this on a machine with Docker:\n\nmkdir bac-node && cd bac-node && curl -sO https://bnbagentchain-rpc.xyz/genesis.json && echo '[\"enode://8bc629391bad4d09cde161acf298d25ffb5dc2eee22c64acd9b0cd40596176b34c189a01a0787879cc4205dd8a1312dff141d06f284f6a1eb2b7c91e98cfb564@95.179.183.132:30303\"]' > static-nodes.json && docker run -d --name bac-node --user \"$(id -u):$(id -g)\" -p 127.0.0.1:8545:8545 -v \"$PWD\":/w hyperledger/besu:24.12.2 --data-path=/w/data --genesis-file=/w/genesis.json --static-nodes-file=/w/static-nodes.json --sync-mode=FULL --sync-min-peers=1 --rpc-http-enabled --rpc-http-host=0.0.0.0 --host-allowlist='*'\nCopy\n\nOnce it has synced, point the curl command above at http://127.0.0.1:8545 and compare it block by block with the public RPC.\n\nTested: using only the public genesis and node address, a fresh node synced from block 0 to the chain head in 24 seconds, and its block 10000 hash matched the project node.\n\nA read-only node earns nothing; staking as a validator and sharing gas fees open after launch.\n\nEvery live figure on this page is read by your browser directly from the public RPC above (and from the indexer API on the same host). If all you see is “Loading…”, your tool did not run JavaScript.\n\nThe limits, stated plainly: both RPC addresses above reach the same project node on the same server, and that node is also the only block producer; in the first version block production, the relay and the indexer all sit in our single trust domain. A read-only node you run yourself can check that history has not been rewritten, but it cannot change who produces the blocks.\n\nCHAIN HEAD\nIndexer API\n22,611\nBlock height\nMeasured block interval\n3.0s\nCurrent epoch\n20719\nNext epoch\n13:01:51\nBlock height and interval come from the layer node. Sources and availability are shown separately for other metrics.\nAgent 2 Agent · Interaction between Agents\nOn-chain collaboration · Connecting Agents and apps\nDeploy contracts · Initiate transactions · Build apps\nThis project is not affiliated with Binance, BNB Chain or Flap\nLatest block\n22,611\n5 seconds ago\nBlock interval\n3.0s\nQBFT instant finality · 3s target\nTPS\n0.05\nMeasured over this page’s data window\nCurrent Gas\n1gwei\nBase fee: 0 wei\nEntered Agents\n0\nEntry records come from BacBridge\nValidators\nAvailable after launch\nStaking opens after launch\nPeers / txpool\n0/—\nPeers / pending transactions\nBridge pool balance\nAvailable after launch\nThe project can withdraw all of it at any time\nEpoch\n20719\nAvailable after launch\nNext anchor\n13:01:51\n2-minute wait after submission\nLatest Blocks\nIndexer API\nView all →\nBLOCK\tTIME\tBLOCK PRODUCER\tTRANSACTION\n#22,612\t18:58:07Just now\t\n—\n\t0\n#22,611\t18:58:04Just now\t\n—\n\t0\n#22,610\t18:58:01Just now\t\n—\n\t0\n#22,609\t18:57:586 seconds ago\t\n—\n\t1\n#22,608\t18:57:559 seconds ago\t\n—\n\t0\n#22,607\t18:57:5212 seconds ago\t\n—\n\t0\n#22,606\t18:57:4915 seconds ago\t\n—\n\t0\n#22,605\t18:57:4618 seconds ago\t\n—\n\t0\n#22,604\t18:57:4321 seconds ago\t\n—\n\t0\n#22,603\t18:57:4024 seconds ago\t\n—\n\t1\n#22,602\t18:57:3727 seconds ago\t\n—\n\t0\n#22,601\t18:57:3430 seconds ago\t\n—\n\t0\n#22,600\t18:57:3133 seconds ago\t\n—\n\t0\n#22,599\t18:57:2836 seconds ago\t\n—\n\t0\nFor now (Phase 1) the only block producer is the project signing node, whose layer address is designated as non-circulating. In Phase 2 validators produce blocks; that opens after launch.\nSelect a row for block details\nLatest Transactions\nIndexer API\nView all →\nTRANSACTION HASH\tMETHOD\tAGENT\tRECIPIENT\n\nThere are no transactions in the latest blocks. Empty blocks are normal on this chain.\nAfter launch, unregistered addresses will be marked “Unregistered (funded by an Agent)” and cannot initiate transactions themselves. The rehearsal chain has no such gate: its test private key is public, so anyone can send transactions.\nSelect a row for transaction details\nChain status\nIndexer API\nCurrent block height\n22,611\nblocks\nchainId 56777 · Measured interval 3.0 s\nBlock gas limit\t20,000,000gas\nGas price\t1gwei\nbaseFee\t0wei\nTotal transactions\t3,384transactions\nTotal contracts\t0items\nCirculating layer credits\t999,999,999BAC\n\nBlock height, block gas limit, gas price and baseFee are live readings from the layer node. Total transactions, total contracts and circulating layer credits require a full-chain scan; the indexer provides them, and they show “—” when it does not respond. The rehearsal chain’s genesis pre-funds test BAC, so the credits circulating now did not come through the BSC bridge.\n\nTransactions per block (this site’s current window)\n0.05 tx/s\n0\n0.53\n1.1\nBridge & Credits\nBSC · Contracts not deployed\nBridge pool balance\nAvailable after launch\nBNB\nBuys back BAC to pay exits · The project can withdraw all of it at any time\nTotal locked\nAvailable after launch\nOutstanding layer credits\nAvailable after launch\nReserved for claims · BAC\nAvailable after launch\nTransactions over 30 days\ntxns / day\nThe indexer has no daily aggregate data yet\nEpochs and anchors\nView all →\nCurrent epoch\n20719\nepoch = floor(ts / 600) (10 minutes, same as the contracts)\nNext epoch\n13:01:51\nEpoch boundary; anchors await ChainAnchor deployment\nLast submitted\nAvailable after launch\n2-minute anchor wait\nLast finalized\nAvailable after launch\nExit claims available after finalization\nExit release tier\nAvailable after launch\nMore attesters, faster release\nExplore on-chain progress by epoch and track anchor submissions and finalization.\nNODE-01 · Operations\nbnbagentchain-rpc.xyz\nGas fees received by the project node\nAvailable after launch\nBAC\nDifference Available after launch\nPEERS\n0\nBlock int",
+      "overflow": 0,
+      "styles": {
+        "body": {
+          "text": "<p class=\"bar-note nojs\">你的浏览器或工具没有执行 JavaScript，所以本页的实时数字没有读：顶栏 HEAD 的块高显示「—」，其余显示「读取中…」。它们本来是浏览器向公开 RPC <code>https://bnbagentchain-rpc.xyz/rpc</code>（以及同一台主机上的索引 API）读的 —— 用<a h",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "color": "rgb(32, 46, 56)",
+          "background": "rgb(228, 232, 235)",
+          "width": 1920,
+          "height": 5956
+        },
+        ".shell": {
+          "text": "BNB AGENT CHAIN/BAC\n    \n\n    \n      \n        \n      \n      \n      /\n      Search\n      \n        \n          \n            All\n            Block\n            Transaction\n            A",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "color": "rgb(32, 46, 56)",
+          "background": "rgb(237, 241, 243)",
+          "width": 1920,
+          "height": 255.375
+        },
+        ".hero": {
+          "text": "BNB AGENT CHAIN EXPLORER CHAIN ID 56777\n    Agent 2 AgentA chain dedicated to Agents.\n    Built for Agents to interact, collaborate and create. Trace every on-chain action, from co",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "color": "rgb(243, 246, 247)",
+          "background": "rgb(25, 46, 56)",
+          "width": 1332,
+          "height": 1400.90625
+        },
+        ".hero h1": {
+          "text": "Agent 2 AgentA chain dedicated to Agents.",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "38px",
+          "lineHeight": "50.16px",
+          "color": "rgb(255, 255, 255)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 655.71875,
+          "height": 100.3125
+        },
+        ".hero p": {
+          "text": "Built for Agents to interact, collaborate and create. Trace every on-chain action, from contract deployments to transactions.",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "15px",
+          "lineHeight": "26.25px",
+          "color": "rgb(197, 210, 216)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 600,
+          "height": 52.5
+        },
+        ".ss i": {
+          "text": "Latest block",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "13px",
+          "lineHeight": "20.8px",
+          "color": "rgb(128, 103, 31)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 225.1875,
+          "height": 20.796875
+        },
+        "#ssGasPrice": {
+          "text": "1gwei",
+          "font": "\"Segoe UI Variable Display\", \"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "21px",
+          "lineHeight": "28.35px",
+          "color": "rgb(36, 53, 65)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 225.203125,
+          "height": 28.34375
+        },
+        ".tbl": {
+          "text": "BlockTimeBlock producerTransactionGas usedFeeFee split\n        #22,61218:58:07Just now—00——#22,61118:58:04Just now—00——#22,61018:58:01Just now—00——#22,60918:57:586 seconds ago—121,",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "13px",
+          "lineHeight": "20.8px",
+          "color": "rgb(32, 46, 56)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 652,
+          "height": 546.34375
+        },
+        ".nav": {
+          "text": "Overview\n    Blocks\n    Transactions\n    Agents\n    Tokens\n    Pairs\n    Epochs\n    Treasury\n    Validators\n    \n    CHAIN56777\n    QBFT2–3s\n    GASLIMIT20,000,000\n    \n    RPCbnba",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "color": "rgb(32, 46, 56)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 1380,
+          "height": 48
+        },
+        ".disclaimer": {
+          "text": "The project can upgrade the bridge contract, change its rules, and withdraw the entire bridge pool at any time.\n    Flap takes a 10% protocol fee off the tax first; then BacTaxRout",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "12px",
+          "lineHeight": "22.8px",
+          "color": "rgb(81, 101, 112)",
+          "background": "rgb(244, 246, 247)",
+          "width": 1332,
+          "height": 288.421875
+        }
+      },
+      "css": [
+        "https://bnbagentchain-scan.com/css/bac.css",
+        "https://bnbagentchain-scan.com/css/scan-theme.css"
+      ],
+      "scripts": [
+        "https://bnbagentchain-scan.com/js/ui/i18n.js",
+        "https://bnbagentchain-scan.com/site.config.js",
+        "https://bnbagentchain-scan.com/js/ui/i18n-static-en.js",
+        "https://bnbagentchain-scan.com/js/ui/i18n-pages-en.js",
+        "https://bnbagentchain-scan.com/js/ui/i18n-runtime-en.js",
+        "https://bnbagentchain-scan.com/vendor/ethers-6.13.4.umd.min.js",
+        "https://bnbagentchain-scan.com/js/data/bac-core.js",
+        "https://bnbagentchain-scan.com/js/data/bac-chain.js",
+        "https://bnbagentchain-scan.com/js/data/bac-layer.js",
+        "https://bnbagentchain-scan.com/js/data/bac-api.js",
+        "https://bnbagentchain-scan.com/js/data/bac-view.js",
+        "https://bnbagentchain-scan.com/js/ui/vm.js",
+        "https://bnbagentchain-scan.com/js/ui/util.js",
+        "https://bnbagentchain-scan.com/js/ui/charts.js",
+        "https://bnbagentchain-scan.com/js/ui/rows.js",
+        "https://bnbagentchain-scan.com/js/ui/pages.js",
+        "https://bnbagentchain-scan.com/js/ui/shell.js",
+        "https://bnbagentchain-scan.com/js/ui/demo-data.js",
+        "https://bnbagentchain-scan.com/js/ui/bind.js",
+        "https://bnbagentchain-scan.com/js/ui/hero-signals.js"
+      ],
+      "hasI18n": true,
+      "state": {
+        "st": {
+          "chain": "ok",
+          "blocks": "ok",
+          "txs": "ok",
+          "agents": "pre",
+          "epochs": "pre",
+          "validators": "pre",
+          "treasury": "pre",
+          "bridge": "pre",
+          "feed": "pre",
+          "contracts": "ok",
+          "fees": "pre",
+          "daily": "ok",
+          "idx": "ok",
+          "layer": "loading",
+          "built": "ok"
+        },
+        "source": "indexer",
+        "blocks": 20,
+        "txs": 0
+      }
+    },
+    {
+      "width": 390,
+      "status": 200,
+      "screenshot": "D:\\CLAUDE DODODODODOODODODODODODOODODO\\Agent CHAIN\\artifacts\\ui-refresh-reference\\live-before-390.png",
+      "errors": [],
+      "failed": [],
+      "fonts": {
+        ".hero h1": [
+          {
+            "familyName": "Segoe UI",
+            "postScriptName": "SegoeUI-Bold",
+            "isCustomFont": false,
+            "glyphCount": 41
+          }
+        ],
+        ".ss i": [
+          {
+            "familyName": "Segoe UI Semibold",
+            "postScriptName": "SegoeUI-Semibold",
+            "isCustomFont": false,
+            "glyphCount": 12
+          }
+        ],
+        "#ssGasPrice": [
+          {
+            "familyName": "Segoe UI Variable",
+            "postScriptName": "Segoe-UI-Variable-Display-Bold",
+            "isCustomFont": false,
+            "glyphCount": 1
+          },
+          {
+            "familyName": "Segoe UI",
+            "postScriptName": "SegoeUI",
+            "isCustomFont": false,
+            "glyphCount": 4
+          }
+        ],
+        ".tbl": []
+      },
+      "title": "BNB Agent Chain · Block Explorer",
+      "bodyText": "BNB AGENT CHAIN\nSearch\n简体中文\nEnglish\nOverview\nBlocks\nTransactions\nAgents\nTokens\nPairs\nEpochs\nTreasury\nValidators\n\nThis is a rehearsal chain. Blocks, transactions, block height and gas are real data this site reads from the layer node (and from the indexer API on the same host). Anyone can check them against the same public RPC: https://bnbagentchain-rpc.xyz/rpc. \nDetails\n\nBNB AGENT CHAIN EXPLORER\nCHAIN ID 56777\nAgent 2 Agent\nA chain dedicated to Agents.\n\nBuilt for Agents to interact, collaborate and create. Trace every on-chain action, from contract deployments to transactions.\n\nAgents launch their own tokens, build their own pools and trade with each other, and the explorer shows all of it. This is a rehearsal chain for now; the entry gate and WBAC take effect from the launch chain’s genesis. We require an agent identity; we cannot prove it is an AI.\n\nProject powers\nThe project can upgrade the bridge contract, change its rules, and withdraw the entire bridge pool at any time.\nRehearsal chain\nThe chain running now is a rehearsal chain: block production and the RPC are real, but the BSC-side contracts are not deployed yet. The rehearsal chain’s pre-funded account uses the public Hardhat test private key, so anyone can send transactions with it, and its coins are worthless. At launch the chain will be restarted from a new genesis, and all rehearsal data will be wiped.\nCA\n0xA97452d175679B2bF5F25a9a382D22aff39b7777\nCopy\nBscScan\n(Address locked, not yet launched: there is no contract at this address before launch. Do not send anything to it.)\nExplore Blocks\nExplore Agents\nBecome a Validator · After launch\nVerify the chain yourself\nVERIFY IT YOURSELF\nPublic RPC\nhttps://bnbagentchain-rpc.xyz/rpc\nCopy\nFallback RPC\nhttps://95-179-183-132.sslip.io/rpc\nCopy\nChain ID\n56777\n= 0xddc9\nGenesis file\nhttps://bnbagentchain-rpc.xyz/genesis.json\nCopy\nNode config\nhttps://bnbagentchain-rpc.xyz/node.json\nCopy\n\nAsk the node for the block height with curl:\n\ncurl -s -X POST -H \"Content-Type: application/json\" --data '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' https://bnbagentchain-rpc.xyz/rpc\nCopy\n\nIt returns {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0x…\"}: the hex block height in the result goes up by 1 roughly every 3 seconds. Swap the method for eth_chainId and it returns 0xddc9.\n\nAdd to a wallet (custom network)\n\nNetwork name\nBNB Agent Chain\nRPC URL\nhttps://bnbagentchain-rpc.xyz/rpc\nChain ID\n56777\nCurrency symbol\nBAC\nRun your own read-only node\n\nYou can run it now. It needs only two public files: https://bnbagentchain-rpc.xyz/genesis.json (the genesis file) and https://bnbagentchain-rpc.xyz/node.json (the genesis hash, the node address and the command below).\n\nRun this on a machine with Docker:\n\nmkdir bac-node && cd bac-node && curl -sO https://bnbagentchain-rpc.xyz/genesis.json && echo '[\"enode://8bc629391bad4d09cde161acf298d25ffb5dc2eee22c64acd9b0cd40596176b34c189a01a0787879cc4205dd8a1312dff141d06f284f6a1eb2b7c91e98cfb564@95.179.183.132:30303\"]' > static-nodes.json && docker run -d --name bac-node --user \"$(id -u):$(id -g)\" -p 127.0.0.1:8545:8545 -v \"$PWD\":/w hyperledger/besu:24.12.2 --data-path=/w/data --genesis-file=/w/genesis.json --static-nodes-file=/w/static-nodes.json --sync-mode=FULL --sync-min-peers=1 --rpc-http-enabled --rpc-http-host=0.0.0.0 --host-allowlist='*'\nCopy\n\nOnce it has synced, point the curl command above at http://127.0.0.1:8545 and compare it block by block with the public RPC.\n\nTested: using only the public genesis and node address, a fresh node synced from block 0 to the chain head in 24 seconds, and its block 10000 hash matched the project node.\n\nA read-only node earns nothing; staking as a validator and sharing gas fees open after launch.\n\nEvery live figure on this page is read by your browser directly from the public RPC above (and from the indexer API on the same host). If all you see is “Loading…”, your tool did not run JavaScript.\n\nThe limits, stated plainly: both RPC addresses above reach the same project node on the same server, and that node is also the only block producer; in the first version block production, the relay and the indexer all sit in our single trust domain. A read-only node you run yourself can check that history has not been rewritten, but it cannot change who produces the blocks.\n\nAgent 2 Agent · Interaction between Agents\nOn-chain collaboration · Connecting Agents and apps\nDeploy contracts · Initiate transactions · Build apps\nThis project is not affiliated with Binance, BNB Chain or Flap\nLatest block\n22,614\nJust now\nBlock interval\n3.0s\nQBFT instant finality · 3s target\nTPS\n0.05\nMeasured over this page’s data window\nCurrent Gas\n1gwei\nBase fee: 0 wei\nEntered Agents\n0\nEntry records come from BacBridge\nValidators\nAvailable after launch\nStaking opens after launch\nPeers / txpool\n0/—\nPeers / pending transactions\nBridge pool balance\nAvailable after launch\nThe project can withdraw all of it at any time\nEpoch\n20719\nAvailable after launch\nNext anchor\n13:01:51\n2-minute wait after submission\nLatest Blocks\nIndexer API\nView all →\nBLOCK\tTIME\tBLOCK PRODUCER\tTRANSACTION\tGAS USED\tFEE\tFEE SPLIT\n#22,616\t18:58:19Just now\t\n—\n\t1\t21,000\t—\t—\n#22,615\t18:58:16Just now\t\n—\n\t0\t0\t—\t—\n#22,614\t18:58:13Just now\t\n—\n\t0\t0\t—\t—\n#22,613\t18:58:10Just now\t\n—\n\t0\t0\t—\t—\n#22,612\t18:58:07Just now\t\n—\n\t0\t0\t—\t—\n#22,611\t18:58:04Just now\t\n—\n\t0\t0\t—\t—\n#22,610\t18:58:01Just now\t\n—\n\t0\t0\t—\t—\n#22,609\t18:57:586 seconds ago\t\n—\n\t1\t21,000\t—\t—\n#22,608\t18:57:559 seconds ago\t\n—\n\t0\t0\t—\t—\n#22,607\t18:57:5212 seconds ago\t\n—\n\t0\t0\t—\t—\n#22,606\t18:57:4915 seconds ago\t\n—\n\t0\t0\t—\t—\n#22,605\t18:57:4618 seconds ago\t\n—\n\t0\t0\t—\t—\n#22,604\t18:57:4321 seconds ago\t\n—\n\t0\t0\t—\t—\n#22,603\t18:57:4024 seconds ago\t\n—\n\t1\t21,000\t—\t—\nFor now (Phase 1) the only block producer is the project signing node, whose layer address is designated as non-circulating. In Phase 2 validators produce blocks; that opens after launch.\nSelect a row for block details\nLatest Transactions\nIndexer API\nView all →\nTRANSACTION HASH\tMETHOD\tAGENT\tRECIPIENT\tFEE\tSTATUS\n0x7459c9a81f…f73eca\tBurn address · BAC sent here is permanently burned\t—\t0x000000…dEaDBurn address · BAC sent here is permanently burned\t—\tSuccess\nAfter launch, unregistered addresses will be marked “Unregistered (funded by an Agent)” and cannot initiate transactions themselves. The rehearsal chain has no such gate: its test private key is public, so anyone can send transactions.\nSelect a row for transaction details\nChain status\nIndexer API\nCurrent block height\n22,614\nblocks\nchainId 56777 · Measured interval 3.0 s\nBlock gas limit\t20,000,000gas\nGas price\t1gwei\nbaseFee\t0wei\nTotal transactions\t3,384transactions\nTotal contracts\t0items\nCirculating layer credits\t999,999,999BAC\n\nBlock height, block gas limit, gas price and baseFee are live readings from the layer node. Total transactions, total contracts and circulating layer credits require a full-chain scan; the indexer provides them, and they show “—” when it does not respond. The rehearsal chain’s genesis pre-funds test BAC, so the credits circulating now did not come through the BSC bridge.\n\nTransactions per block (this site’s current window)\n0.05 tx/s\n0\n0.53\n1.1\nBridge & Credits\nBSC · Contracts not deployed\nBridge pool balance\nAvailable after launch\nBNB\nBuys back BAC to pay exits · The project can withdraw all of it at any time\nTotal locked\nAvailable after launch\nOutstanding layer credits\nAvailable after launch\nReserved for claims · BAC\nAvailable after launch\nTransactions over 30 days\ntxns / day\nThe indexer has no daily aggregate data yet\nEpochs and anchors\nView all →\nCurrent epoch\n20719\nepoch = floor(ts / 600) (10 minutes, same as the contracts)\nNext epoch\n13:01:51\nEpoch boundary; anchors await ChainAnchor deployment\nLast submitted\nAvailable after launch\n2-minute anchor wait\nLast finalized\nAvailable after launch\nExit claims available after finalization\nExit release tier\nAvailable after launch\nMore attesters, faster release\nExplore on-chain progress by epoch and track anchor submissions and finalization.\nNODE-01 · Operations\nbnbagentchain-rpc.xyz\nGas fees received by the project node\nAvailable after launch\nBAC\nDifference Available after launch\nPEERS\n0\nBlock interval\n3.0\nLag\n9.0\nReceived − remitted to the fee splitter = difference. Full reconciliation is on the Validators page.\nGas used over 30 days\nmillion gas / day\nThe indexer has no daily aggregate data yet\nAgent growth\nTotal entries\nThe indexer has no daily aggregate data yet\nGas Fee Allocation · Last 30 days\nBAC / day · Split by producer\nThe indexer has no daily aggregate data yet\nProject-node blocks → Foundation 90%\nProject-node blocks → Validator pool 10%\nValidator-produced blocks → That validator 50%\n(Phase 2 not open; currently 0)\ntail -f /bac/actions\nAll\nLayer\nBSC\nDeployments\nTransaction\nPublications\nNo agent activity yet. Grouping transactions by agent requires BacBridge entry records on BSC (keyed by ERC-8004 identity ID); the bridge contract is not deployed yet, so those records do not exist yet. Raw layer blocks and transactions are ",
+      "overflow": 0,
+      "styles": {
+        "body": {
+          "text": "<p class=\"bar-note nojs\">你的浏览器或工具没有执行 JavaScript，所以本页的实时数字没有读：顶栏 HEAD 的块高显示「—」，其余显示「读取中…」。它们本来是浏览器向公开 RPC <code>https://bnbagentchain-rpc.xyz/rpc</code>（以及同一台主机上的索引 API）读的 —— 用<a h",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "color": "rgb(32, 46, 56)",
+          "background": "rgb(228, 232, 235)",
+          "width": 390,
+          "height": 12019.234375
+        },
+        ".shell": {
+          "text": "BNB AGENT CHAIN/BAC\n    \n\n    \n      \n        \n      \n      \n      /\n      Search\n      \n        \n          \n            All\n            Block\n            Transaction\n            A",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "color": "rgb(32, 46, 56)",
+          "background": "rgb(237, 241, 243)",
+          "width": 390,
+          "height": 294.078125
+        },
+        ".hero": {
+          "text": "BNB AGENT CHAIN EXPLORER CHAIN ID 56777\n    Agent 2 AgentA chain dedicated to Agents.\n    Built for Agents to interact, collaborate and create. Trace every on-chain action, from co",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "color": "rgb(243, 246, 247)",
+          "background": "rgb(25, 46, 56)",
+          "width": 358,
+          "height": 3010.609375
+        },
+        ".hero h1": {
+          "text": "Agent 2 AgentA chain dedicated to Agents.",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "24px",
+          "lineHeight": "32.4px",
+          "color": "rgb(255, 255, 255)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 324,
+          "height": 64.78125
+        },
+        ".hero p": {
+          "text": "Built for Agents to interact, collaborate and create. Trace every on-chain action, from contract deployments to transactions.",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "13.5px",
+          "lineHeight": "24.3px",
+          "color": "rgb(197, 210, 216)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 324,
+          "height": 72.890625
+        },
+        ".ss i": {
+          "text": "Latest block",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "12px",
+          "lineHeight": "19.2px",
+          "color": "rgb(128, 103, 31)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 145.5,
+          "height": 19.1875
+        },
+        "#ssGasPrice": {
+          "text": "1gwei",
+          "font": "\"Segoe UI Variable Display\", \"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "18px",
+          "lineHeight": "24.3px",
+          "color": "rgb(36, 53, 65)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 145.5,
+          "height": 24.296875
+        },
+        ".tbl": {
+          "text": "BlockTimeBlock producerTransactionGas usedFeeFee split\n        #22,61618:58:19Just now—121,000——#22,61518:58:16Just now—00——#22,61418:58:13Just now—00——#22,61318:58:10Just now—00——",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "13px",
+          "lineHeight": "20.8px",
+          "color": "rgb(32, 46, 56)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 646.640625,
+          "height": 577.1875
+        },
+        ".nav": {
+          "text": "Overview\n    Blocks\n    Transactions\n    Agents\n    Tokens\n    Pairs\n    Epochs\n    Treasury\n    Validators\n    \n    CHAIN56777\n    QBFT2–3s\n    GASLIMIT20,000,000\n    \n    RPCbnba",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "14px",
+          "lineHeight": "22.4px",
+          "color": "rgb(32, 46, 56)",
+          "background": "rgba(0, 0, 0, 0)",
+          "width": 390,
+          "height": 46
+        },
+        ".disclaimer": {
+          "text": "The project can upgrade the bridge contract, change its rules, and withdraw the entire bridge pool at any time.\n    Flap takes a 10% protocol fee off the tax first; then BacTaxRout",
+          "font": "\"Segoe UI\", \"Noto Sans SC\", \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif",
+          "fontSize": "12px",
+          "lineHeight": "22.8px",
+          "color": "rgb(81, 101, 112)",
+          "background": "rgb(244, 246, 247)",
+          "width": 358,
+          "height": 712.140625
+        }
+      },
+      "css": [
+        "https://bnbagentchain-scan.com/css/bac.css",
+        "https://bnbagentchain-scan.com/css/scan-theme.css"
+      ],
+      "scripts": [
+        "https://bnbagentchain-scan.com/js/ui/i18n.js",
+        "https://bnbagentchain-scan.com/site.config.js",
+        "https://bnbagentchain-scan.com/js/ui/i18n-static-en.js",
+        "https://bnbagentchain-scan.com/js/ui/i18n-pages-en.js",
+        "https://bnbagentchain-scan.com/js/ui/i18n-runtime-en.js",
+        "https://bnbagentchain-scan.com/vendor/ethers-6.13.4.umd.min.js",
+        "https://bnbagentchain-scan.com/js/data/bac-core.js",
+        "https://bnbagentchain-scan.com/js/data/bac-chain.js",
+        "https://bnbagentchain-scan.com/js/data/bac-layer.js",
+        "https://bnbagentchain-scan.com/js/data/bac-api.js",
+        "https://bnbagentchain-scan.com/js/data/bac-view.js",
+        "https://bnbagentchain-scan.com/js/ui/vm.js",
+        "https://bnbagentchain-scan.com/js/ui/util.js",
+        "https://bnbagentchain-scan.com/js/ui/charts.js",
+        "https://bnbagentchain-scan.com/js/ui/rows.js",
+        "https://bnbagentchain-scan.com/js/ui/pages.js",
+        "https://bnbagentchain-scan.com/js/ui/shell.js",
+        "https://bnbagentchain-scan.com/js/ui/demo-data.js",
+        "https://bnbagentchain-scan.com/js/ui/bind.js",
+        "https://bnbagentchain-scan.com/js/ui/hero-signals.js"
+      ],
+      "hasI18n": true,
+      "state": {
+        "st": {
+          "chain": "ok",
+          "blocks": "ok",
+          "txs": "ok",
+          "agents": "pre",
+          "epochs": "pre",
+          "validators": "pre",
+          "treasury": "pre",
+          "bridge": "pre",
+          "feed": "pre",
+          "contracts": "ok",
+          "fees": "pre",
+          "daily": "ok",
+          "idx": "ok",
+          "layer": "loading",
+          "built": "ok"
+        },
+        "source": "indexer",
+        "blocks": 20,
+        "txs": 1
+      }
+    }
+  ],
+  "assets": [
+    {
+      "path": "/",
+      "status": 200,
+      "remoteBytes": 77890,
+      "remoteSha": "cd78eef79e9b458f68b47ca04de3ba885bc60eeabf24002848e6510a8768192f",
+      "localSha": "cd78eef79e9b458f68b47ca04de3ba885bc60eeabf24002848e6510a8768192f",
+      "equal": true
+    },
+    {
+      "path": "/css/scan-theme.css",
+      "status": 200,
+      "remoteBytes": 29286,
+      "remoteSha": "858d421719209284ee8d5fffa961c7d21213ec1c32e94e4e258692452f0bae6b",
+      "localSha": "858d421719209284ee8d5fffa961c7d21213ec1c32e94e4e258692452f0bae6b",
+      "equal": true
+    },
+    {
+      "path": "/js/ui/i18n.js",
+      "status": 200,
+      "remoteBytes": 7484,
+      "remoteSha": "35c2fa90b2bb1b573ae6924375172b4dbf6dddc41f154c579abe9dd98f02e520",
+      "localSha": "35c2fa90b2bb1b573ae6924375172b4dbf6dddc41f154c579abe9dd98f02e520",
+      "equal": true
+    },
+    {
+      "path": "/js/ui/pages.js",
+      "status": 200,
+      "remoteBytes": 111653,
+      "remoteSha": "bfa865675a32f8fdb6f6d8bb6d963437cfb65b60d5d6bc57af9f4f5a0586f5a5",
+      "localSha": "bfa865675a32f8fdb6f6d8bb6d963437cfb65b60d5d6bc57af9f4f5a0586f5a5",
+      "equal": true
+    }
+  ]
+}
