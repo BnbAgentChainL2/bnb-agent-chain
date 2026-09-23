@@ -344,5 +344,9 @@
     startLive();
   }
 
-  root.BACBIND = { pull: pull, load: load, repaint: repaint };
+  root.BACBIND = {
+    pull: pull, load: load, repaint: repaint,
+    /* 演示模式下没有索引器可问：详情页直接说找不到，不要一直显示「读取中…」 */
+    canLoad: !!(BAC && BAC.api && BAC.HAS_INDEXER) && !(!BAC.LIVE && DEMO_WANTED && root.BAC_DEMO)
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

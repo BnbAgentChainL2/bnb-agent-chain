@@ -530,3 +530,55 @@ body{padding-bottom:calc(var(--bar-h) + 6px)}
 @media(max-width:400px){
   .nav a{padding:0 11px;font-size:11.5px}
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   真实站点新增：占位状态、降级横幅、演示横幅
+   （占位文字是页面的常态而不是例外 —— 发射前每一个链上数字都是「发射后公布」）
+   ═══════════════════════════════════════════════════════════════ */
+
+/* 顶部横幅：索引器降级 / 演示模式 */
+.bar-note{
+  margin:0;padding:7px 14px;font-size:11.5px;line-height:1.5;
+  color:var(--amb);background:rgba(240,178,60,.07);
+  border-top:1px solid var(--line);border-bottom:1px solid var(--amb-dim);
+  font-family:var(--mono)
+}
+.bar-note.demo{color:var(--vio);border-bottom-color:#3a3170;background:rgba(157,140,255,.07)}
+.bar-note code{color:inherit;opacity:.85}
+
+/* 没有数据源的图表：不画假曲线，画一块说明 */
+.chart-none{
+  display:flex;align-items:center;justify-content:center;
+  font-size:11px;color:var(--dim-2);font-family:var(--mono);
+  border:1px dashed var(--line-2);background:rgba(255,255,255,.012)
+}
+
+/* 灯：读不到就是灰的，不许默认点亮 */
+.led.idle b{background:var(--dim-2);animation:none}
+.led.bad b{background:var(--red);animation:pulse 1.4s ease-in-out infinite}
+
+/* 状态栏：发射前 PRE / 演示 DEMO 都不是绿灯 */
+.sb-k.idle{color:var(--dim)}
+.sb-k.idle b{background:var(--dim-2);animation:none}
+
+/* 实时动态的占位行 */
+.feed .f-none{
+  padding:14px;color:var(--dim-2);font-size:12px;font-family:var(--mono);
+  border-bottom:1px solid var(--line-f);list-style:none
+}
+
+/* 出块者未知时的分账列 */
+.spl{color:var(--dim-2)}
+
+/* 表格里的对账色：差额为 0 是绿的，不为 0 是黄的 */
+td.n.grn,span.n.grn{color:var(--grn-hi)}
+td.n.amb,span.n.amb{color:var(--amb)}
+
+/* 已锚定 */
+.anc.done{color:var(--grn);border-color:var(--grn-dim)}
+
+/* 仪表：去掉演示用的假进度条之后，只剩读数 */
+.gauges .g u{font-family:var(--mono);font-size:12px;color:var(--txt)}
+
+/* 未注册 / 未知状态标签 */
+.st-tag.dim{color:var(--dim);border-color:var(--line-2)}

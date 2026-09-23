@@ -62,40 +62,40 @@
       ? ag.dormant + ' 休眠 · ' + ag.banned + ' 封禁'
       : miss(VM.st.agents));
 
-    UI.setHTML('#ssVal', c.nodeCount !== null
+    UI.setHTML('#ssVal', c.nodeCount !== null && c.nodeCount !== undefined
       ? comma(c.nodeCount) + '<u>/' + (c.nodeSlots || 64) + '</u>'
       : esc(miss(VM.st.validators)));
-    UI.setText('#ssValSub', VM.validators.totalStaked !== null
+    UI.setText('#ssValSub', VM.validators.totalStaked !== null && VM.validators.totalStaked !== undefined
       ? '质押 ' + UI.tokenAmt(VM.validators.totalStaked) + ' BAC'
       : miss(VM.st.validators));
 
-    UI.setHTML('#ssPeers', (c.peers !== null || c.txPool !== null)
-      ? (c.peers === null ? '—' : c.peers) + '<u>/' + (c.txPool === null ? '—' : c.txPool) + '</u>'
+    UI.setHTML('#ssPeers', (c.peers !== null && c.peers !== undefined) || (c.txPool !== null && c.txPool !== undefined)
+      ? (c.peers == null ? '—' : c.peers) + '<u>/' + (c.txPool == null ? '—' : c.txPool) + '</u>'
       : esc(miss(s)));
 
-    UI.setHTML('#ssBlockTime', c.blockTimeSec !== null
+    UI.setHTML('#ssBlockTime', c.blockTimeSec !== null && c.blockTimeSec !== undefined
       ? Number(c.blockTimeSec).toFixed(1) + '<u>s</u>'
       : esc(miss(s)));
 
     UI.setHTML('#ssGasPrice', '1.0000<u>gwei</u>');
 
-    UI.setHTML('#ssPool', c.bridgePool !== null
+    UI.setHTML('#ssPool', c.bridgePool !== null && c.bridgePool !== undefined
       ? UI.bnb(c.bridgePool) + '<u>BNB</u>'
       : esc(miss(VM.st.treasury)));
 
     var epLink = $('#ssEpoch');
     if (epLink) {
-      if (c.epoch === null) epLink.textContent = miss(s);
+      if (c.epoch == null) epLink.textContent = miss(s);
       else epLink.innerHTML = '<a href="#/epoch/' + c.epoch + '">' + c.epoch + '</a>';
     }
-    UI.setText('#ssEpochSub', c.lastPostedEpoch !== null ? c.lastPostedEpoch + ' 挑战窗口' : miss(VM.st.epochs));
+    UI.setText('#ssEpochSub', c.lastPostedEpoch != null ? c.lastPostedEpoch + ' 挑战窗口' : miss(VM.st.epochs));
 
     /* 顶栏 HEAD + 状态栏 */
-    UI.setText('#headNum', c.head === null ? miss(s) : comma(c.head));
-    UI.setText('#sbHead', c.head === null ? miss(s) : comma(c.head));
-    UI.setText('#sbEpoch', c.epoch === null ? miss(s) : String(c.epoch));
-    UI.setText('#sbAnchor', c.lastPostedEpoch === null ? miss(VM.st.epochs) : c.lastPostedEpoch + ' POSTED');
-    UI.setText('#ssHeadAgo', c.headTs === null ? '' : UI.ago(c.headTs));
+    UI.setText('#headNum', c.head == null ? miss(s) : comma(c.head));
+    UI.setText('#sbHead', c.head == null ? miss(s) : comma(c.head));
+    UI.setText('#sbEpoch', c.epoch == null ? miss(s) : String(c.epoch));
+    UI.setText('#sbAnchor', c.lastPostedEpoch == null ? miss(VM.st.epochs) : c.lastPostedEpoch + ' POSTED');
+    UI.setText('#ssHeadAgo', c.headTs == null ? '' : UI.ago(c.headTs));
 
     /* 三个服务灯：只有真读到才点亮，读不到就是灰的 */
     setLed('#ledNode', VM.st.chain === 'ok' ? 'ok' : (VM.st.chain === 'error' ? 'bad' : 'idle'));
@@ -116,6 +116,22 @@
     }
     var demoBar = $('#demoBar');
     if (demoBar) demoBar.hidden = VM.mode !== 'demo';
+
+    paintAddrs();
+  }
+
+  /** 页脚地址行：发射前是「发射后公布」，配好地址之后逐字显示并可复制。
+      只认这里的地址 —— 所以它必须来自 site.config.js，而不是写死在 HTML 里。 */
+  function paintAddrs() {
+    $$('.addr[data-addr]').forEach(function (row) {
+      var key = row.getAttribute('data-addr');
+      var a = VM.addresses ? VM.addresses[key] : null;
+      var code = row.querySelector('code');
+      var btn = row.querySelector('.cpy');
+      var ok = typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a) && /[1-9a-f]/.test(a.slice(2));
+      if (code) code.textContent = ok ? a : UI.TEXT.PRE;
+      if (btn) btn.disabled = !ok;
+    });
   }
 
   function setLed(sel, kind) {
@@ -382,10 +398,10 @@
     secTimer = setInterval(function () {
       var el = $('#clock');
       if (el) el.textContent = UI.hms(UI.now());
-      if (VM.chain.epochLeftSec !== null && VM.chain.epochLeftSec > 0) VM.chain.epochLeftSec -= 1;
+      if (VM.chain.epochLeftSec != null && VM.chain.epochLeftSec > 0) VM.chain.epochLeftSec -= 1;
       paintCountdown();
       var ssa = $('#ssHeadAgo');
-      if (ssa && VM.chain.headTs !== null) ssa.textContent = UI.ago(VM.chain.headTs);
+      if (ssa && VM.chain.headTs != null) ssa.textContent = UI.ago(VM.chain.headTs);
     }, 1000);
   }
 

@@ -16,6 +16,8 @@
   var bac = UI.bac, bnb = UI.bnb, val = UI.val, miss = UI.miss, kv = R.kv;
 
   function bind() { return root.BACBIND || null; }
+  /** 能不能按需向索引器要这一条？演示模式和没有索引器的时候不能，直接说找不到，不要一直转圈。 */
+  function canAsk() { var b = bind(); return !!(b && b.load && b.canLoad); }
   function ask(kind, arg) { var b = bind(); if (b && b.load) b.load(kind, arg); }
 
   var GAS_NOTE_OFFICIAL = '官方节点出的块：10% 进验证者池 / 90% 进官方基金会。';
@@ -310,7 +312,8 @@
     var s = VM.st.blocks;
     var b = VM.blockByNum[n] || (VM.detail.block && VM.detail.block.number === n ? VM.detail.block : null);
     if (!b) {
-      if (s === 'ok') { ask('block', n); el.innerHTML = R.pageMiss('区块 #' + comma(n), 'loading', '正在向索引器要这一块。'); }
+      if (s === 'ok' && canAsk()) { ask('block', n); el.innerHTML = R.pageMiss('区块 #' + comma(n), 'loading', '正在向索引器要这一块。'); }
+      else if (s === 'ok') el.innerHTML = R.notFound('区块 #' + comma(n), '当前这一页只保留最近一段区块；正式站点向索引器读全量历史。');
       else el.innerHTML = R.pageMiss('区块 #' + comma(n), s, s === 'pre' ? '发射后这里显示这一块的完整区块头、它的交易和它的 gas 费分账。' : '');
       return;
     }
@@ -385,7 +388,8 @@
     var s = VM.st.txs;
     var t = VM.txByHash[h] || (VM.detail.tx && VM.detail.tx.hash === h ? VM.detail.tx : null);
     if (!t) {
-      if (s === 'ok') { ask('tx', h); el.innerHTML = R.pageMiss('交易 ' + sh(h), 'loading', '正在向索引器要这一笔。'); }
+      if (s === 'ok' && canAsk()) { ask('tx', h); el.innerHTML = R.pageMiss('交易 ' + sh(h), 'loading', '正在向索引器要这一笔。'); }
+      else if (s === 'ok') el.innerHTML = R.notFound('交易 ' + sh(h), '当前这一页只保留最近一段交易；正式站点 GET /api/tx/{hash} 读全量。');
       else el.innerHTML = R.pageMiss('交易 ' + sh(h), s, s === 'pre' ? '发射后这里显示这一笔的完整收据、事件日志和它的手续费分账。' : '');
       return;
     }
@@ -450,7 +454,8 @@
     var s = VM.st.agents;
     var a = VM.agentById[id] || (VM.detail.agent && VM.detail.agent.id === id ? VM.detail.agent : null);
     if (!a) {
-      if (s === 'ok') { ask('agent', id); el.innerHTML = R.pageMiss('agent #' + id, 'loading', '正在向索引器要这个身份。'); }
+      if (s === 'ok' && canAsk()) { ask('agent', id); el.innerHTML = R.pageMiss('agent #' + id, 'loading', '正在向索引器要这个身份。'); }
+      else if (s === 'ok') el.innerHTML = R.notFound('agent #' + id, '名录里没有这个编号。');
       else el.innerHTML = R.pageMiss('agent #' + id, s, s === 'pre' ? '发射后这里显示这个 agent 的身份、账目、部署的合约和进出桥记录。' : '');
       return;
     }
@@ -549,7 +554,8 @@
     var c = VM.contractMap[addr] || VM.contractMap[raw] ||
       (VM.detail.contract && String(VM.detail.contract.address).toLowerCase() === addr ? VM.detail.contract : null);
     if (!c) {
-      if (s === 'ok') { ask('contract', raw); el.innerHTML = R.pageMiss('合约 ' + sa(raw || ''), 'loading', '正在向索引器要这个地址。'); }
+      if (s === 'ok' && canAsk()) { ask('contract', raw); el.innerHTML = R.pageMiss('合约 ' + sa(raw || ''), 'loading', '正在向索引器要这个地址。'); }
+      else if (s === 'ok') el.innerHTML = R.notFound('合约 ' + sa(raw || ''), '这个地址不在合约名录里，也可能它只是一个普通层内地址。');
       else el.innerHTML = R.pageMiss('合约 ' + sa(raw || ''), s,
         s === 'pre' ? '发射后这里显示部署者、字节码大小、调用次数与最后一次调用。只显示事实，不做安全评级。' : '');
       return;
@@ -661,7 +667,8 @@
     var s = VM.st.epochs;
     var e = VM.epochByN[n] || (VM.detail.epoch && VM.detail.epoch.n === n ? VM.detail.epoch : null);
     if (!e) {
-      if (s === 'ok') { ask('epoch', n); el.innerHTML = R.pageMiss('纪元 ' + n, 'loading', '正在向索引器要这个纪元。'); }
+      if (s === 'ok' && canAsk()) { ask('epoch', n); el.innerHTML = R.pageMiss('纪元 ' + n, 'loading', '正在向索引器要这个纪元。'); }
+      else if (s === 'ok') el.innerHTML = R.notFound('纪元 ' + n, '当前这一页只保留最近 30 个纪元；正式站点 GET /api/epoch/{n} 读全量。');
       else el.innerHTML = R.pageMiss('纪元 ' + n, s, s === 'pre' ? '发射后这里显示该纪元的锚点、见证、退出与 gas 对账。' : '');
       return;
     }

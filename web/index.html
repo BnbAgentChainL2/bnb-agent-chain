@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>BNB Agent Chain · 区块浏览器</title>
-<meta name="description" content="BNB Agent Chain（BAC）区块浏览器：只有程序能在这一层发交易。区块、交易、agent 目录、金库与验证者分账，全部可逐条查。不承诺任何收益。与 Binance 无关。">
+<meta name="description" content="BNB Agent Chain（BAC）区块浏览器：进场要过一道限时签名挑战，我们能证明入场的是程序，不能证明它是 AI。区块、交易、agent 目录、金库与验证者分账，全部可逐条查。不承诺任何收益。与 Binance 无关。">
 <meta name="theme-color" content="#070908">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="css/console.css">
@@ -138,8 +138,8 @@
     </div>
 
     <div class="panel mascot-panel">
-      <div class="ph"><span class="ph-t">NODE-01 · 机房</span><span class="ph-fill"></span><span class="ph-m" id="mascotState">待机</span></div>
-      <div class="datum"><span class="d-l">官方节点已收 gas 费</span><b id="rcInTop">1.284</b><u>BAC</u><i>差额 <b id="rcDiffTop" style="font-size:inherit">0.000</b></i></div>
+      <div class="ph"><span class="ph-t">NODE-01 · 机房</span><span class="ph-fill"></span><span class="ph-m">GET /api/fees</span></div>
+      <div class="datum"><span class="d-l">官方节点已收 gas 费</span><b data-vm="fees.received" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><i>差额 <b style="font-size:inherit" data-vm="fees.gap" data-st="fees" data-fmt="bac">发射后公布</b></i></div>
       <div class="node-row">
         <div class="mascot" id="mascot">
           <svg viewBox="0 0 104 84" width="100%" height="100%" role="img" aria-label="终端机器人面孔">
@@ -162,12 +162,11 @@
           </svg>
         </div>
         <div class="gauges">
-          <div class="g"><i>PEERS</i><span class="bar" data-fill="62"><b></b></span><u id="gPeers">5</u></div>
-          <div class="g"><i>TXPOOL</i><span class="bar" data-fill="18"><b></b></span><u id="gPool">3</u></div>
-          <div class="g"><i>DISK</i><span class="bar" data-fill="34"><b></b></span><u>23.8G</u></div>
+          <div class="g"><i>PEERS</i><u data-vm="chain.peers" data-st="chain" data-fmt="int">发射后公布</u></div>
+          <div class="g"><i>出块间隔</i><u data-vm="chain.blockTimeSec" data-st="chain" data-fmt="sec">发射后公布</u></div>
+          <div class="g"><i>落后</i><u data-vm="chain.blockLagSec" data-st="chain" data-fmt="sec">发射后公布</u></div>
         </div>
       </div>
-      <pre class="tail" id="tail" aria-hidden="true"></pre>
       <div class="pf"><span>已收 − 已转入分账合约 = 差额，完整对账在<a class="a-link" href="#/validators">验证者页</a>。</span></div>
     </div>
   </div>
@@ -236,10 +235,10 @@
         <div class="ph"><span class="ph-t">金库</span><span class="ph-fill"></span><a class="more" href="#/treasury">详情 →</a></div>
         <table class="tbl kvt">
           <tbody>
-            <tr><td>累计进金库</td><td class="r n">27.5600<u>BNB</u></td></tr>
-            <tr><td>├ 累计 → 桥池</td><td class="r n">13.7800<u>BNB</u></td></tr>
-            <tr><td>└ 累计 → 节点基金</td><td class="r n">13.7800<u>BNB</u></td></tr>
-            <tr><td>金库当前余额</td><td class="r n">0.0031<u>BNB</u></td></tr>
+            <tr><td>累计进金库</td><td class="r n"><span data-vm="treasury.lifetimeTotal" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+            <tr><td>├ 累计 → 桥池</td><td class="r n"><span data-vm="treasury.toBridge" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+            <tr><td>└ 累计 → 节点基金</td><td class="r n"><span data-vm="treasury.toNodeFund" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+            <tr><td>金库当前余额</td><td class="r n"><span data-vm="treasury.vaultBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
           </tbody>
         </table>
         <div class="splitbar">
@@ -252,9 +251,9 @@
         <div class="ph"><span class="ph-t">验证者</span><span class="ph-fill"></span><a class="more" href="#/validators">详情 →</a></div>
         <table class="tbl kvt">
           <tbody>
-            <tr><td>在线节点</td><td class="r n">2 / 64</td></tr>
-            <tr><td>总质押</td><td class="r n">5,000,000<u>BAC</u></td></tr>
-            <tr><td>本纪元 gas 分账池</td><td class="r n">0.00070<u>BAC</u></td></tr>
+            <tr><td>注册节点</td><td class="r n"><span data-vm="validators.nodeCount" data-st="validators" data-fmt="int">发射后公布</span> / 64</td></tr>
+            <tr><td>总质押</td><td class="r n"><span data-vm="validators.totalStaked" data-st="validators" data-fmt="token">发射后公布</span><u>BAC</u></td></tr>
+            <tr><td>本纪元 gas 分账池</td><td class="r n"><span data-vm="fees.epochPool" data-st="fees" data-fmt="bac5">发射后公布</span><u>BAC</u></td></tr>
             <tr><td>官方块分账比例</td><td class="r n">10% / 90%</td></tr>
           </tbody>
         </table>
@@ -341,7 +340,7 @@
     <h1>Agent 目录</h1>
     <span class="vh-en">AGENTS</span>
     <span class="fill" aria-hidden="true"></span>
-    <span class="vh-m">42 个身份 · 35 活跃 · 4 休眠 · 1 封禁 · 2 挑战中</span>
+    <span class="vh-m">身份数与各状态计数全部来自 <code>GET /api/agents</code>；agentURI 由 agent 自己写，本站只做格式核对</span>
   </div>
 
   <div class="panel">
@@ -414,17 +413,17 @@
       <div class="ph"><span class="ph-t big">链上读数</span><span class="ph-fill"></span><span class="ph-m">BSC · Multicall3 直读</span></div>
       <table class="tbl kv2">
         <tbody>
-          <tr><td>累计进金库</td><td class="r n">27.5600<u>BNB</u></td></tr>
-          <tr class="split-a"><td>├ 累计 → 桥池</td><td class="r n">13.7800<u>BNB</u></td></tr>
-          <tr class="split-b"><td>└ 累计 → 节点基金</td><td class="r n">13.7800<u>BNB</u></td></tr>
-          <tr class="gap"><td>桥池当前余额</td><td class="r n big">9.1400<u>BNB</u></td></tr>
-          <tr><td>节点基金余额</td><td class="r n">0.4000<u>BNB</u></td></tr>
-          <tr><td>节点基金已提取</td><td class="r n">12.0000<u>BNB</u></td></tr>
-          <tr class="gap"><td>金库当前余额</td><td class="r n">0.0031<u>BNB</u></td></tr>
-          <tr><td>未结算 / 推送失败</td><td class="r n">0.0031 / 0</td></tr>
-          <tr class="gap"><td>本纪元释放档位</td><td class="r n">350<u>bps</u></td></tr>
-          <tr><td>本纪元可释放</td><td class="r n">0.3199<u>BNB</u></td></tr>
-          <tr><td>已锁定待领 owed</td><td class="r n">1.2044<u>BNB</u></td></tr>
+          <tr><td>累计进金库</td><td class="r n"><span data-vm="treasury.lifetimeTotal" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr class="split-a"><td>├ 累计 → 桥池</td><td class="r n"><span data-vm="treasury.toBridge" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr class="split-b"><td>└ 累计 → 节点基金</td><td class="r n"><span data-vm="treasury.toNodeFund" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr class="gap"><td>桥池当前余额</td><td class="r n big"><span data-vm="treasury.poolBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>节点基金余额</td><td class="r n"><span data-vm="treasury.nodeFundBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>节点基金已提取</td><td class="r n"><span data-vm="treasury.nodeFundWithdrawn" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr class="gap"><td>金库当前余额</td><td class="r n"><span data-vm="treasury.vaultBalance" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>未结算</td><td class="r n"><span data-vm="treasury.vaultUnsplit" data-st="treasury" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr class="gap"><td>本纪元释放档位</td><td class="r n"><span data-vm="treasury.releaseBps" data-st="bridge" data-fmt="bps">发射后公布</span><u>bps</u></td></tr>
+          <tr><td>本纪元可释放</td><td class="r n"><span data-vm="treasury.releasable" data-st="bridge" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
+          <tr><td>已锁定待领 owed</td><td class="r n"><span data-vm="treasury.owedTotal" data-st="bridge" data-fmt="bnb">发射后公布</span><u>BNB</u></td></tr>
         </tbody>
       </table>
       <div class="splitbar" aria-label="50/50 切分">
@@ -528,21 +527,17 @@
 
   <div class="two v-two">
     <div class="panel">
-      <div class="ph"><span class="ph-t big">节点列表</span><span class="ph-fill"></span><span class="ph-m">2 / 64 个槽位</span></div>
+      <div class="ph"><span class="ph-t big">节点列表</span><span class="ph-fill"></span><span class="ph-m"><span data-vm="validators.nodeCount" data-st="validators" data-fmt="int">发射后公布</span> / 64 个槽位</span></div>
       <div class="tw">
         <table class="tbl vals">
           <thead><tr>
             <th class="l">节点</th><th class="r">质押(BAC)</th><th class="r">在线</th><th class="r">一致</th><th class="r">分歧</th>
-            <th class="r hide-m">出块数</th><th class="r hide-m">本纪元 gas 分账</th><th class="r hide-m">累计领取</th><th class="r">状态</th>
+            <th class="r hide-m">出块数</th><th class="r hide-m">本纪元 gas 分账</th><th class="r hide-m">累计领取(BNB)</th><th class="r">状态</th>
           </tr></thead>
-          <tbody>
-            <tr><td class="l"><code>node-a1f…</code><span class="sub">0x3c9…0d1</span></td><td class="r n">3,000,000</td><td class="r n">41/41</td><td class="r n">41</td><td class="r n">0</td><td class="r n hide-m">0<span class="sub">阶段 1</span></td><td class="r n hide-m">0.00042<u>BAC</u></td><td class="r n hide-m">0.3100<u>BNB</u></td><td class="r"><span class="st-tag ok">在线</span></td></tr>
-            <tr><td class="l"><code>node-77b…</code><span class="sub">0xab4…5e8</span></td><td class="r n">2,000,000</td><td class="r n">39/41</td><td class="r n">39</td><td class="r n">1</td><td class="r n hide-m">0<span class="sub">阶段 1</span></td><td class="r n hide-m">0.00028<u>BAC</u></td><td class="r n hide-m">0.1900<u>BNB</u></td><td class="r"><span class="st-tag ok">在线</span></td></tr>
-            <tr class="empty"><td class="l" colspan="9">还有 62 个空槽位。注册无许可，先到先得，合约里没有审批。</td></tr>
-          </tbody>
+          <tbody id="valBody"></tbody>
         </table>
       </div>
-      <div class="pf"><span>本纪元独立见证人 <b>2</b> 个 → 退出释放档位 <b>350 bps</b>。见证人越多，所有 agent 的退出越快。</span><span class="pf-r">总质押 5,000,000 BAC</span></div>
+      <div class="pf"><span>见证人越多，所有 agent 的退出越快。BSC 侧的 BNB 见证奖励和层内 gas 分账是两笔钱、两种单位，<b>不能相加</b>。</span><span class="pf-r">总质押 <span data-vm="validators.totalStaked" data-st="validators" data-fmt="token">发射后公布</span> BAC</span></div>
     </div>
 
     <div class="panel">
@@ -569,21 +564,18 @@
     <div class="rc-h"><span class="rc-t">gas 费对账</span><span class="rc-fill"></span>
       <span class="rc-m">阶段 1 里 gas 费先进官方节点地址，再转入分账合约 —— 这一步是受信的，所以把账摆在这里</span></div>
     <div class="rc-b">
-      <div class="rc-n"><i>官方节点已收（链上加总）</i><b id="rcIn">1.284</b><u>BAC</u><span>它出的每个块里 gasUsed × gasPrice 之和</span></div>
+      <div class="rc-n"><i>官方节点已收（链上加总）</i><b data-vm="fees.received" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>它出的每个块里 gasUsed × effectiveGasPrice 之和</span></div>
       <div class="rc-op">−</div>
-      <div class="rc-n"><i>已转入分账合约</i><b id="rcOut">1.284</b><u>BAC</u><span>0x…0104 的入账总额</span></div>
+      <div class="rc-n"><i>已转入分账合约</i><b data-vm="fees.remitted" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>0x…0104 的入账总额</span></div>
       <div class="rc-op">=</div>
-      <div class="rc-n rc-diff ok"><i>差额</i><b id="rcDiff">0.000</b><u>BAC</u><span>不为 0 会在这里变红并触发告警</span></div>
-      <div class="rc-how">
-        <span>自己核：</span>
-        <code>cast balance 0x…0104 --rpc-url https://95-179-183-132.sslip.io/rpc</code>
-      </div>
+      <div class="rc-n rc-diff"><i>差额</i><b data-vm="fees.gap" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>不为 0 会在这里变红并触发告警</span></div>
+      <div class="rc-how" id="rcHow"><span>自己核：</span><code>发射后公布</code></div>
     </div>
     <div class="rc-split">
-      <div class="rcs"><i>分账合约已收（累计）</i><b>1.284<u>BAC</u></b></div>
-      <div class="rcs ok2"><i>→ 验证者池 10%</i><b>0.1284<u>BAC</u></b><span>本纪元 0.00070 BAC · 按质押权重分给 2 个节点</span></div>
-      <div class="rcs amb2"><i>→ 官方基金会 90%</i><b>1.1556<u>BAC</u></b><span>官方基金会地址 0x…0105</span></div>
-      <div class="rcs dim2"><i>→ 阶段 2 验证者自留 50%</i><b>0.0000<u>BAC</u></b><span>还没有验证者出过块</span></div>
+      <div class="rcs"><i>分账合约当前余额</i><b data-vm="fees.splitterBalance" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u></div>
+      <div class="rcs ok2"><i>→ 验证者池 10%（累计）</i><b data-vm="fees.lifetimePool" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>按 质押 × 出勤 分给在线且见证无误的节点</span></div>
+      <div class="rcs amb2"><i>→ 官方基金会 90%（累计）</i><b data-vm="fees.lifetimeFoundationAccrued" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>官方基金会地址 0x…0105</span></div>
+      <div class="rcs dim2"><i>→ 阶段 2 验证者自留 50%</i><b data-vm="fees.lifetimeValidatorSelfKept" data-st="fees" data-fmt="bac">发射后公布</b><u>BAC</u><span>阶段 2 未开放，还没有验证者出过块</span></div>
     </div>
   </div>
 
@@ -596,13 +588,11 @@
   </div>
 
   <div class="epochbar">
-    <div class="eb-l"><i>当前纪元</i><b><a href="#/epoch/20718">20718</a></b></div>
+    <div class="eb-l"><i>当前纪元</i><b data-vm="chain.epoch" data-st="chain" data-fmt="raw">发射后公布</b></div>
     <div class="eb-steps">
-      <a class="eb done" href="#/epoch/20716"><i>20716</i>FINAL</a>
-      <a class="eb now" href="#/epoch/20717"><i>20717</i>POSTED · 挑战窗口</a>
-      <a class="eb next" href="#/epoch/20718"><i>20718</i>进行中</a>
+      <a class="eb" href="#/epochs">纪元与锚点全表 →</a>
     </div>
-    <div class="eb-r"><i>下一个锚点</i><b id="anchorCd">03:12:44</b></div>
+    <div class="eb-r"><i>下一个锚点</i><b id="anchorCd">发射后公布</b></div>
   </div>
 </section>
 
@@ -624,9 +614,11 @@
       <p class="f-tag">一条出生就是空的链。里面有什么，全看 agent 自己造出什么。</p>
     </div>
     <div class="addrs">
-      <div class="addr"><span class="a-l">代币合约</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
-      <div class="addr"><span class="a-l">金库</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
-      <div class="addr"><span class="a-l">桥 / 节点基金</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
+      <div class="addr" data-addr="token"><span class="a-l">代币合约</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
+      <div class="addr" data-addr="vault"><span class="a-l">金库</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
+      <div class="addr" data-addr="bridge"><span class="a-l">桥</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
+      <div class="addr" data-addr="nodeFund"><span class="a-l">节点基金</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
+      <div class="addr" data-addr="staking"><span class="a-l">验证者质押</span><code>发射后公布</code><button class="cpy" type="button" disabled>复制</button></div>
       <div class="addr"><span class="a-l">Flap Guardian</span><code>0x9e27098dcD8844bcc6287a557E0b4D09C86B8a4b</code><button class="cpy" type="button">复制</button></div>
       <p class="a-warn">只认这里的合约地址。同名代币很多，买之前逐字核对。</p>
     </div>
@@ -638,23 +630,37 @@
     <p lang="en">Flap Guardian (Flap team) can upgrade the vault at any time.</p>
     <p class="dyor">DYOR · 任何投资都有风险 · NFA</p>
   </div>
-  <p class="fine">本项目与 Binance、BNB Chain、Flap 官方无关；BNB Agent Chain 是独立项目，名称中的 BNB 只表示它建在 BNB Smart Chain 之上。第一版由一个官方出块节点和一个官方中继运行，是中心化的。退出按桥池份额兑付，不承诺任何金额。这一层没有给人用的写入界面；我们能证明发起者是程序，不能证明它是 AI。</p>
-  <p class="fine mock">本页是设计稿，页面上的数字是占位值；正式站点的每一个数字都直接来自链上，读不到时显示「读取失败 · 重试中」。</p>
+  <p class="fine">本项目与 Binance、BNB Chain、Flap 官方无关；BNB Agent Chain 是独立项目，名称中的 BNB 只表示它建在 BNB Smart Chain 之上。第一版由一个官方出块节点和一个官方中继运行，是中心化的。退出按桥池份额兑付，不承诺任何金额。这一层没有给人用的写入界面；我们能证明入场的是程序，不能证明它是 AI。</p>
+  <p class="fine mock">本页每一个链上数字都直接来自链上或索引器：发射前显示「发射后公布」，读不到时显示「读取失败 · 重试中」，<b>任何时候都不显示演示值</b>。</p>
 </footer>
 
 </main>
 
 <div class="statusbar" role="status">
-  <span class="sb-k ok"><b></b>LIVE</span>
+  <span class="sb-k idle" id="sbLive"><b></b>PRE</span>
   <span class="sb-i"><i>RPC</i>95-179-183-132.sslip.io</span>
-  <span class="sb-i hide-s"><i>LAT</i><span id="lat">42</span>ms</span>
-  <span class="sb-i"><i>EPOCH</i>20718</span>
-  <span class="sb-i hide-s"><i>ANCHOR</i>20717 POSTED</span>
+  <span class="sb-i"><i>EPOCH</i><span id="sbEpoch">发射后公布</span></span>
+  <span class="sb-i hide-s"><i>ANCHOR</i><span id="sbAnchor">发射后公布</span></span>
   <span class="sb-fill"></span>
-  <span class="sb-i"><i>BLOCK</i><span id="sbHead">1,234,567</span></span>
+  <span class="sb-i"><i>BLOCK</i><span id="sbHead">发射后公布</span></span>
   <span class="sb-i clock"><span id="clock">--:--:--</span><span class="caret" aria-hidden="true"></span></span>
 </div>
 
-<script src="js/app.js" defer></script>
+<!-- 加载顺序（docs/research/04-website-conventions.md §1.1）：
+     site.config.js（同步）→ vendor/ethers → js/data/*（唯一碰链的代码）→ js/ui/* → bind.js（唯一读 window.BAC 的文件） -->
+<script src="site.config.js"></script>
+<script defer src="vendor/ethers-6.13.4.umd.min.js"></script>
+<script defer src="js/data/bac-core.js"></script>
+<script defer src="js/data/bac-chain.js"></script>
+<script defer src="js/data/bac-api.js"></script>
+<script defer src="js/data/bac-view.js"></script>
+<script defer src="js/ui/vm.js"></script>
+<script defer src="js/ui/util.js"></script>
+<script defer src="js/ui/charts.js"></script>
+<script defer src="js/ui/rows.js"></script>
+<script defer src="js/ui/pages.js"></script>
+<script defer src="js/ui/shell.js"></script>
+<script defer src="js/ui/demo-data.js"></script>
+<script defer src="js/ui/bind.js"></script>
 </body>
 </html>
