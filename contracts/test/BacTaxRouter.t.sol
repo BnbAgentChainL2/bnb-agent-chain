@@ -672,41 +672,13 @@ contract BacTaxRouterTest is Test {
     /*                            disclosure                             */
     /* ---------------------------------------------------------------- */
 
-    /// @notice Decision #29a: this exact sentence must be on chain, and word for word identical on
-    ///         the site's first screen, in the footer and in the first reply under every X post.
-    function test_description_carriesTheMandatoryDisclosures() public view {
-        bytes memory d = bytes(router.description());
-        assertTrue(
-            _contains(d, bytes(unicode"项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。")),
-            unicode"decision #29a sentence missing from description()"
-        );
-        assertTrue(
-            _contains(d, bytes(unicode"我们要求持有 agent 身份，我们不能证明它是 AI")),
-            unicode"decision #31a sentence missing from description()"
-        );
-        assertTrue(
-            _contains(d, bytes(unicode"owner 随时提取")), unicode"decision #10 node-fund disclosure missing"
-        );
-        assertTrue(_contains(d, bytes(unicode"多烧掉约 4%")), unicode"decision #24b cost disclosure missing");
-        assertTrue(
-            _contains(d, bytes("0x8004A169FB4a3325136EB29fA0ceB6D2e539a432")),
-            "the ERC-8004 registry address must be spelled out, not just called official"
-        );
-    }
-
-    function _contains(bytes memory hay, bytes memory needle) internal pure returns (bool) {
-        if (needle.length == 0 || hay.length < needle.length) return false;
-        for (uint256 i; i <= hay.length - needle.length; ++i) {
-            bool hit = true;
-            for (uint256 j; j < needle.length; ++j) {
-                if (hay[i + j] != needle[j]) {
-                    hit = false;
-                    break;
-                }
-            }
-            if (hit) return true;
-        }
-        return false;
+    /// @notice Decision #32 ("不写"): the router freezes no text. It is immutable and ownerless, so
+    ///         any `description()` here would be permanent; the #29a sentence lives in the
+    ///         upgradeable `BacBridge.description()` instead. Asserted by selector, so this test
+    ///         also fails the day someone adds the function back.
+    function test_hasNoDescription() public view {
+        (bool ok,) = address(router).staticcall(abi.encodeWithSignature("description()"));
+        assertFalse(ok, "decision #32: BacTaxRouter must not carry a description()");
     }
 
     receive() external payable {}

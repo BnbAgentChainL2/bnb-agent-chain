@@ -30,7 +30,7 @@
   function srcLine(tag, idxPath, rpcCall) {
     return '<div class="srcline"><b>' + esc(tag) + '</b>' +
       (onRpc()
-        ? '<code>' + esc(rpcCall) + '</code><code>' + esc(UI.TEXT.SRC_RPC) + '</code>'
+        ? '<code>' + esc(rpcCall) + '</code><code>' + esc(UI.srcLabel('rpc')) + '</code>'
         : '<code>' + esc(idxPath) + '</code><code>' + esc(rpcCall) + '</code>') +
       '</div>';
   }
@@ -60,10 +60,18 @@
     if (!el) return;
     /* 直读层内节点时只有最近一窗口的块（本站一轮最多取 20 块左右），
        「首页 / 末页 / 每页 100 条」这些控件点了也没有第二页可去 ——
-       与其画一排点不动的按钮，不如把为什么说清楚。索引器上线后自动恢复。 */
+       与其画一排点不动的按钮，不如把为什么说清楚。索引器恢复供数后自动换回分页。 */
     if (onRpc()) {
-      el.innerHTML = '<span class="pg-note">直读层内节点：只有最近 ' + comma(total) +
-        ' 条，没有更早的可以翻。历史与搜索要等索引器上线。</span>' +
+      /* 索引器已经部署在同一台主机上；走到这里只说明这一轮数据是直读节点拿到的。
+         三种情况分开说：还在读取 / 确实读不到（'noidx'）/ 索引器正常但这一轮恰好走的直读 ——
+         最后一种不能说它「没有答话」，那是假话（INDEX 灯是绿的）。 */
+      var why = VM.st.idx === 'loading'
+        ? '索引器还在读取，读到后自动换成可翻页的完整历史。'
+        : VM.st.idx === 'noidx'
+          ? '索引器现在没有答话，恢复后自动换回可翻页的完整历史与搜索。'
+          : '下一轮从索引器取数时自动换回可翻页的完整历史。';
+      el.innerHTML = '<span class="pg-note">这一轮是直读层内节点读到的最近 ' + comma(total) +
+        ' 条，没有更早的可以翻。' + why + '</span>' +
         '<span class="pg-fill"></span><span>显示全部 ' + comma(total) + ' 条</span>';
       el.onclick = null;
       return;
@@ -223,8 +231,8 @@
     var s = VM.st.feed;
     if (s !== 'ok') {
       ul.innerHTML = '<li class="f-none">' + esc(s === 'pre' ? '还没有 agent 动态' : miss(s)) +
-        (s === 'pre' ? '　动态要把交易按 agent 归类，这要索引器 + BSC 上 BacBridge 的进场记录（按 ERC-8004 身份编号），两样都还没上线。'
-          + '层内的原始区块与交易在「区块」「交易」两页是实时的。' : '') + '</li>';
+        (s === 'pre' ? '　动态要把交易按 agent 归类，这要 BSC 上 BacBridge 的进场记录（按 ERC-8004 身份编号）；'
+          + '桥合约还没部署，这些记录现在还不存在。层内的原始区块与交易在「区块」「交易」两页是实时的。' : '') + '</li>';
       return;
     }
     if (!VM.feed.length) { ul.innerHTML = '<li class="f-none">最近一段时间没有链上记录。</li>'; return; }
@@ -398,7 +406,7 @@
       val(s, toSelf, function (x) { return bac(x, 9); }) + ' BAC</b></div>' +
       '<div class="fs-row"><span>→ 官方基金会</span><b>' + val(s, toFound, function (x) { return bac(x, 9); }) + ' BAC</b></div>' +
       '</div>' +
-      '<p class="fs-note">手续费不销毁：basefee = 0，全额以 tips 形式进出块者地址，再由它转入分账合约。' +
+      '<p class="fs-note">手续费不销毁：basefee = 0，全额以 tips 形式进出块者地址；发射后再由它转入分账合约（演练链上没有分账合约）。' +
       '<b>阶段 1 的出块者给自己付费等于免费</b>，这一条照实说。' + esc(GAS_NOTE_OFFICIAL + GAS_NOTE_VALIDATOR) + '</p>' +
       '</div></div>';
   }
@@ -419,7 +427,7 @@
         ask('block', n);
         el.innerHTML = R.pageMiss('区块 #' + comma(n), 'loading', askNote('这一块'));
       } else if (s === 'ok') {
-        el.innerHTML = R.notFound('区块 #' + comma(n), '当前这一页只保留最近一段区块；索引器上线后可以读全量历史。');
+        el.innerHTML = R.notFound('区块 #' + comma(n), '当前这一页只保留最近一段区块；全量历史要索引器答话才能读。');
       } else {
         el.innerHTML = R.pageMiss('区块 #' + comma(n), s, '');
       }
@@ -463,7 +471,7 @@
       kv('区块大小', '<span class="n">' + (b.size ? comma(b.size) : '—') + '</span><u>字节</u>') +
       kv('纪元', (b.epoch === null || b.epoch === undefined ? miss(s)
         : '<a class="a-link" href="#/epoch/' + b.epoch + '">' + b.epoch + '</a>') +
-        '<span class="hintline">epoch = floor(timestamp / 86400)：本站当前按天编号，合约里的纪元是 10 分钟</span>') +
+        '<span class="hintline">epoch = floor(timestamp / 600)（10 分钟，与合约一致）</span>') +
       kv('extraData', '<span class="n">' + esc(b.extra ? b.extra.slice(0, 34) + '…' : '—') +
         '</span><span class="hintline">QBFT 的验证者集与签名</span>', 'wrap') +
       '</tbody></table></div>' +
@@ -507,7 +515,7 @@
         ask('tx', h);
         el.innerHTML = R.pageMiss('交易 ' + sh(h), 'loading', askNote('这一笔'));
       } else if (s === 'ok') {
-        el.innerHTML = R.notFound('交易 ' + sh(h), '当前这一页只保留最近一段交易；索引器上线后可以读全量。');
+        el.innerHTML = R.notFound('交易 ' + sh(h), '当前这一页只保留最近一段交易；全量历史要索引器答话才能读。');
       } else {
         el.innerHTML = R.pageMiss('交易 ' + sh(h), s, '');
       }
@@ -526,7 +534,7 @@
       srcLine('TX', 'GET /api/tx/' + sh(t.hash), 'eth_getTransactionByHash + eth_getTransactionReceipt') +
       '<div class="dgrid">' +
       '<div class="panel"><div class="ph"><span class="ph-t big">概要</span><span class="ph-fill"></span>' +
-      '<span class="ph-m">' + esc(onRpc() ? UI.TEXT.SRC_RPC : 'GET /api/tx/{hash}') + '</span></div>' +
+      '<span class="ph-m">' + esc(onRpc() ? UI.srcLabel('rpc') : 'GET /api/tx/{hash}') + '</span></div>' +
       '<table class="tbl kvt"><tbody>' +
       kv('交易哈希', '<span class="n">' + esc(t.hash) + '</span>', 'wrap') +
       kv('状态', t.ok === false ? '<span class="st-tag bad">失败 · 已消耗 gas</span>' : '<span class="st-tag ok">成功</span>') +
@@ -561,7 +569,7 @@
       esc(onRpc() ? '原始日志 · 未解码' : '已解码') + '</span></div>' +
       ((onRpc() && t.logsCount)
         ? '<div class="empty-box"><b>' + t.logsCount + ' 条日志 · 还没有解码</b>' +
-          '收据里有 ' + t.logsCount + ' 条日志，但把它们翻译成事件名与参数要合约 ABI，那是索引器的活，索引器还没上线。' +
+          '收据里有 ' + t.logsCount + ' 条日志，但把它们翻译成事件名与参数要合约 ABI，那是索引器的活；这一笔是本站直读层内节点拿到的。' +
           '原始日志在层内节点的 eth_getTransactionReceipt 里，任何人都能自己取。</div>'
         : (t.logs && t.logs.length) ? t.logs.map(function (lg, i) {
         return '<div class="logrow"><div class="lg-h"><span class="lg-i">' + i + '</span>' +
@@ -586,7 +594,7 @@
       if (s === 'ok' && canAskIdx()) { ask('agent', id); el.innerHTML = R.pageMiss('agent #' + id, 'loading', '正在向索引器要这个身份。'); }
       else if (s === 'ok') el.innerHTML = R.notFound('agent #' + id, '名录里没有这个编号。');
       else el.innerHTML = R.pageMiss('agent #' + id, s, s === 'pre'
-        ? '还没有任何 agent 进场：进场要持有 ERC-8004 身份并把 BAC 锁进 BSC 上的 BacBridge，代币还没发射、桥还没部署。'
+        ? '还没有任何 agent 进场：进场要持有 ERC-8004 身份并把 BAC 锁进 BSC 上的 BacBridge，代币还没发射、桥还没部署。' + ID_LIMIT
         : '');
       return;
     }
@@ -611,8 +619,7 @@
       '<div class="panel"><div class="ph"><span class="ph-t big">身份与账目</span><span class="ph-fill"></span>' +
       '<span class="ph-m">GET /api/agent/' + a.id + '</span></div>' +
       '<table class="tbl kvt"><tbody>' +
-      kv('状态', R.stTag(a.statusCls || 'dim', a.statusZh || '—') +
-        (a.status === 'DORMANT' ? '<span class="hintline">休眠不影响退出：退出兑付不看 ERC-8004 身份，也不看状态。</span>' : '')) +
+      kv('状态', R.stTag(a.statusCls || 'dim', a.statusZh || '—')) +
       kv('ERC-8004 身份', '<span class="n">#' + esc(String(idNo)) + '</span>' +
         '<span class="hintline">BSC 身份注册表</span><span class="hintline n"><code>' + esc(ID_REGISTRY) + '</code></span>', 'wrap') +
       kv('身份持有人', '<span class="n">' + esc(a.holder || '—') + '</span>' +
@@ -705,7 +712,7 @@
       else if (s === 'ok') el.innerHTML = R.notFound('合约 ' + sa(raw || ''), '这个地址不在合约名录里，也可能它只是一个普通层内地址。');
       else el.innerHTML = R.pageMiss('合约 ' + sa(raw || ''), s,
         s === 'noidx'
-          ? '合约名录（部署者、字节码大小、调用次数）要索引器把全链扫一遍才有，索引器还没上线。'
+          ? '合约名录（部署者、字节码大小、调用次数）要索引器把全链扫一遍才有，索引器现在读不到。'
             + '这个地址上的字节码本身在层内节点上就能读（eth_getCode），但本站现在不显示未经核对的解读。'
           : (s === 'pre' ? '发射后这里显示部署者、字节码大小、调用次数与最后一次调用。只显示事实，不做安全评级。' : ''));
       return;
@@ -781,13 +788,15 @@
     el.innerHTML =
       '<div class="vhead"><h1>纪元与锚点</h1><span class="vh-en">EPOCHS</span>' +
       '<span class="fill" aria-hidden="true"></span>' +
-      /* 数据层的 EPOCH 还是 86400，合约（BacBridge / ValidatorStaking）是 600（决策 #20）：数据层改过来之前照实说是按天编号 */
-      '<span class="vh-m">epoch = floor(timestamp / 86400)，由层内块时间推出（本站当前按天编号；合约里的纪元是 10 分钟，即 floor(timestamp / 600)，两者还没统一），<b>当前纪元是实时的</b>；' +
+      /* 决策 #20：纪元 10 分钟，数据层 EPOCH = 600，与 BacBridge / ChainAnchor / ValidatorStaking 一致。
+         索引器 API 里的 epoch 字段目前还按天编号：本站的区块纪元一律按块时间 ÷ 600 重算（bind.js），照实说一句 */
+      '<span class="vh-m">epoch = floor(timestamp / 600)（10 分钟，与合约一致），由层内块时间推出，<b>当前纪元是实时的</b>' +
+      '（索引器 API 里的 epoch 字段目前还按天编号，即 floor(timestamp / 86400)，本站不用它）；' +
       '锚点要中继把退出根提交到 BSC 的 ChainAnchor，那个合约还没部署，所以下面这张表还是空的。' +
       /* 决策 #25a：2 分钟等于人工发现窗口归零，这段等待是给常驻 watchdog 的，照实说 */
       '<b>锚点等待：</b>锚点提交后要等 2 分钟才能兑付。2 分钟里人来不及发现问题，这段等待是给常驻的自动 watchdog 用的，不是给人用的</span></div>' +
       '<div class="srcline"><b>EPOCHS</b><code>GET /api/epochs?limit=30</code>' +
-      '<code>' + esc(VM.st.epochs === 'ok' ? UI.TEXT.SRC_IDX : 'ChainAnchor 还没部署 · 索引器未上线') + '</code></div>' +
+      '<code>' + esc(s === 'ok' ? UI.TEXT.SRC_IDX : (s === 'pre' ? 'ChainAnchor 还没部署' : miss(s))) + '</code></div>' +
       '<div class="ep-top">' +
       '<div><i>当前纪元</i><b class="grn">' + (VM.chain.epoch === null ? esc(miss(VM.st.chain)) : VM.chain.epoch) + '</b>' +
       '<span>进行中 · 下一个锚点 <span id="epCd">' + esc(VM.chain.epochLeftSec === null ? '—' : UI.hmsLeft(VM.chain.epochLeftSec)) + '</span></span></div>' +
@@ -814,9 +823,8 @@
       '（当纪元的费用还没扫完）；<b>已最终的纪元差额应当是 0，不是 0 会在这里变黄并触发告警</b>。</span>' +
       '<span class="pf-r">保留最近 30 个纪元</span></div></div>' +
       '<p class="note">退出的叶子数据由 <code>GET /api/epoch/{n}/leaves</code> 公开，' +
-      /* 演练链的创世与 enode 已经公开（HANDOFF §2），但演练链上没有 L2Bridge：能重建退出叶子的是正式链，
-         它的创世与 enode 发射时才有 —— 这句只能说成正式链发射后的事 */
-      '<b>正式链的创世文件与 enode 发射时公布，之后任何跑了全节点的人都能从 <code>L2Bridge.ExitBurned</code> 日志自己重建</b> —— 我们的服务器不是这份数据的唯一来源。' +
+      /* 只读同步现在就开放（决策 #36），但演练链上没有 L2Bridge：能从日志重建退出叶子的只有正式链 */
+      '<b>任何跑了全节点的人都能从 <code>L2Bridge.ExitBurned</code> 日志自己重建</b>（L2Bridge 只在正式链上，演练链上没有）—— 我们的服务器不是这份数据的唯一来源。' +
       '退出拿到的是桥用桥池 BNB 在市场上回购来的 BAC，按份额兑付，不承诺任何金额。' + esc(OWNER_POWER) + '</p>';
   }
 
@@ -880,7 +888,7 @@
         任何 $ 金额、市值、涨跌幅都不存在，页面上一个字都不许出现。
      ③ 名字与符号是部署者自己写的不可信文本：原样转义显示，不合并同名，不打「假币」标签。 */
 
-  /* 03 §7.6 规定的那一段说明，索引器没给（它还没上线）时用这一份本地副本，一字不差。 */
+  /* 03 §7.6 规定的那一段说明，索引器没给（读不到或还没回话）时用这一份本地副本，一字不差。 */
   var DETECT_NOTE = '本链没有官方 DEX、官方代币或官方工具合约。这一页是把 agent 自己部署的合约按日志形状和 eth_call 应答解出来的结果，规则写在 docs/03-INTERFACES.md §7。它可能漏掉我们没认出来的东西，也可能认错。';
   var NAME_UNTRUSTED = '名字和符号由部署者自己写，本站不核实。';
   var PRICE_NOTE = '这是池子当前的兑换比，不是行情价。本链没有法币计价，也没有预言机。';
@@ -891,7 +899,7 @@
     var un = d && d.unclassified !== null && d.unclassified !== undefined ? d.unclassified : null;
     return '<p class="note"><b>这一页是启发式解出来的：</b>' + esc((d && d.note) || DETECT_NOTE) +
       '<br><b>另有 ' + (un === null ? '—' : comma(un)) + ' 个被调用过但我们没能识别出类型的合约。</b>' +
-      (un === null ? '（这个计数要索引器把全链扫一遍才有，索引器还没上线。）' : '') +
+      (un === null && VM.st.idx === 'noidx' ? '（这个计数要索引器把全链扫一遍才有，索引器现在读不到。）' : '') +
       '这张表不等于链上全部。</p>';
   }
 
@@ -925,13 +933,28 @@
     return '';
   }
 
-  /** 索引器还没上线时那一句：说清楚是「没人算」，不是「读取失败」，也不是「发射后公布」。 */
-  var NO_IDX_LINE = '这一页要索引器把全链的日志解一遍才有，索引器还没上线；' +
-    '层内那条链本身在出块，区块与交易在「区块」「交易」两页都是实时的。';
+  /** 索引器不在供数时补的那一句，照 VM.st.built 分开说：
+      'loading' = 第一轮还没回来；'noidx' = 读不到（不是「读取失败」，也不是「发射后公布」）。供数时不补。 */
+  function noIdxLine() {
+    if (VM.st.built === 'ok') return '';
+    if (VM.st.built === 'loading') return '正在向索引器要这一页的数据。';
+    return '这一页要索引器把全链的日志解一遍才有，索引器现在读不到；' +
+      '层内那条链本身在出块，区块与交易在「区块」「交易」两页都是实时的。';
+  }
+  /** 列表页右上角的计数：索引器供数就照实写（空就是 0），第一轮没回来写「读取中…」，
+      这一张表最近一次没要到写「读取失败」，索引器读不到才说读不到 —— 不看这张表空不空。 */
+  function builtCount(at, err, total, unit) {
+    if (VM.st.built === 'ok') {
+      if (err) return UI.TEXT.ERR;
+      return at === null ? UI.TEXT.LOADING : comma(total) + unit;
+    }
+    return VM.st.built === 'loading' ? UI.TEXT.LOADING : UI.TEXT.NO_IDX;
+  }
 
   function builtEmpty(title, body) {
+    var line = noIdxLine();
     return '<div class="empty-box"><b>' + esc(title) + '</b>' + body +
-      (VM.st.built !== 'ok' ? '<br><br>' + esc(NO_IDX_LINE) : '') + '</div>';
+      (line ? '<br><br>' + esc(line) : '') + '</div>';
   }
 
   /** 列表页要不要再问一次索引器：只在它确实在供数、而且这一页还没问过的时候。
@@ -956,11 +979,11 @@
       '<span class="fill" aria-hidden="true"></span>' +
       '<span class="vh-m">agent 自己部署的 ERC-20 形状合约；判定只看行为（日志形状 + eth_call 应答），' +
       '<b>会漏也会错</b>。' + esc(NAME_UNTRUSTED) + '</span></div>' +
-      '<div class="srcline"><b>TOKENS</b><code>GET /api/tokens</code><code>' +
-      esc(VM.st.built === 'ok' ? UI.TEXT.SRC_IDX : UI.TEXT.NO_IDX) + '</code></div>' +
+      '<div class="srcline"><b>TOKENS</b><code>GET /api/tokens</code><code>' + esc(UI.idxLabel()) + '</code></div>' +
       '<div class="panel"><div class="ph"><span class="ph-t big">代币列表</span><span class="ph-fill"></span>' +
       '<a class="more" href="#/pairs">交易对 →</a><a class="more" href="#/swaps">成交流水 →</a>' +
-      '<span class="ph-m">' + (ok ? comma(VM.built.tokensTotal === null ? list.length : VM.built.tokensTotal) + ' 个' : esc(UI.TEXT.NO_IDX)) + '</span></div>' +
+      '<span class="ph-m">' + esc(builtCount(VM.built.tokensAt, VM.built.tokensErr,
+        VM.built.tokensTotal === null ? list.length : VM.built.tokensTotal, ' 个')) + '</span></div>' +
       (ok
         ? '<div class="tw"><table class="tbl rowlink"><thead><tr>' +
           '<th class="l">代币</th><th class="l">发行者</th><th class="r">总量</th>' +
@@ -1116,11 +1139,11 @@
       '<span class="fill" aria-hidden="true"></span>' +
       '<span class="vh-m">agent 自己部署的池子；<b>储备是池子里现在的两种代币，不是任何法币金额</b>。' +
       '本链没有法币计价，也没有预言机。</span></div>' +
-      '<div class="srcline"><b>PAIRS</b><code>GET /api/pairs</code><code>' +
-      esc(VM.st.built === 'ok' ? UI.TEXT.SRC_IDX : UI.TEXT.NO_IDX) + '</code></div>' +
+      '<div class="srcline"><b>PAIRS</b><code>GET /api/pairs</code><code>' + esc(UI.idxLabel()) + '</code></div>' +
       '<div class="panel"><div class="ph"><span class="ph-t big">交易对列表</span><span class="ph-fill"></span>' +
       '<a class="more" href="#/tokens">代币 →</a><a class="more" href="#/swaps">成交流水 →</a>' +
-      '<span class="ph-m">' + (ok ? comma(VM.built.pairsTotal === null ? list.length : VM.built.pairsTotal) + ' 个' : esc(UI.TEXT.NO_IDX)) + '</span></div>' +
+      '<span class="ph-m">' + esc(builtCount(VM.built.pairsAt, VM.built.pairsErr,
+        VM.built.pairsTotal === null ? list.length : VM.built.pairsTotal, ' 个')) + '</span></div>' +
       (ok
         ? '<div class="tw"><table class="tbl rowlink"><thead><tr>' +
           '<th class="l">交易对</th><th class="l">类型</th><th class="l">建池人</th>' +
@@ -1274,11 +1297,10 @@
       '<span class="fill" aria-hidden="true"></span>' +
       '<span class="vh-m">只统计我们能解码出来的 Swap 事件；成交价一律写成「1 token0 折合多少 token1」，' +
       '<b>本链没有法币计价，也没有预言机</b>。</span></div>' +
-      '<div class="srcline"><b>SWAPS</b><code>GET /api/swaps</code><code>' +
-      esc(VM.st.built === 'ok' ? UI.TEXT.SRC_IDX : UI.TEXT.NO_IDX) + '</code></div>' +
+      '<div class="srcline"><b>SWAPS</b><code>GET /api/swaps</code><code>' + esc(UI.idxLabel()) + '</code></div>' +
       '<div class="panel"><div class="ph"><span class="ph-t big">成交</span><span class="ph-fill"></span>' +
       '<a class="more" href="#/tokens">代币 →</a><a class="more" href="#/pairs">交易对 →</a>' +
-      '<span class="ph-m">' + (ok ? comma(list.length) + ' 笔' : esc(UI.TEXT.NO_IDX)) + '</span></div>' +
+      '<span class="ph-m">' + esc(builtCount(VM.built.swapsAt, VM.built.swapsErr, list.length, ' 笔')) + '</span></div>' +
       (ok
         ? swapTable(list, list[0].pair ? list[0].pair.token0 : null)
         : builtEmpty('还没有成交。',
@@ -1317,11 +1339,11 @@
       '<div class="panel"><div class="ph"><span class="ph-t">它发的币</span><span class="ph-fill"></span>' +
       '<a class="more" href="#/tokens">全部代币 →</a></div>' +
       ((bt && bt.tokens.length) ? cards(bt.tokens, 'token')
-        : '<div class="empty-box">这个 agent 还没发过代币。' + (VM.st.built !== 'ok' ? '<br>' + esc(NO_IDX_LINE) : '') + '</div>') + '</div>' +
+        : '<div class="empty-box">这个 agent 还没发过代币。' + (noIdxLine() ? '<br>' + esc(noIdxLine()) : '') + '</div>') + '</div>' +
       '<div class="panel"><div class="ph"><span class="ph-t">它建的池</span><span class="ph-fill"></span>' +
       '<a class="more" href="#/pairs">全部交易对 →</a></div>' +
       ((bt && bt.pairs.length) ? cards(bt.pairs, 'pair')
-        : '<div class="empty-box">这个 agent 还没建过交易对。' + (VM.st.built !== 'ok' ? '<br>' + esc(NO_IDX_LINE) : '') + '</div>') + '</div>' +
+        : '<div class="empty-box">这个 agent 还没建过交易对。' + (noIdxLine() ? '<br>' + esc(noIdxLine()) : '') + '</div>') + '</div>' +
       '</div>' +
       '<div class="dgrid dfull">' +
       '<div class="panel"><div class="ph"><span class="ph-t">它的成交</span><span class="ph-fill"></span>' +
@@ -1330,7 +1352,7 @@
         ? swapTable(tr.recent, tr.recent[0].pair ? tr.recent[0].pair.token0 : null) +
           '<div class="pf"><span>按交易对分布：' +
           (tr.pairs || []).map(function (x) { return esc(sa(x.address)) + ' ' + x.swaps + ' 笔'; }).join('　') + '</span></div>'
-        : '<div class="empty-box">这个 agent 还没有做过成交。' + (VM.st.built !== 'ok' ? '<br>' + esc(NO_IDX_LINE) : '') + '</div>') + '</div>' +
+        : '<div class="empty-box">这个 agent 还没有做过成交。' + (noIdxLine() ? '<br>' + esc(noIdxLine()) : '') + '</div>') + '</div>' +
       '<div class="panel"><div class="ph"><span class="ph-t">它持有的代币</span><span class="ph-fill"></span>' +
       '<span class="ph-m">' + (a.holdingsTruncated ? '只列前 20 个' : '余额按转账推出来') + '</span></div>' +
       ((hd && hd.length)
@@ -1342,7 +1364,7 @@
               '<td class="r n">' + tAmt(x.balance, x.decimals) + '</td>' +
               '<td class="r n">' + (x.shareBps === null ? '—' : (x.shareBps / 100).toFixed(2) + '%') + '</td></tr>';
           }).join('') + '</tbody></table></div>'
-        : '<div class="empty-box">这个 agent 名下还没有任何代币余额。' + (VM.st.built !== 'ok' ? '<br>' + esc(NO_IDX_LINE) : '') + '</div>') + '</div>' +
+        : '<div class="empty-box">这个 agent 名下还没有任何代币余额。' + (noIdxLine() ? '<br>' + esc(noIdxLine()) : '') + '</div>') + '</div>' +
       '</div>' + detectBar();
   }
 
@@ -1461,7 +1483,7 @@
           (VM.st.blocks === 'pre'
             ? '还没有发射，链上还没有任何区块、交易或 agent 可以搜。'
             : '搜索框接受：区块高度、交易哈希（0x + 64 位）、层内地址或合约地址（0x + 40 位）、agent 编号（例 #17）、纪元号。' +
-              (onRpc() ? '　索引器还没上线：区块高度与完整交易哈希可以直接查层内节点，' +
+              (onRpc() ? '　现在是直读层内节点：区块高度与完整交易哈希可以直接查，' +
                 '按地址找历史、按前缀模糊匹配要等索引器。' : '')) +
           '</div>') + '</div>';
   }
@@ -1482,8 +1504,11 @@
       label: '每块交易数（本站读到的这一窗口）', padL: 28, none: none
     });
     var d = VM.daily;
-    /* 日聚合要把全链按天卷起来，只有索引器做得到 —— 它没上线就照实说，不画假曲线 */
-    var noneDaily = VM.st.daily === 'pre' ? UI.TEXT.PRE : '索引器未上线 · 没有日聚合数据';
+    /* 日聚合要把全链按天卷起来，只有索引器做得到 —— 没有就照实说，不画假曲线。
+       照索引器的状态分开说：在供数但还没有日聚合端点 / 第一轮还没回来 / 读不到。 */
+    var noneDaily = VM.st.daily === 'pre' ? UI.TEXT.PRE
+      : (VM.st.daily === 'ok' ? '索引器暂无日聚合数据'
+        : (VM.st.daily === 'loading' ? UI.TEXT.LOADING : '索引器读不到 · 没有日聚合数据'));
     C.draw($('#chTx'), { type: 'bar', data: d ? d.tx : [], labels: d ? d.labels : null, unit: ' 笔', label: '近 30 日交易数', none: noneDaily });
     C.draw($('#chGas'), { type: 'area', data: d ? d.gas : [], labels: d ? d.labels : null, unit: 'M gas', label: '近 30 日 gas 用量', tone: 'amb', none: noneDaily });
     C.draw($('#chAgents'), { type: 'line', data: d ? d.agents : [], labels: d ? d.labels : null, unit: ' 个', label: 'agent 数量增长', tone: 'vio', none: noneDaily });

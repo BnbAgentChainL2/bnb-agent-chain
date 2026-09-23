@@ -344,10 +344,11 @@ contract BridgeHandler is Test {
 
     function collect(uint256 actorSeed) public {
         address a = _actor(actorSeed);
-        (uint256 pot,,) = bridge.lastEpochRelease();
+        (,, uint16 bps) = bridge.lastEpochRelease();
         uint64 span = _epoch() - bridge.lastCollectEpoch(a);
         if (span > bridge.MAX_CATCHUP_EPOCHS()) span = uint64(bridge.MAX_CATCHUP_EPOCHS());
-        uint256 cap = (pot * bridge.MAX_EXIT_SHARE_BPS() * span) / 10000;
+        // 10% of what the last settled daily rate releases from the whole bucket per epoch
+        uint256 cap = (bridge.buybackBac() * bps * bridge.MAX_EXIT_SHARE_BPS() * span) / (1e8 * 144);
         vm.prank(a);
         try bridge.collect(a) returns (uint256 paid) {
             gBacPaidOut += paid;
@@ -381,7 +382,9 @@ contract BridgeHandler is Test {
         address[] memory who = new address[](1);
         who[0] = _actor(actorSeed);
         vm.prank(bridge.watchdog());
-        try bridge.revokeEpochOwed(last.epoch, who) {} catch {}
+        try bridge.revokeEpochOwed(last.epoch, who) returns (uint256 revoked) {
+            if (revoked > 0) gHarvests++;
+        } catch {}
     }
 
     function setHaltReason(uint256 seed) public {
@@ -417,7 +420,10 @@ contract BridgeHandler is Test {
         try bridge.sweepImmatureOwed(_actor(actorSeed)) {} catch {}
     }
 
-    /// @dev The escape claim is `agentController`'s, whichever actor the fuzzer picked.
+    /// @dev The escape claim is `agentController`'s, whichever actor the fuzzer picked. Requirement
+    ///      5 is about BAC payouts, so it is checked only when this one paid BAC: a BNB-only payout
+    ///      cannot move the BAC balance, and a gap an earlier OWNER withdrawal cut into the
+    ///      deposits is exempt by design (it used to be flagged here as a false positive).
     function escapeCollect(uint256 actorSeed) public {
         uint256 agentId = _agentOf(actorSeed);
         address a = bridge.agentController(agentId);
@@ -428,7 +434,7 @@ contract BridgeHandler is Test {
             gBacPaidAfterHalt += bacPaid;
             gBnbOut += bnbPaid;
             gBnbOutAfterHalt += bnbPaid;
-            _checkDepositsCovered();
+            if (bacPaid > 0) _checkDepositsCovered();
         } catch {}
     }
 
@@ -529,6 +535,11 @@ contract BridgeHandler is Test {
         return address(uint160(uint256(vm.load(address(bridge), IMPL_SLOT))));
     }
 
+    function _releaseHash() internal view returns (bytes32) {
+        (uint160 p, uint48 scale, uint48 gen) = bridge.releaseIndex();
+        return keccak256(abi.encode(p, scale, gen));
+    }
+
     function _bookHash() internal view returns (bytes32) {
         bytes memory a = abi.encode(
             bridge.bnbBalance(),
@@ -536,7 +547,7 @@ contract BridgeHandler is Test {
             bridge.buybackBac(),
             bridge.owedTotal(),
             bridge.reservedTotal(),
-            bridge.accPerOwed(),
+            _releaseHash(),
             bridge.totalCreditsIssued(),
             bridge.totalCreditsExited(),
             bridge.totalBurned(),
@@ -632,13 +643,12 @@ contract BacBridgeInvariantTest is Test {
 
     // ---- helpers ----
 
-    function _sumOwedSide() internal view returns (uint256 unclaimedSum, uint256 pendingSum) {
+    /// @dev What each actor has been released and not yet collected (harvested or not), summed.
+    ///      Per address that is `owed - unreleasedOwed`, which can never exceed `owed`.
+    function _sumOwedSide() internal view returns (uint256 claims) {
         for (uint256 i = 0; i < 4; i++) {
             address a = handler.actorAt(i);
-            unclaimedSum += bridge.unclaimed(a);
-            uint256 scaled = (bridge.owed(a) * bridge.accPerOwed()) / bridge.ACC_PRECISION();
-            uint256 debt = bridge.owedDebt(a);
-            if (scaled > debt) pendingSum += scaled - debt;
+            claims += bridge.owed(a) - bridge.unreleasedOwed(a);
         }
     }
 
@@ -692,21 +702,27 @@ contract BacBridgeInvariantTest is Test {
 
     // ================================================================== B3
 
-    /// Reserved BAC is exactly the sum of what addresses may still harvest, up to rounding dust.
-    /// Only meaningful before a halt: `_halt` voids every reservation by design.
+    /// Reserved BAC is exactly the sum of what addresses may still collect, up to rounding dust,
+    /// in BOTH directions: never below the claims (a shortfall), and never above them either —
+    /// a reservation no address can ever collect is BAC withheld from every later exiter (the
+    /// pre-fix accumulator's phantom, review finding 2026-09-23). Only meaningful before a halt:
+    /// `_halt` voids every reservation by design.
     function invariant_B3_ReservedMatchesClaims() public view {
         if (bridge.isHalted()) return;
-        (uint256 unclaimedSum, uint256 pendingSum) = _sumOwedSide();
+        uint256 claims = _sumOwedSide();
         assertGe(
             bridge.reservedTotal() + handler.gHarvests(),
-            unclaimedSum + pendingSum,
+            claims,
             "B3: reserved below the claims it backs by more than floor dust"
         );
         assertLe(
-            unclaimedSum + pendingSum,
-            bridge.owedTotal() + handler.gHarvests(),
-            "B3: claims exceed the debt they are paid from"
+            bridge.reservedTotal(), claims + handler.gHarvests(), "B3: a reservation that no address can collect"
         );
+        assertLe(claims, bridge.owedTotal(), "B3: claims exceed the debt they are paid from");
+        for (uint256 i = 0; i < 4; i++) {
+            address a = handler.actorAt(i);
+            assertLe(bridge.unclaimed(a), bridge.owed(a), "B3: an address was released more than it is owed");
+        }
     }
 
     // ================================================================== B4
@@ -818,7 +834,8 @@ contract BacBridgeInvariantTest is Test {
 
     // ================================================================== extras
 
-    /// B15: nobody gets more than `lastPot * 10%` per elapsed epoch out of `collect`.
+    /// B15: nobody gets more out of `collect` than 10% of the last settled rate's per-epoch
+    /// release, per elapsed epoch (capped at 144).
     function invariant_B15_PerAddressRateLimit() public view {
         assertFalse(handler.gCapViolated(), "B15: per-address cap breached");
     }

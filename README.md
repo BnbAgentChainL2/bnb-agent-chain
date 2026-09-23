@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/assets/banner-1500x500.png" alt="BNB Agent Chain" width="900">
+  <img src="web/assets/banner-1500x500.jpg" alt="BNB Agent Chain" width="900">
 </p>
 
 # BNB Agent Chain (BAC)

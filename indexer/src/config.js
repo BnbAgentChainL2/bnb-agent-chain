@@ -53,6 +53,8 @@ export function loadConfig(env = process.env) {
   return {
     dbPath: env.BAC_INDEXER_DB || "/home/ops/bac/data/indexer/index.db",
     relayerDbPath: env.BAC_RELAYER_DB || "/home/ops/bac/data/relayer/relayer.db",
+    // 本机路径只在进程内用，**从不出现在任何 API 返回体里**（决策 #6：路径里有登录用户名）。
+    // 对外公布的是 ${apiBase}/api/genesis 与文件的 keccak256（/api/health.reconcile.genesisSource / genesisFileHash）。
     genesisPath: env.BAC_GENESIS_PATH || "/home/ops/bac/chain/genesis.json",
 
     layerRpc: env.BAC_LAYER_RPC || "http://geth:8545",
@@ -61,12 +63,15 @@ export function loadConfig(env = process.env) {
     // 格式不对就当没配（返回 null），不许把一个错的 enode 发出去让别人连不上。
     layerEnode: enodeOrNull(env.BAC_LAYER_ENODE),
     bscRpc: env.BSC_RPC || "https://bsc-rpc.publicnode.com",
-    // 第二个 BSC RPC 只用于 eth_call 兜底。**不能**用 bsc-dataseed 取日志：
-    // 2026-09-22 实测它对 eth_getLogs 在任何跨度上都返回 -32005（03 §2 的索引作业纪律）。
+    // 第二个 BSC RPC：快照的只读 view（eth_call / getCode / getBalance / getStorageAt）在主 RPC 出网络错误或被限速时
+    // 换它（snapshot.js 的 bscReadRpc → rpc.js 的 FailoverRpc）。**不能**用 bsc-dataseed 取日志：
+    // 2026-09-22 实测它对 eth_getLogs 在任何跨度上都返回 -32005（03 §2 的索引作业纪律），所以 eth_getLogs 永远只走 BSC_RPC。
     bscRpc2: env.BSC_RPC_2 || "https://bsc-dataseed.bnbchain.org",
     bscChainId,
 
     // 起始块：BSC 从合约部署块起（backfill from genesis 的含义），层内从 0 起。
+    // 配了 BSC 合约地址却把它留成 0，BSC 摄入会拒绝启动（bsc_start_block_unset）：
+    // 公共节点只给最近约 1–2.5 小时的 eth_getLogs，从第 0 块扫只会永远卡在第一片上。
     bscStartBlock: intOr(env.BAC_BSC_START_BLOCK, 0),
     layerStartBlock: intOr(env.BAC_LAYER_START_BLOCK, 0),
 

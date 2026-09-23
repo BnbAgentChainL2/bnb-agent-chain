@@ -8,12 +8,14 @@ import { rpcGuard, checkCall, RPC_WHITELIST } from "../src/api/rpcguard.js";
 import { ingestLogs, ingestLayerBlock } from "../src/store.js";
 import { root as exitRootOf, leafHash, verify } from "../src/exit-tree.js";
 import { resetWarnings } from "../src/warnings.js";
-import { tempDb, cleanupTempDbs, mkLog, mkLayerBlock, ADDR, TEST_CFG, TEST_BOOK, KIND } from "./helpers.js";
+import { storeIdentity } from "../src/identity.js";
+import { tempDb, cleanupTempDbs, mkLog, mkLock, mkLayerBlock, ADDR, TEST_CFG, TEST_BOOK, KIND } from "./helpers.js";
 
 test.after(cleanupTempDbs);
 
 const TS = 1790000000;
-const EPOCH = Math.floor(TS / 86400);
+// 600 秒的结算纪元（决策 #20：ChainAnchor.EPOCH = L2Bridge.EPOCH = BacBridge.EPOCH = 600）
+const EPOCH = Math.floor(TS / 600);
 
 const EXITS = [
   { exitId: 1n, agentId: 17n, to: ADDR.controller, credits: 100n },
@@ -28,21 +30,11 @@ function seeded() {
   const bsc = (logs) => ingestLogs(db, { chain: "bsc", logs, cfg: TEST_CFG, addressBook: TEST_BOOK, tsOf: () => TS });
   const layer = (logs) => ingestLogs(db, { chain: "layer", logs, cfg: TEST_CFG, addressBook: TEST_BOOK, tsOf: () => TS });
 
+  // 决策 #31：两个 ERC-8004 身份各锁一次桥，这就是全部的「注册」。
   bsc([
-    mkLog("AgentRegistry", "Registered", {
-      agentId: 17n, controller: ADDR.controller, agentWallet: ADDR.agentWallet,
-      agentURI: "https://a.invalid/agent.json", endpointHash: "0x" + "11".repeat(32), modelFingerprint: "0x" + "22".repeat(32),
-    }, { address: ADDR.AgentRegistry, blockNumber: 10, logIndex: 0 }),
-    mkLog("AgentRegistry", "Activated", { agentId: 17n, agentWallet: ADDR.agentWallet },
-      { address: ADDR.AgentRegistry, blockNumber: 11, logIndex: 0 }),
-    mkLog("AgentRegistry", "Registered", {
-      agentId: 18n, controller: ADDR.controller, agentWallet: ADDR.validator,
-      agentURI: "https://b.invalid/agent.json", endpointHash: "0x" + "33".repeat(32), modelFingerprint: "0x" + "44".repeat(32),
-    }, { address: ADDR.AgentRegistry, blockNumber: 12, logIndex: 0 }),
-    mkLog("BacBridge", "Locked", {
-      depositId: 12n, agentId: 17n, from: ADDR.controller, layerWallet: ADDR.agentWallet,
-      measured: 250000n * 10n ** 18n, credits: 250000n * 10n ** 18n, totalIssued: 250000n * 10n ** 18n,
-    }, { address: ADDR.BacBridge, blockNumber: 13, logIndex: 0 }),
+    ...mkLock({ depositId: 12, agentId: 17, from: ADDR.agentWallet, amount: 250000n * 10n ** 18n, blockNumber: 13 }),
+    ...mkLock({ depositId: 13, agentId: 18, from: ADDR.controller, amount: 10n ** 18n,
+      totalIssued: 250001n * 10n ** 18n, blockNumber: 14 }),
     mkLog("ValidatorStaking", "Staked", { who: ADDR.validator, amount: 2000000n, total: 2000000n },
       { address: ADDR.ValidatorStaking, blockNumber: 14, logIndex: 0 }),
     mkLog("ValidatorStaking", "NodeRegistered", {
@@ -82,18 +74,40 @@ function seeded() {
   ]);
 
   // 层内区块 + 一次部署 + 一次调用
-  const created = ADDR.BacVaultFactory;
+  const created = ADDR.someContract;
   ingestLayerBlock(db, { ...mkLayerBlock({ number: 1234560, ts: TS, txs: [{ from: ADDR.agentWallet, to: null, created, codeSize: 12844 }] }), cfg: TEST_CFG });
   ingestLayerBlock(db, { ...mkLayerBlock({ number: 1234561, ts: TS + 3, txs: [{ from: ADDR.agentWallet, to: created }] }), cfg: TEST_CFG });
 
   db.prepare(
-    `INSERT INTO treasury (ts, bsc_block, vault_balance, vault_accounted, vault_unsplit, lifetime_to_bridge,
+    `INSERT INTO treasury (ts, bsc_block, router_balance, router_accounted, router_unsplit, lifetime_to_bridge,
       lifetime_to_node, pool_balance, node_fund_balance, node_fund_withdrawn, total_locked, total_issued,
-      total_exited, reward_balance, reward_funded, reward_paid, market_address_ok)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`
+      total_exited, reward_balance, reward_funded, reward_paid, market_address_ok, buyback_bac, owed_total)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`
   ).run(TS, 123456789, "0", "0", "0", "12400000000000000000", "12400000000000000000", "9100000000000000000",
     "400000000000000000", "12000000000000000000", "5000000000000000000000000", "5000000000000000000000000",
-    "120000000000000000000000", "300000000000000000", "800000000000000000", "500000000000000000");
+    "120000000000000000000000", "300000000000000000", "800000000000000000", "500000000000000000",
+    "9760000000000000000000", "4300000000000000000");
+
+  // agent 17 的 ERC-8004 身份已经读过一次；agent 18 还没读（API 必须照实给 null）。
+  const reg = {
+    type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+    name: "Agent <b>17</b>",
+    description: "自己说自己是 AI",
+    image: "https://img.invalid/x.png",
+    services: [{ name: "A2A", endpoint: "https://a.invalid/a2a", version: "0.3" }],
+  };
+  storeIdentity(db, {
+    agentId: 17,
+    registry: ADDR.IdentityRegistry,
+    read: {
+      exists: true,
+      holder: ADDR.controller,
+      agentWallet: ADDR.agentWallet,
+      tokenURI: "data:application/json;base64," + Buffer.from(JSON.stringify(reg)).toString("base64"),
+    },
+    now: TS,
+    bscBlock: 123456789,
+  });
 
   const snapshot = {
     layer: { chainId: 56777, head: 1234561, headTs: TS + 3, blockLagSec: 2, enode: "enode://ab@1.2.3.4:30303",
@@ -103,10 +117,14 @@ function seeded() {
                bscKeyBalance: "82000000000000000", layerKeyBalance: "994120000000000000000" },
     // 03 §3.1 的样例数字对不上它自己的公式（见仓库 README 的「与文档的出入」），
     // 这里用一组自洽的：layerCirculating = (issued − exited) − feeSink − feeSplitter − Σ validator
-    reconcile: { bscTotalIssued: "5000000000000000000000000", bscTotalExited: "120000000000000000000000",
+    // L2Bridge 的读数与之自洽：B(L2Bridge) = 1e27 − (issued − exited)，计数 = 全部入账已提走、全部退出已领取
+    reconcile: { bscBridgeDeployed: true, bscTotalIssued: "5000000000000000000000000", bscTotalExited: "120000000000000000000000",
                  layerCirculating: "4879986396875000000000000", feeSinkBalance: "3125000000000000",
                  feeSplitterBalance: "12400000000000000000",
-                 validatorBalances: [{ addr: "0x0000000000000000000000000000000000005164", balance: "1200000000000000000" }] },
+                 validatorBalances: [{ addr: "0x0000000000000000000000000000000000005164", balance: "1200000000000000000" }],
+                 l2Bridge: { hasCode: true, block: 1234561, balance: (10n ** 27n - 4880000n * 10n ** 18n).toString(),
+                             totalCredited: "5000000000000000000000000", totalExited: "120000000000000000000000",
+                             totalBurnedFloat: "0" } },
     bridge: { paused: false, halted: false, owedTotal: "4300000000000000000", reservedTotal: "900000000000000000",
               lastSettledEpoch: EPOCH, currentReleaseBps: 350 },
     treasury: { taxFeeRateBps: 1000 },
@@ -191,24 +209,39 @@ test("OPTIONS 预检返回 204 并带 CORS 头", async () => {
 test("§3.1 /api/health：字段逐字齐全，reconcile 三元组与 howToCheck 原样返回", async () => {
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/health", {});
-  assert.equal(body.schema, "bac/health/1");
+  assert.equal(body.schema, "bac/health/2");
+  // v2：vault 块没了，换成 router；新增 stage / token / nodeFund / identityRegistry
   assert.deepEqual(keys(body), [
-    "anchorCommitWindowEndsAt", "bridge", "flap", "gas", "indexer", "layer", "now", "ok",
-    "relayer", "reconcile", "rpc", "schema", "vault", "warnings",
+    "anchorCommitWindowEndsAt", "bridge", "flap", "gas", "identityRegistry", "indexer", "layer", "nodeFund", "now", "ok",
+    "relayer", "reconcile", "router", "rpc", "schema", "stage", "token", "warnings",
   ].sort());
+  assert.equal(body.vault, undefined, "金库合约已被决策 #30 删除，vault 块不许再出现");
   assert.deepEqual(keys(body.layer), ["baseFee", "blockLagSec", "chainId", "enode", "gasLimit", "genesisHash", "head", "headTs", "minGasPrice", "peers", "zeroBaseFee"]);
   assert.deepEqual(keys(body.relayer), [
     "bscCursor", "bscKeyBalance", "bscLagBlocks", "currentEpoch", "epochLag", "lastPostedEpoch",
     "layerCursor", "layerKeyBalance", "outboxNew", "outboxOrphaned", "outboxSent",
   ]);
   assert.deepEqual(keys(body.reconcile), [
-    "bscTotalExited", "bscTotalIssued", "diff", "feeSinkBalance", "feeSplitterBalance", "formula",
-    "howToCheck", "layerCirculating", "ok", "validatorBalances",
+    "bridgeAlloc", "bscSource", "bscTotalExited", "bscTotalIssued", "diff", "feeSinkBalance", "feeSplitterBalance", "formula",
+    "genesisAlloc", "genesisAllocAccounts", "genesisFileHash", "genesisSource", "genesisSupply",
+    "howToCheck", "l2Bridge", "layerCirculating", "missing", "note", "ok", "rawDiff", "structuralZeros", "terms",
+    "validatorBalances",
   ]);
-  assert.equal(
-    body.reconcile.formula,
-    "diff = (bscTotalIssued - bscTotalExited) - (layerCirculating + feeSinkBalance + feeSplitterBalance + sum(validatorBalances))"
-  );
+  assert.deepEqual(keys(body.reconcile.l2Bridge), [
+    "address", "balance", "block", "hasCode", "totalBurnedFloat", "totalCredited", "totalExited",
+  ]);
+  assert.deepEqual(keys(body.reconcile.terms), ["burnedFloat", "creditableAndDonations", "creditsPendingRelay", "exitsPendingClaim"]);
+  for (const t of Object.values(body.reconcile.terms)) assert.deepEqual(keys(t), ["alarm", "ifNegative", "meaning", "value"]);
+  // 公式把旧的一行式拆成按 L2Bridge 计数的四项，告警只看负的方向
+  assert.match(body.reconcile.formula, /^rawDiff = \(bscTotalIssued - bscTotalExited \+ genesisAlloc\) - \(layerCirculating/);
+  assert.match(body.reconcile.formula, /creditsPendingRelay = bscTotalIssued - l2Bridge\.totalCredited/);
+  assert.match(body.reconcile.formula, /exitsPendingClaim = l2Bridge\.totalExited - bscTotalExited/);
+  assert.match(body.reconcile.formula, /diff = sum of the negative terms/);
+  assert.match(body.reconcile.note, /PULL/);
+  // 这组夹具没有创世信息：genesisAlloc 记 0，并且 note 照实说读不到创世文件
+  assert.equal(body.reconcile.genesisAlloc, "0");
+  assert.equal(body.reconcile.genesisSource, null);
+  assert.match(body.reconcile.note, /读不到创世文件/);
   // 决策 #17：FeeSplitter 与逐个验证者余额必须分项列出，才能逐项核
   assert.equal(body.reconcile.feeSplitterBalance, "12400000000000000000");
   assert.equal(body.reconcile.validatorBalances.length, 1);
@@ -223,21 +256,162 @@ test("§3.1 /api/health：字段逐字齐全，reconcile 三元组与 howToCheck
   assert.equal(body.gas.validatorBlockValidatorBps, 5000);
   assert.equal(body.gas.received, "0");
   assert.deepEqual(body.gas.shortfalls, []);
-  // 这组夹具是按公式配平的，diff 必须是 0
+  // FeeSplitter 的存量还没有代码去读：null（没读），不是 "0"（读到了 0）
+  for (const k of ["operatorFloatReserve", "remitOverdueEpochs", "poolPending", "carryPool", "foundationBalance"]) {
+    assert.equal(body.gas[k], null, `gas.${k} 没读过就必须是 null`);
+  }
+  // 这组夹具是按公式配平的：rawDiff = 0，四项都是 0，diff = 0
+  assert.equal(body.reconcile.rawDiff, "0");
+  for (const [k, t] of Object.entries(body.reconcile.terms)) assert.equal(t.value, "0", k);
   assert.equal(body.reconcile.diff, "0");
   assert.equal(body.reconcile.ok, true);
-  assert.equal(body.reconcile.howToCheck.length, 7);
-  assert.match(body.reconcile.howToCheck[0], /^cast call .* "totalCreditsIssued\(\)\(uint256\)" --rpc-url /);
-  assert.match(body.reconcile.howToCheck[1], /"totalCreditsExited\(\)\(uint256\)"/);
-  assert.match(body.reconcile.howToCheck[2], /^cast balance 0x0000000000000000000000000000000000000101 /);
-  assert.match(body.reconcile.howToCheck[3], /^cast balance 0x000000000000000000000000000000000000dEaD /);
-  assert.match(body.reconcile.howToCheck[4], /^cast balance 0x0000000000000000000000000000000000000104 /);
-  assert.match(body.reconcile.howToCheck[5], /qbft_getValidatorsByBlockNumber/);
-  assert.match(body.reconcile.howToCheck[6], /validator/);
+  assert.deepEqual(body.reconcile.structuralZeros, []);
+  assert.deepEqual(body.reconcile.missing, []);
+  assert.equal(body.reconcile.howToCheck.length, 11);
+  // 第一条指向索引器实际用的那份文件（/api/genesis），不是另一份静态的 genesis.json
+  assert.match(body.reconcile.howToCheck[0], /^curl -s https:\/\/\S+\/api\/genesis /);
+  assert.match(body.reconcile.howToCheck[0], /genesisAlloc/);
+  assert.match(body.reconcile.howToCheck[0], /X-Genesis-Hash/);
+  assert.match(body.reconcile.howToCheck[1], /^cast call .* "totalCreditsIssued\(\)\(uint256\)" --rpc-url /);
+  assert.match(body.reconcile.howToCheck[2], /"totalCreditsExited\(\)\(uint256\)"/);
+  assert.match(body.reconcile.howToCheck[3], /^cast balance 0x0000000000000000000000000000000000000101 /);
+  assert.match(body.reconcile.howToCheck[4], /^cast call 0x0000000000000000000000000000000000000101 "totalCredited\(\)\(uint256\)"/);
+  assert.match(body.reconcile.howToCheck[5], /"totalExited\(\)\(uint256\)"/);
+  assert.match(body.reconcile.howToCheck[6], /"totalBurnedFloat\(\)\(uint256\)"/);
+  assert.match(body.reconcile.howToCheck[7], /^cast balance 0x000000000000000000000000000000000000dEaD /);
+  assert.match(body.reconcile.howToCheck[8], /^cast balance 0x0000000000000000000000000000000000000104 /);
+  assert.match(body.reconcile.howToCheck[9], /qbft_getValidatorsByBlockNumber/);
+  assert.match(body.reconcile.howToCheck[10], /validator/);
+  for (const c of body.reconcile.howToCheck) assert.doesNotMatch(c, /\/home\//, "不许出现服务器上的路径");
   assert.deepEqual(keys(body.rpc), ["limits", "rateLimited24h", "throttledAgents"]);
   assert.deepEqual(keys(body.rpc.limits), ["ethCallStateWindowBlocks", "ethGetLogsMaxRange"]);
   assert.deepEqual(keys(body.indexer), ["bscCursor", "dbBytes", "layerCursor"]);
   assert.ok(Array.isArray(body.warnings));
+});
+
+test("v2 /api/health：router / bridge / nodeFund / token / identityRegistry 的形状固定，没读到时全是 null", () => {
+  const { ctx } = seeded();
+  const { body } = route(ctx, "GET", "/api/health", {});
+  assert.deepEqual(keys(body.router), [
+    "accountedQuote", "address", "bacToken", "balance", "bridge", "bridgeBps", "deployed", "feeNote",
+    "lifetimeToBridge", "lifetimeToNodeFund", "nodeFund", "owner", "ownerNote", "solvency", "stuck",
+    "totalRecognized", "unsplitRevenue",
+  ]);
+  assert.deepEqual(keys(body.router.stuck), ["bridge", "nodeFund"]);
+  assert.deepEqual(keys(body.router.solvency), ["accounted", "balance", "buckets"]);
+  assert.equal(body.router.address, ADDR.BacTaxRouter);
+  assert.equal(body.router.owner, null, "路由合约没有 owner（决策 #32）");
+  assert.equal(body.router.accountedQuote, null, "没读到就是 null，不是 0");
+  for (const k of [
+    "owner", "pendingOwner", "implementation", "upgradeCount", "lastUpgradeAt", "emergencyCount", "lastEmergencyAt",
+    "emergencyBnbWithdrawn", "emergencyBacWithdrawn", "shortfall", "ownerPowerNotice", "ownerPowerNoticeExpected",
+    "identityRegistry", "bacToken", "bnbBalance", "bnbHeld", "lockedBac", "buybackBac", "currentRate",
+  ]) {
+    assert.ok(k in body.bridge, `bridge 缺字段 ${k}`);
+  }
+  assert.equal(body.bridge.ownerPowerNoticeExpected, "项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。");
+  assert.deepEqual(keys(body.bridge.shortfall), ["bacShort", "bnbShort", "source"]);
+  assert.deepEqual(keys(body.nodeFund), [
+    "address", "balance", "deployed", "lifetimeReceived", "lifetimeWithdrawn", "owner", "pendingOwner",
+  ]);
+  assert.deepEqual(keys(body.token), [
+    "address", "buyTaxBps", "hasCode", "launched", "marketAddress", "note", "pool", "portal", "price", "progress",
+    "sellTaxBps", "status", "statusName", "taxProcessor",
+  ]);
+  assert.equal(body.token.address, ADDR.BacToken);
+  assert.deepEqual(keys(body.identityRegistry), ["address", "expected", "matchesExpected", "note", "source", "standard"]);
+  assert.equal(body.identityRegistry.address, ADDR.IdentityRegistry);
+  assert.equal(body.identityRegistry.source, "config");
+  assert.match(body.identityRegistry.note, /不能证明它是 AI/);
+  assert.equal(body.stage, null, "没跑过快照时不知道处在哪个阶段");
+});
+
+test("v2 /api/health：合约已部署、代币未发射 —— 合约自己的状态照实给，价格税率给 null", () => {
+  const { ctx } = seeded();
+  ctx.snapshot.stage = "contracts_deployed";
+  ctx.snapshot.flap = { marketAddressOk: null, checkedAt: TS };
+  ctx.snapshot.bsc = {
+    bridgeDeployed: true, routerDeployed: true, nodeFundDeployed: true, tokenHasCode: false,
+    bridge: {
+      owner: "0x934a6678120b85652D2CC818C69774ea17012844", pendingOwner: null,
+      implementation: "0x1000000000000000000000000000000000000001", upgradeCount: 0, lastUpgradeAt: 0,
+      emergencyCount: 0, lastEmergencyAt: 0, emergencyBnbWithdrawn: "0", emergencyBacWithdrawn: "0",
+      identityRegistry: ADDR.IdentityRegistry, bacToken: ADDR.BacToken, bnbBalance: "0", bnbHeld: "0",
+      shortfall: { bnbShort: "0", bacShort: "0", source: "x" },
+      ownerPowerNotice: "项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。",
+    },
+    router: { balance: "0", accountedQuote: "0", unsplitRevenue: "0", stuck: { bridge: "0", nodeFund: "0" },
+      lifetimeToBridge: "0", lifetimeToNodeFund: "0", totalRecognized: "0", bridgeBps: 5000,
+      solvency: { balance: "0", accounted: "0", buckets: "0" } },
+    nodeFund: { owner: "0x934a6678120b85652D2CC818C69774ea17012844", balance: "0" },
+    token: null,
+  };
+  const { body } = route(ctx, "GET", "/api/health", {});
+  assert.equal(body.stage, "contracts_deployed");
+  assert.equal(body.bridge.deployed, true);
+  assert.equal(body.bridge.owner, "0x934a6678120b85652D2CC818C69774ea17012844");
+  assert.equal(body.bridge.upgradeCount, 0, "0 次升级是真的 0，不是 null");
+  assert.equal(body.bridge.lastUpgradeAt, null, "从没升级过：时间是 null，不是 1970");
+  assert.equal(body.bridge.ownerPowerNotice, body.bridge.ownerPowerNoticeExpected);
+  assert.equal(body.router.accountedQuote, "0");
+  assert.equal(body.router.bridgeBps, 5000);
+  assert.equal(body.token.hasCode, false);
+  assert.equal(body.token.price, null);
+  assert.equal(body.token.buyTaxBps, null);
+  assert.match(body.token.note, /发射后公布/);
+  assert.equal(body.flap.marketAddressOk, null, "发射前没法核对，是 null 不是 false");
+  assert.equal(body.identityRegistry.source, "BacBridge.identityRegistry()");
+  assert.equal(body.identityRegistry.matchesExpected, true);
+});
+
+test("v2 /api/health：创世分配项让演练链的对账配平（线上 −1e24 那个 diff）", () => {
+  const { ctx } = seeded();
+  // 演练链实况：创世只有 0x7099…79C8 一个预置账户（1e24），L2Bridge 没有预置余额，桥没有发过任何积分
+  const alloc = 10n ** 24n;
+  const sink = 2982000000000000n;
+  const v = 62622000000000000n;
+  ctx.snapshot.reconcile = {
+    bscTotalIssued: "0", bscTotalExited: "0",
+    layerCirculating: (alloc - sink - v).toString(),
+    feeSinkBalance: sink.toString(), feeSplitterBalance: "0",
+    validatorBalances: [{ addr: "0x729d90c32FF111D9686Fe04B201EcAC7A7F7Cf05", balance: v.toString() }],
+    genesisSupply: alloc.toString(),
+    genesisAlloc: alloc.toString(),
+    genesisAllocAccounts: [{ addr: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", balance: alloc.toString() }],
+    genesisSource: "https://bnbagentchain-rpc.xyz/api/genesis",
+    // 演练链的创世没有系统合约：L2Bridge 地址上没有代码、余额 0
+    bscBridgeDeployed: false,
+    l2Bridge: { hasCode: false, block: 19930, balance: "0" },
+  };
+  const { body } = route(ctx, "GET", "/api/health", {});
+  assert.equal(body.reconcile.rawDiff, "0");
+  assert.equal(body.reconcile.diff, "0");
+  assert.equal(body.reconcile.bridgeAlloc, "0");
+  assert.deepEqual(body.reconcile.structuralZeros, [
+    "bscTotalIssued", "bscTotalExited", "l2Bridge.totalCredited", "l2Bridge.totalExited", "l2Bridge.totalBurnedFloat",
+  ]);
+  assert.equal(body.reconcile.bscTotalIssued, null, "桥没部署：读数是 null，只在计算里按 0 计");
+  assert.equal(body.reconcile.l2Bridge.totalCredited, null);
+  assert.match(body.reconcile.note, /没有代码/);
+  assert.equal(body.reconcile.ok, true);
+  assert.equal(body.reconcile.genesisAlloc, alloc.toString());
+  assert.equal(body.reconcile.genesisAllocAccounts[0].addr, "0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
+  assert.doesNotMatch(body.reconcile.note, /读不到创世文件/);
+  // 去掉这一项就回到线上那个 −1e24：这一项是公开的，不是被藏起来的常量
+  ctx.snapshot.reconcile.genesisAlloc = "0";
+  const off = route(ctx, "GET", "/api/health", {}).body.reconcile;
+  assert.equal(off.rawDiff, (-alloc).toString());
+  assert.equal(off.diff, (-alloc).toString(), "少了这 1e24，L2Bridge 就被当成本该有 1e24 却没有 —— 来历不明的流出");
+  assert.equal(off.terms.creditableAndDonations.alarm, true);
+  assert.equal(off.ok, false);
+});
+
+test("v2 /api/health：layer.enode 没有快照时退回配置（BAC_LAYER_ENODE）", () => {
+  const { ctx } = seeded();
+  const enode = "enode://" + "ab".repeat(64) + "@95.179.183.132:30303";
+  ctx.snapshot.layer = { ...ctx.snapshot.layer, enode: null };
+  ctx.cfg = { ...ctx.cfg, layerEnode: enode };
+  assert.equal(route(ctx, "GET", "/api/health", {}).body.layer.enode, enode);
 });
 
 test("§3.1：diff 的公式少掉 FeeSink 与签名者就会发散（回归用例）", async () => {
@@ -257,16 +431,20 @@ test("§3.1：diff 的公式少掉 FeeSink 与签名者就会发散（回归用�
 test("§3.2 /api/summary：五个分组的字段名逐字一致", () => {
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/summary", {});
-  assert.equal(body.schema, "bac/summary/1");
+  assert.equal(body.schema, "bac/summary/2");
   // 决策 #19（§7.7）：新增顶层 built（只有计数，没有金额）
-  assert.deepEqual(keys(body), ["agents", "bridge", "built", "epoch", "gasFees", "layer", "schema", "treasury", "updatedAt", "validators"]);
+  assert.deepEqual(keys(body), ["agents", "bridge", "built", "epoch", "gasFees", "layer", "schema", "stage", "treasury", "updatedAt", "validators"]);
   assert.deepEqual(keys(body.layer), ["blockTimeSec", "burnedTotal", "circulating", "contractsTotal", "head", "txTotal"]);
-  assert.deepEqual(keys(body.agents), ["active", "banned", "challenged", "dormant", "retired", "total"]);
+  // 决策 #31：没有状态机了，agents 只有总数与身份读数
+  assert.deepEqual(keys(body.agents), ["identityMissing", "identityPending", "identityRead", "note", "total"]);
   assert.deepEqual(keys(body.treasury), [
     "lifetimeToBridge", "lifetimeToNodeFund", "nodeFundBalance", "nodeFundWithdrawn",
-    "poolBalance", "taxFeeRateBps", "vaultAccounted", "vaultBalance",
+    "poolBalance", "routerAccounted", "routerBalance", "taxFeeRateBps",
   ]);
-  assert.deepEqual(keys(body.bridge), ["currentReleaseBps", "halted", "lastSettledEpoch", "paused", "totalExited", "totalIssued", "totalLocked"]);
+  assert.deepEqual(keys(body.bridge), [
+    "buybackBac", "currentReleaseBps", "emergencyBacWithdrawn", "emergencyBnbWithdrawn", "halted", "lastSettledEpoch",
+    "owedTotal", "paused", "totalExited", "totalIssued", "totalLocked",
+  ]);
   assert.deepEqual(keys(body.validators), ["lifetimeFunded", "lifetimePaid", "nodes", "rewardBalance", "totalStaked"]);
   assert.deepEqual(keys(body.epoch), ["agreeingCount", "current", "disputingWeight", "lastFinal", "lastPosted", "state"]);
   // 决策 #17：gasFees 是层内 BAC，和 treasury（BSC 上的 BNB）分开两块，永远不合并
@@ -280,7 +458,11 @@ test("§3.2 /api/summary：五个分组的字段名逐字一致", () => {
   // taxFeeRateBps 必须出现：网站所有 50/50 的说明都写在这个基数上
   assert.equal(body.treasury.taxFeeRateBps, 1000);
   assert.equal(body.agents.total, 2);
-  assert.equal(body.agents.active, 1);
+  assert.equal(body.agents.identityRead, 1);
+  assert.equal(body.agents.identityPending, 1);
+  assert.equal(body.agents.identityMissing, 0);
+  assert.match(body.agents.note, /不能证明它是 AI/);
+  assert.equal(body.bridge.buybackBac, "9760000000000000000000");
   assert.equal(body.validators.nodes, 1);
 });
 
@@ -290,10 +472,17 @@ test("§3.3 /api/feed：条目字段逐字一致，含 anchored 与 anchoredThro
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/feed", {});
   assert.equal(body.schema, "bac/feed/1");
-  assert.deepEqual(keys(body), ["anchoredThrough", "head", "items", "schema", "updatedAt"]);
+  assert.deepEqual(keys(body), ["anchoredThrough", "anchoredThroughBlock", "head", "items", "schema", "updatedAt"]);
   assert.deepEqual(keys(body.items[0]), ["agentId", "anchored", "block", "chain", "epoch", "id", "kind", "tx", "textZh", "ts"].sort());
   assert.equal(typeof body.items[0].anchored, "boolean");
   assert.equal(body.anchoredThrough, EPOCH);
+  assert.equal(body.anchoredThroughBlock, 1234567, "最新 FINAL 锚点承诺到的层内块高");
+  // 层内条目的 anchored 按块高判断：锚点定案之后才写进来的 DEPLOY / CALL（块 1234560 / 1234561 ≤ 1234567）是已锚定
+  const deploy = body.items.find((i) => i.kind === "DEPLOY");
+  assert.equal(deploy.anchored, true);
+  assert.equal(deploy.epoch, EPOCH, "feed.epoch 是 600 秒的结算纪元");
+  // AgentBook.Action 自带的是天序号；feed.epoch 仍按块时间算 600 秒纪元
+  assert.equal(body.items.find((i) => i.kind === "PUBLISH").epoch, EPOCH);
   // agent 自己写的 summary 出库必须已转义
   const pub = body.items.find((i) => i.kind === "PUBLISH");
   assert.ok(pub.textZh.includes("&lt;b&gt;"));
@@ -332,56 +521,108 @@ test("§3.3 /api/feed：分页 before / after / limit / chain / kind / agentId",
 
 // ===================== §3.4 / §3.5 agents =====================
 
-test("§3.4 /api/agents：分页字段与条目字段逐字一致", () => {
+test("§3.4 /api/agents（v2 / 决策 #31）：一个 agent = 一个锁过桥的 ERC-8004 身份", () => {
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/agents", {});
-  assert.equal(body.schema, "bac/agents/1");
-  assert.deepEqual(keys(body), ["items", "page", "pageSize", "schema", "total"]);
+  assert.equal(body.schema, "bac/agents/2");
+  assert.deepEqual(keys(body), ["items", "note", "page", "pageSize", "schema", "total"]);
+  assert.match(body.note, /不能证明它是 AI/);
   assert.deepEqual(keys(body.items[0]), [
-    "agentId", "agentURI", "announces", "controller", "credited", "deploys", "endpointHash", "exited",
-    "lastHeartbeatEpoch", "lastLayerBlock", "layerBalance", "missed", "modelFingerprint",
-    "registeredAt", "activatedAt", "solved", "status", "statusName", "wallet",
+    "agentId", "holder", "agentWallet", "identityExists", "identityCheckedAt", "registrationName", "selfReported",
+    "controller", "layerWallets", "firstLockAt", "firstLockBlock", "lockCount", "creditsLocked", "creditsExited",
+    "layerBalance", "deploys", "announces", "lastLayerBlock",
     // 决策 #19（§7.7）
     "tokensIssued", "pairsCreated", "swapCount",
   ].sort());
+  // 状态机的字段一个都不许再出现
+  for (const gone of ["status", "statusName", "solved", "missed", "lastHeartbeatEpoch", "agentURI", "endpointHash", "modelFingerprint", "activatedAt"]) {
+    assert.ok(!(gone in body.items[0]), `${gone} 应该已经删掉`);
+  }
   assert.equal(body.total, 2);
   assert.equal(body.page, 1);
   assert.equal(body.pageSize, 50);
+
+  const byId = Object.fromEntries(body.items.map((i) => [i.agentId, i]));
+  assert.equal(byId[17].holder, ADDR.controller);
+  assert.equal(byId[17].agentWallet, ADDR.agentWallet);
+  assert.equal(byId[17].identityExists, true);
+  assert.equal(byId[17].registrationName, "Agent <b>17</b>", "自述文本原样给出，转义由渲染层负责");
+  assert.equal(byId[17].selfReported, true);
+  assert.equal(byId[17].controller, ADDR.agentWallet, "第一次锁入的地址");
+  assert.deepEqual(byId[17].layerWallets, [ADDR.agentWallet]);
+  assert.equal(byId[17].creditsLocked, "250000000000000000000000");
+  assert.equal(byId[17].creditsExited, "0");
+  assert.equal(byId[17].lockCount, 1);
+  assert.equal(byId[17].firstLockBlock, 13);
+  // agent 18 的身份还没读：null，不是猜的值
+  assert.equal(byId[18].holder, null);
+  assert.equal(byId[18].identityExists, null);
+  assert.equal(byId[18].identityCheckedAt, null);
 
   const p = route(ctx, "GET", "/api/agents", { page: "2", pageSize: "1" }).body;
   assert.equal(p.items.length, 1);
   assert.equal(p.page, 2);
   assert.notEqual(p.items[0].agentId, body.items[0].agentId);
 
-  const active = route(ctx, "GET", "/api/agents", { status: "active" }).body;
-  assert.ok(active.items.every((i) => i.statusName === "ACTIVE"));
-  assert.throws(() => route(ctx, "GET", "/api/agents", { status: "zzz" }), /status 只能是/);
+  assert.throws(() => route(ctx, "GET", "/api/agents", { status: "active" }), /status 参数已取消/);
   assert.throws(() => route(ctx, "GET", "/api/agents", { sort: "zzz" }), /sort 只能是/);
-  for (const sort of ["newest", "actions", "deploys", "credited", "tokens", "swaps"]) {
+  for (const sort of ["newest", "actions", "deploys", "locked", "credited", "tokens", "swaps"]) {
     assert.equal(route(ctx, "GET", "/api/agents", { sort }).body.items.length, 2);
   }
+  assert.equal(route(ctx, "GET", "/api/agents", { sort: "locked" }).body.items[0].agentId, 17);
 });
 
-test("§3.5 /api/agent/{id}：六个分组齐全，identity 带免责说明", () => {
+test("§3.5 /api/agent/{id}（v2）：ERC-8004 身份块，注册文件标明是自述", () => {
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/agent/17", {});
-  assert.equal(body.schema, "bac/agent/1");
+  assert.equal(body.schema, "bac/agent/2");
   assert.deepEqual(keys(body), [
     "actions", "agent", "contracts", "deposits", "escape", "exits", "identity", "schema",
     // 决策 #19（§7.7）
     "built", "trades", "holdings", "holdingsTruncated", "detection",
   ].sort());
   assert.deepEqual(keys(body.identity), [
-    "agentURI", "endpointHashMatches", "note", "registrationsBackref", "uriCheckedAt", "uriReachable",
+    "agentId", "agentWallet", "checkedAt", "checkedBscBlock", "exists", "holder", "lastError", "note", "read",
+    "registration", "registry", "standard",
   ]);
-  assert.match(body.identity.note, /不背书/);
-  assert.deepEqual(keys(body.deposits[0]), ["bscTx", "credits", "depositId", "lagSec", "layerTx"]);
-  assert.deepEqual(keys(body.exits[0]), ["anchorEpoch", "bornEpoch", "claimedTx", "collectedWei", "credits", "exitId", "layerTx", "lockedWei"]);
+  assert.equal(body.identity.standard, "ERC-8004");
+  assert.equal(body.identity.registry, ADDR.IdentityRegistry);
+  assert.equal(body.identity.holder, ADDR.controller);
+  assert.equal(body.identity.agentWallet, ADDR.agentWallet);
+  assert.equal(body.identity.checkedBscBlock, 123456789);
+  assert.equal(body.identity.note, "我们要求持有 agent 身份，我们不能证明它是 AI。");
+  const reg = body.identity.registration;
+  assert.equal(reg.selfReported, true);
+  assert.equal(reg.kind, "data-json");
+  assert.equal(reg.uri, null, "data: URI 就是文件本身，不重复返回");
+  assert.equal(reg.name, "Agent <b>17</b>");
+  assert.equal(reg.image, "https://img.invalid/x.png");
+  assert.deepEqual(reg.services, [{ name: "A2A", endpoint: "https://a.invalid/a2a", version: "0.3", linkable: true }]);
+  assert.deepEqual(reg.dropped, []);
+  assert.equal(reg.text, null);
+  assert.match(reg.note, /自己填写/);
+  assert.match(reg.note, /不加载图片/);
+  assert.deepEqual(keys(body.deposits[0]), [
+    "bscBlock", "bscTx", "credits", "depositId", "from", "lagSec", "layerTx", "layerWallet", "measured",
+  ]);
+  assert.deepEqual(keys(body.exits[0]), ["anchorEpoch", "bornEpoch", "claimedTx", "collectedBac", "credits", "exitId", "layerTx", "lockedBac"]);
+  // Collected 事件不带 exitId，按退出单领了多少没法归属：null，不是 "0"
+  assert.ok(body.exits.every((e) => e.collectedBac === null));
   assert.deepEqual(keys(body.contracts[0]), ["address", "block", "callCount", "classified", "classifiedZh", "codeSize", "symbol"]);
   assert.deepEqual(keys(body.actions[0]), ["block", "kind", "seq", "subject", "summary", "ts", "tx", "uri"]);
-  assert.deepEqual(keys(body.escape), ["claimable", "halted", "weight"]);
+  assert.deepEqual(keys(body.escape), ["claimable", "controller", "halted", "weight"]);
+  assert.equal(body.escape.weight, "250000000000000000000000");
+  assert.equal(body.escape.claimable, null, "索引器不代算逃生可领额");
   // actions[].summary 是原文（不可信），转义由渲染层负责，这里断言它没被悄悄改写
   assert.equal(body.actions[0].summary, "第一篇 <b>x</b>");
+
+  // 没读过身份的 agent：身份块照样有，值全是 null，read = false
+  const b18 = route(ctx, "GET", "/api/agent/18", {}).body;
+  assert.equal(b18.identity.read, false);
+  assert.equal(b18.identity.holder, null);
+  assert.equal(b18.identity.exists, null);
+  assert.equal(b18.identity.registration.selfReported, true);
+  assert.equal(b18.identity.registry, ADDR.IdentityRegistry, "没读过就报配置里的注册表");
 });
 
 // ===================== §3.6 区块 / 交易 / 合约 =====================
@@ -500,14 +741,26 @@ test("/api/epoch/{n}/proof/{exitId}：证明能重算出链上那个根", () => 
 
 // ===================== rate / validators / treasury / genesis =====================
 
-test("/api/rate：字段齐全，并且带不承诺金额的说明", () => {
+test("/api/rate（v2 / 决策 #24）：兑付的是回购来的 BAC，汇率按 BacBridge.currentRate() 的口径", () => {
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/rate", {});
-  assert.equal(body.schema, "bac/rate/1");
-  assert.deepEqual(keys(body), ["creditsOutstanding", "lastPot", "note", "owedTotal", "poolBalance", "schema", "weiPerCredit"]);
-  assert.equal(body.note, "估算 · 不承诺任何金额");
+  assert.equal(body.schema, "bac/rate/2");
+  assert.deepEqual(keys(body), [
+    "bacPerCredit", "buybackBac", "creditsOutstanding", "lastPot", "note", "owedTotal", "schema", "source", "unit",
+  ]);
+  assert.equal(body.unit, "BAC");
+  assert.match(body.note, /不承诺任何金额/);
+  assert.match(body.note, /多损耗约 4%/);
   assert.equal(body.creditsOutstanding, "4880000000000000000000000");
-  assert.equal(typeof body.weiPerCredit, "string");
+  // 没有链上 currentRate() 时按同一公式现算：(9760e18 − 4.3e18) × 1e18 / 4.88e24
+  const expect = ((9760000000000000000000n - 4300000000000000000n) * 10n ** 18n) / 4880000000000000000000000n;
+  assert.equal(body.bacPerCredit, expect.toString());
+  assert.match(body.source, /现算/);
+  // 读到链上值就用链上的
+  ctx.snapshot.bridge.currentRate = "12345";
+  const onChain = route(ctx, "GET", "/api/rate", {}).body;
+  assert.equal(onChain.bacPerCredit, "12345");
+  assert.equal(onChain.source, "BacBridge.currentRate()");
 });
 
 test("/api/validators：条目字段逐字一致", () => {
@@ -528,12 +781,15 @@ test("/api/validators：条目字段逐字一致", () => {
 test("/api/treasury：行字段逐字一致，支持 from/to", () => {
   const { ctx } = seeded();
   const { body } = route(ctx, "GET", "/api/treasury", {});
-  assert.equal(body.schema, "bac/treasury/1");
+  assert.equal(body.schema, "bac/treasury/2");
   assert.deepEqual(keys(body.items[0]), [
-    "bscBlock", "lifetimeToBridge", "lifetimeToNode", "marketAddressOk", "nodeFundBalance", "nodeFundWithdrawn",
-    "poolBalance", "rewardBalance", "rewardFunded", "rewardPaid", "totalExited", "totalIssued", "totalLocked",
-    "ts", "vaultAccounted", "vaultBalance", "vaultUnsplit",
+    "bridgeBnbHeld", "bscBlock", "buybackBac", "emergencyBacWithdrawn", "emergencyBnbWithdrawn",
+    "lifetimeToBridge", "lifetimeToNode", "marketAddressOk", "nodeFundBalance", "nodeFundWithdrawn", "owedTotal",
+    "poolBalance", "rewardBalance", "rewardFunded", "rewardPaid", "routerAccounted", "routerBalance",
+    "routerStuckBridge", "routerStuckNodeFund", "routerUnsplit", "totalExited", "totalIssued", "totalLocked", "ts",
   ]);
+  // 这一行没有核对过 TaxProcessor.marketAddress()（market_checked = 0）：null，不是 false，也不是 true
+  assert.equal(body.items[0].marketAddressOk, null);
   assert.equal(route(ctx, "GET", "/api/treasury", { from: String(TS + 1) }).body.items.length, 0);
   assert.throws(() => route(ctx, "GET", "/api/treasury", { from: "9", to: "1" }), /to 不能小于 from/);
 });
@@ -702,4 +958,86 @@ test("§3.7 health.gas：有 FINAL 锚点之后三联从锚点来，短缺列表
   assert.equal(body.gas.shortfalls[0].arrears, "5000000000000000000");
   // rights 已撤销时退回 last_epoch；§2 的 remittance 表没有 rights_revoked_at 列（文档内部不一致）
   assert.equal(body.gas.shortfalls[0].rightsRevokedAt, EPOCH);
+});
+
+// ===================== /api/bridge/timeline（决策 #29c） =====================
+
+test("/api/bridge/timeline：部署了但什么都没发生时，时间线是空的、计数是 0（那是真的）", () => {
+  const { ctx } = seeded();
+  const { body } = route(ctx, "GET", "/api/bridge/timeline", {});
+  assert.equal(body.schema, "bac/bridge-timeline/1");
+  assert.deepEqual(keys(body), ["bridge", "items", "nodeFund", "note", "schema", "scope", "totals", "updatedAt"]);
+  assert.deepEqual(body.items, []);
+  assert.deepEqual(body.totals, {
+    upgrades: 0, emergencyWithdrawals: 0, emergencyBnb: "0", emergencyBac: "0", emergencyOtherTokens: 0,
+    ownerChanges: 0, nodeFundWithdrawals: 0, nodeFundWithdrawn: "0",
+  });
+  assert.equal(body.note, "项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。");
+  assert.throws(() => route(ctx, "GET", "/api/bridge/timeline", { scope: "vault" }), /scope 只能是/);
+});
+
+test("/api/bridge/timeline：每一次升级、紧急提取、owner 变更、节点基金提取都按时间倒序列出", () => {
+  const { ctx, db } = seeded();
+  const bsc = (logs) => ingestLogs(db, { chain: "bsc", logs, cfg: TEST_CFG, addressBook: TEST_BOOK, tsOf: (n) => TS + n });
+  const Z = "0x0000000000000000000000000000000000000000";
+  const impl1 = "0x1000000000000000000000000000000000000001";
+  const impl2 = "0x1000000000000000000000000000000000000002";
+  const owner = "0x934a6678120b85652D2CC818C69774ea17012844";
+  bsc([
+    mkLog("BacBridge", "Upgraded", { implementation: impl1 }, { address: ADDR.BacBridge, blockNumber: 100, logIndex: 0 }),
+    mkLog("BacBridge", "OwnershipTransferred", { previousOwner: Z, newOwner: owner }, { address: ADDR.BacBridge, blockNumber: 100, logIndex: 1 }),
+    mkLog("BacBridge", "Initialized", { version: 1n }, { address: ADDR.BacBridge, blockNumber: 100, logIndex: 2 }),
+    mkLog("BacBridge", "BridgeUpgraded", {
+      newImplementation: impl2, previousImplementation: impl1, by: owner, upgradeNumber: 1n, at: BigInt(TS),
+      bnbBook: 0n, lockedBacBook: 0n, buybackBacBook: 0n, owedTotalBook: 0n,
+    }, { address: ADDR.BacBridge, blockNumber: 200, logIndex: 0 }),
+    mkLog("BacBridge", "Upgraded", { implementation: impl2 }, { address: ADDR.BacBridge, blockNumber: 200, logIndex: 1 }),
+    // 真正的 owner 变更（上面 initialize 里那条 0x0 → owner 不算变更）
+    mkLog("BacBridge", "OwnershipTransferred", { previousOwner: owner, newOwner: ADDR.controller },
+      { address: ADDR.BacBridge, blockNumber: 250, logIndex: 0 }),
+    mkLog("BacBridge", "EmergencyWithdraw", {
+      by: owner, to: owner, token: Z, amount: 3n * 10n ** 18n, balanceAfter: 0n, bookAtWithdraw: 3n * 10n ** 18n,
+      lifetimeWithdrawn: 3n * 10n ** 18n, withdrawNumber: 1n, at: BigInt(TS),
+    }, { address: ADDR.BacBridge, blockNumber: 300, logIndex: 0 }),
+    mkLog("BacBridge", "EmergencyWithdraw", {
+      by: owner, to: owner, token: ADDR.BacToken, amount: 7n * 10n ** 18n, balanceAfter: 0n, bookAtWithdraw: 7n * 10n ** 18n,
+      lifetimeWithdrawn: 7n * 10n ** 18n, withdrawNumber: 2n, at: BigInt(TS),
+    }, { address: ADDR.BacBridge, blockNumber: 301, logIndex: 0 }),
+    mkLog("BacNodeFund", "Withdrawn", { to: owner, amount: 10n ** 18n, balanceAfter: 0n },
+      { address: ADDR.BacNodeFund, blockNumber: 400, logIndex: 0 }),
+    // 不进时间线的：普通的锁桥、税收分账
+    mkLog("BacTaxRouter", "RevenueSplit", { toBridge: 1n, toNodeFund: 1n }, { address: ADDR.BacTaxRouter, blockNumber: 401, logIndex: 0 }),
+  ]);
+  const { body } = route(ctx, "GET", "/api/bridge/timeline", {});
+  assert.equal(body.items.length, 9);
+  assert.equal(
+    body.items.filter((i) => i.event === "OwnershipTransferred").length, 2,
+    "初始化那条 0x0 → owner 照样列在时间线里，只是不计入 ownerChanges"
+  );
+  assert.equal(body.items[0].event, "Withdrawn", "倒序：最新的在前");
+  assert.equal(body.items.at(-1).event, "Upgraded");
+  assert.deepEqual(keys(body.items[0]), ["args", "block", "contract", "event", "logIndex", "textZh", "ts", "tx"]);
+  assert.deepEqual(body.totals, {
+    upgrades: 1, emergencyWithdrawals: 2, emergencyBnb: "3000000000000000000", emergencyBac: "7000000000000000000",
+    emergencyOtherTokens: 0, ownerChanges: 1, nodeFundWithdrawals: 1, nodeFundWithdrawn: "1000000000000000000",
+  });
+  const bac = body.items.find((i) => i.event === "EmergencyWithdraw" && i.args.withdrawNumber === 2);
+  assert.match(bac.textZh, /紧急提取了 7 BAC/);
+  const onlyBridge = route(ctx, "GET", "/api/bridge/timeline", { scope: "bridge" }).body;
+  assert.ok(onlyBridge.items.every((i) => i.contract === "BacBridge"));
+  assert.equal(onlyBridge.items.length, 8);
+  assert.equal(route(ctx, "GET", "/api/bridge/timeline", { limit: "2" }).body.items.length, 2);
+});
+
+test("/api/treasury：发射后核对过 marketAddress 的行，marketAddressOk 才是布尔值", () => {
+  const { ctx, db } = seeded();
+  db.prepare(
+    `INSERT INTO treasury (ts, bsc_block, router_balance, router_accounted, router_unsplit, lifetime_to_bridge,
+      lifetime_to_node, pool_balance, node_fund_balance, node_fund_withdrawn, total_locked, total_issued,
+      total_exited, reward_balance, reward_funded, reward_paid, market_address_ok, market_checked)
+     VALUES (?,1,'0','0','0','0','0','0','0','0','0','0','0','0','0','0',0,1)`
+  ).run(TS + 100);
+  const { body } = route(ctx, "GET", "/api/treasury", {});
+  assert.equal(body.items[0].ts, TS + 100);
+  assert.equal(body.items[0].marketAddressOk, false, "核对了但不对：这是 false");
 });

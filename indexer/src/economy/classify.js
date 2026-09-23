@@ -6,6 +6,7 @@
 import { getAddress } from "ethers";
 import { SELECTOR, MAX_DECIMALS, MAX_TEXT_BYTES, ZERO_ADDR } from "./constants.js";
 import { byteLen, hasCode } from "./probe.js";
+import { stripUnsafeChars } from "../text.js";
 
 // ---------------------------------------------------------------- 返回值解码
 
@@ -27,15 +28,17 @@ export function decodeAddress(hex) {
   }
 }
 
-/** X4：不可信文本的清洗。截断 128 字节 -> 非 UTF-8 换 U+FFFD -> 去控制字符 -> 两端裁空白。 */
+/**
+ * X4：不可信文本的清洗。截断 128 字节 -> 非 UTF-8 换 U+FFFD -> 去控制字符（C0 / DEL / C1）、
+ * 双向文字控制符（RLO 之类）与零宽字符 -> 两端裁空白。字符表在 src/text.js，与 ERC-8004 身份共用。
+ */
 export function sanitizeText(bytes) {
   if (bytes === null || bytes === undefined) return null;
   let buf = bytes instanceof Uint8Array ? bytes : Buffer.from(String(bytes), "utf8");
   if (buf.length > MAX_TEXT_BYTES) buf = buf.subarray(0, MAX_TEXT_BYTES);
   // Node 的 utf8 解码对非法字节就是换成 U+FFFD，正是 X4 要的行为。
   let s = Buffer.from(buf).toString("utf8");
-  // eslint-disable-next-line no-control-regex
-  s = s.replace(/[\u0000-\u001f\u007f]/g, "");
+  s = stripUnsafeChars(s);
   s = s.trim();
   return s;
 }

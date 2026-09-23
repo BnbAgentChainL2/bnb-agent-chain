@@ -91,6 +91,15 @@
     };
   }
 
+  /** 纪元号一律按合约的定义从块时间算：floor(ts / EPOCH)，EPOCH = 600（决策 #20，数据层 BAC.C.EPOCH）。
+      索引器 /api/blocks 给的 epoch 目前还是按天编号（floor(ts / 86400)），直接用它会和页头的当前纪元对不上。
+      块时间读不到才退回数据源给的那个。 */
+  function epochOf(ts, given) {
+    var len = BAC && BAC.C && BAC.C.EPOCH;
+    if (ts !== null && ts !== undefined && len) return Math.floor(Number(ts) / len);
+    return given === undefined ? null : given;
+  }
+
   /** 区块同理：bac-layer 的 blockRow 自带 miner / feeTotal / parentHash / txs，直接用；
       索引器的 blockItem 字段少，缺的就是 null。extra 是详情页额外读到的东西。 */
   function mapBlock(bl, extra) {
@@ -113,7 +122,7 @@
       /* 阶段 1 只有官方节点出块；official === false 才是验证者出的块。
          RPC 分不出官方还是验证者（official 为 null）→ 按阶段 1 的事实算官方节点。 */
       proposerKind: prop ? (official === false ? 'validator' : 'official') : null,
-      epoch: bl.epoch, size: extra.size || bl.size || null,
+      epoch: epochOf(bl.ts, bl.epoch), size: extra.size || bl.size || null,
       stateRoot: extra.stateRoot || bl.stateRoot || null,
       extra: extra.extraData || bl.extraData || null,
       txs: txs,
@@ -135,8 +144,9 @@
     var spent = (a.credited !== null && a.exited !== null && a.layerBalance !== null)
       ? a.credited - a.exited - a.layerBalance : null;
     return {
-      id: a.agentId, status: a.statusName, statusZh: a.statusZh,
-      statusCls: ({ ACTIVE: 'ok', DORMANT: 'warn', BANNED: 'bad', CHALLENGED: 'wait', RETIRED: 'dim' })[a.statusName] || 'dim',
+      /* v2（决策 #31）没有状态机：名录里的每一条都是锁进过桥的 ERC-8004 身份编号，
+         没有休眠、封禁、入场验证中（L2Gate 里那几个状态码已经没有来源）。统一显示「已进场」。 */
+      id: a.agentId, status: 'ENTERED', statusZh: '已进场', statusCls: 'ok',
       wallet: a.wallet, controller: a.controller,
       /* 决策 #31：进场门禁是 ERC-8004 身份。v2 的桥按身份编号记账（BacBridge.lock(agentId, …)），
          数据层还没有单独的身份字段时，身份编号就是 agentId；持有人读不到就是 null（页面写「—」）。 */
@@ -306,12 +316,45 @@
     };
   }
 
+  /* ── 块高只进不退 ─────────────────────────────────────────
+     数据层会在「直读节点」和「索引器」两个来源之间切换，索引器通常落后几块。
+     切过去的那一下，块高会从 21,902 掉回 21,898 —— 页面上的块高倒着走是错的。
+     这里记住本次会话见过的最高块（连同它的时间 / 哈希 / 出块者），新读数更低、
+     且那个最高块是 HEAD_FRESH_MS 之内见到的，就继续显示它。超过这个时间还没被追上
+     （比如演练链整条重建），就相信新读数，不把一个过期的高度一直钉在页面上。
+     只改显示，不编数：显示的永远是某一刻真实读到的一个块。 */
+  var HEAD_FRESH_MS = 90 * 1000;
+  var headHi = null;   // {head, headTs, headHash, miner, chainId, seenAt}
+  function monotonicHead(cs) {
+    var h = cs.head;
+    var out = { head: h, headTs: cs.headTs, headHash: cs.headHash, miner: cs.miner, blockLagSec: cs.blockLagSec };
+    if (typeof h !== 'number' || !isFinite(h)) return out;
+    var nowMs = Date.now();
+    var same = headHi && headHi.chainId === cs.chainId;
+    if (same && h < headHi.head && nowMs - headHi.seenAt < HEAD_FRESH_MS) {
+      out.head = headHi.head; out.headTs = headHi.headTs; out.headHash = headHi.headHash; out.miner = headHi.miner;
+      out.blockLagSec = typeof headHi.headTs === 'number' ? Math.max(0, Math.floor(nowMs / 1000) - headHi.headTs) : null;
+      return out;
+    }
+    /* 更高的块（或换了链、或旧的最高块已过期）：记下它，从现在起算新鲜期。同一块再读到一次不重置。 */
+    if (!same || h !== headHi.head) {
+      headHi = { head: h, headTs: cs.headTs, headHash: cs.headHash, miner: cs.miner, chainId: cs.chainId, seenAt: nowMs };
+    }
+    return out;
+  }
+
   /* ── 从 window.BAC 拉一份完整的视图模型 ───────────────────── */
   function pull() {
     if (!BAC || !BAC.view) return;
     var v = BAC.view;
     var cs = v.chainStats(), ag = v.agents({}), tr = v.treasury(), br = v.bridge(),
       va = v.validators(), ep = v.epoch(), fd = v.feed(), bk = v.blocks(), tx = v.txs(), ov = v.overview();
+    /* 质押合约没部署（site.config.js 里 staking 地址没配）时，索引器 /api/validators 仍会给出默认的 totalStaked = "0"：
+       那不是「总质押 0 BAC」，是这份账还不存在。这时总质押 / 节点数一律置 null，页面按状态写「发射后公布」，绝不写 0。 */
+    var stA = ov.addresses ? ov.addresses.staking : null;
+    var stakingLive = typeof stA === 'string' && /^0x[0-9a-fA-F]{40}$/.test(stA) && /[1-9a-f]/i.test(stA.slice(2));
+    var stakedTotal = stakingLive ? va.totalStaked : null;
+    var stakeNodes = stakingLive ? va.nodeCount : null;
 
     /* 层内链在出块 = 这个站是活的，哪怕 BSC 侧一个合约都还没部署。两个开关完全独立。 */
     VM.mode = (BAC.LIVE || BAC.LAYER_LIVE) ? 'live' : 'pre';
@@ -328,7 +371,7 @@
     VM.st.treasury = tr.status;
     VM.st.bridge = br.status;
     VM.st.feed = fd.status;
-    /* 只有索引器算得出的那几段：它没上线时写 'noidx'（显示「—」+ 面板小标写明原因），
+    /* 只有索引器算得出的那几段：它读不到时写 'noidx'（显示「—」+ 面板小标写明原因），
        **不写「发射后公布」** —— 链现在就在跑，那样说是骗人的。 */
     var idxOut = !!(BAC.state.indexer.degraded || BAC.state.indexer.error) || !BAC.HAS_INDEXER;
     VM.st.idx = idxOut ? 'noidx' : (BAC.state.indexer.ready ? 'ok' : 'loading');
@@ -373,12 +416,12 @@
 
     VM.validators = {
       items: (va.items || []).map(mapValidator),
-      nodeCount: va.nodeCount, slots: 64, totalStaked: va.totalStaked,
+      nodeCount: stakeNodes, slots: 64, totalStaked: stakedTotal,
       rewardBalance: va.rewardBalance, epochPot: va.epochPot,
       lifetimeFunded: va.lifetimeFunded, lifetimePaid: va.lifetimePaid,
       minStake: va.minStake,
       agreeingCount: ep.vetoCountInWindow === null ? null : null,
-      memberCount: va.nodeCount, releaseBps: ep.releaseBps
+      memberCount: stakeNodes, releaseBps: ep.releaseBps
     };
 
     VM.treasury = {
@@ -417,12 +460,13 @@
       }
     }
     var pool = cs.txpool || null;
+    var hd = monotonicHead(cs);
 
     VM.chain = {
       chainId: cs.chainId, source: cs.source, endpoint: cs.endpoint,
       degraded: cs.degraded, degradedNote: cs.degradedNote,
-      head: cs.head, headTs: cs.headTs, headHash: cs.headHash, miner: cs.miner,
-      blockLagSec: cs.blockLagSec,
+      head: hd.head, headTs: hd.headTs, headHash: hd.headHash, miner: hd.miner,
+      blockLagSec: hd.blockLagSec,
       // 实测出块间隔优先用最后两块的时间差，索引器给了窗口平均值就用它的
       blockTimeSec: cs.blockTimeSec !== null && cs.blockTimeSec !== undefined ? cs.blockTimeSec : cs.blockIntervalSec,
       blockIntervalSec: cs.blockIntervalSec,
@@ -430,7 +474,7 @@
       gasLimit: cs.gasLimit, baseFee: cs.baseFee,
       gasPrice: cs.gasPrice === undefined ? null : cs.gasPrice,
       minGasPriceGwei: 1,
-      epochLenSec: (BAC.C && BAC.C.EPOCH) || 86400,
+      epochLenSec: (BAC.C && BAC.C.EPOCH) || 600,
       peers: cs.peers,
       // Besu 默认不开 TXPOOL API（实测 -32601）：读不到就是 null，不显示 0
       txPool: pool ? pool.pending : null,
@@ -441,7 +485,7 @@
       lastPostedEpoch: cs.lastPostedEpoch, lastFinalEpoch: cs.lastFinalEpoch,
       tps: tps, tx24h: null, blocks24h: null,               // 24h 聚合：没有端点
       agentCounts: ag.counts || (ag.total !== null ? { total: ag.total, active: null, dormant: null, banned: null, challenged: null, retired: null } : null),
-      nodeCount: va.nodeCount, nodeSlots: 64, totalStaked: va.totalStaked,
+      nodeCount: stakeNodes, nodeSlots: 64, totalStaked: stakedTotal,
       bridgePool: br.poolBalance,
       reconcile: cs.reconcile
     };
@@ -633,22 +677,22 @@
         VM.built.detection = mapDetection(j.detection) || VM.built.detection;
         VM.built.tokens = (j.items || []).map(mapToken);
         VM.built.tokensTotal = n(j.total);
-        VM.built.tokensAt = Date.now();
-      }, function () { VM.built.tokensAt = Date.now(); }).then(done, done);
+        VM.built.tokensAt = Date.now(); VM.built.tokensErr = false;
+      }, function () { VM.built.tokensAt = Date.now(); VM.built.tokensErr = true; }).then(done, done);
     } else if (kind === 'pairs') {
       BAC.api.pairs({ pageSize: 50, sort: 'newest' }).then(function (j) {
         VM.built.detection = mapDetection(j.detection) || VM.built.detection;
         VM.built.pairs = (j.items || []).map(mapPair);
         VM.built.pairsTotal = n(j.total);
-        VM.built.pairsAt = Date.now();
-      }, function () { VM.built.pairsAt = Date.now(); }).then(done, done);
+        VM.built.pairsAt = Date.now(); VM.built.pairsErr = false;
+      }, function () { VM.built.pairsAt = Date.now(); VM.built.pairsErr = true; }).then(done, done);
     } else if (kind === 'swaps') {
       BAC.api.swaps({ limit: 50 }).then(function (j) {
         VM.built.detection = mapDetection(j.detection) || VM.built.detection;
         VM.built.swaps = (j.items || []).map(mapSwap);
         VM.built.swapsNext = j.next || null;
-        VM.built.swapsAt = Date.now();
-      }, function () { VM.built.swapsAt = Date.now(); }).then(done, done);
+        VM.built.swapsAt = Date.now(); VM.built.swapsErr = false;
+      }, function () { VM.built.swapsAt = Date.now(); VM.built.swapsErr = true; }).then(done, done);
     } else if (kind === 'token') {
       BAC.api.token(arg).then(function (j) {
         var sc = j.supplyCheck || {};
@@ -738,7 +782,7 @@
     pull: pull, load: load, repaint: repaint,
     /* 详情页能不能按需再读一条。
        演示模式下没有任何真来源可问 → 直接说找不到，不要一直显示「读取中…」。
-       索引器没上线但层内 RPC 答话时**照样能读**：区块和交易直接问层内节点。 */
+       索引器读不到但层内 RPC 答话时**照样能读**：区块和交易直接问层内节点。 */
     canLoad: !DEMO_ON && !!(BAC && ((BAC.api && BAC.HAS_INDEXER) || (BAC.layer && BAC.HAS_LAYER_RPC))),
     /* 区块 / 交易详情能不能读（不看索引器） */
     canLoadLayer: !DEMO_ON && !!(BAC && BAC.layer && BAC.HAS_LAYER_RPC),

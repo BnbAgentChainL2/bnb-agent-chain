@@ -26,13 +26,14 @@
       /* 每一段的状态，渲染器照它选占位文案。
          'pre'   发射后公布（BSC 侧那些还不存在的合约）
          'loading' 读取中…  'error' 读取失败 · 重试中  'ok' 有真实数据
-         'noidx' 这一项只有索引器算得出，索引器还没上线 → 显示「—」，来源写在面板小标上 */
+         'noidx' 这一项只有索引器算得出，索引器现在读不到 → 显示「—」，来源写在面板小标上
+         索引器相关的几段初值是 'loading'：第一轮应答回来之前不知道它在不在，不许先说它读不到。 */
       st: {
         chain: 'loading', blocks: 'loading', txs: 'loading', agents: 'pre', epochs: 'pre',
         validators: 'pre', treasury: 'pre', bridge: 'pre', feed: 'pre',
-        contracts: 'noidx', fees: 'pre', daily: 'noidx', idx: 'noidx', layer: 'loading',
+        contracts: 'loading', fees: 'pre', daily: 'loading', idx: 'loading', layer: 'loading',
         /* agent 造出来的东西（代币 / 交易对 / 成交）：只有索引器解得出来 */
-        built: 'noidx'
+        built: 'loading'
       },
 
       /* ── 层内直读的来源信息（面板小标上如实写清楚数字是谁给的）───── */
@@ -53,13 +54,13 @@
         head: null, headTs: null, headHash: null, miner: null, blockLagSec: null,
         blockTimeSec: null, blockIntervalSec: null, targetBlockTimeSec: 3,
         gasLimit: null, baseFee: null, gasPrice: null, minGasPriceGwei: 1,
-        epochLenSec: 86400,
+        epochLenSec: 600,           // 决策 #20：纪元 10 分钟（bind.js 用数据层的 BAC.C.EPOCH 覆盖）
         peers: null, txPool: null, txPoolQueued: null,
         txTotal: null, contractsTotal: null,
         circulating: null, burnedTotal: null, totalSupply: null,
         epoch: null, epochLeftSec: null, lastPostedEpoch: null, lastFinalEpoch: null,
         tps: null, tx24h: null, blocks24h: null,
-        agentCounts: null,          // {total,active,dormant,banned,challenged,retired}
+        agentCounts: null,          // {total, …}：v2 没有状态机，只有 total 是真的，其余键一律 null
         nodeCount: null, nodeSlots: 64, totalStaked: null,
         bridgePool: null
       },
@@ -121,6 +122,8 @@
         tokens: [], tokensTotal: null, tokensAt: null,
         pairs: [], pairsTotal: null, pairsAt: null,
         swaps: [], swapsNext: null, swapsAt: null,
+        /* 列表最近一次向索引器要的时候失败了没有：失败 ≠ 0 个，计数格要写「读取失败」 */
+        tokensErr: false, pairsErr: false, swapsErr: false,
         tokenDetail: null,      // {token, supplyCheck, topHolders, pairs, recentTransfers, events}
         pairDetail: null,       // {pair, price, recentSwaps, liquidity, v3Note}
         tokenErr: null, pairErr: null

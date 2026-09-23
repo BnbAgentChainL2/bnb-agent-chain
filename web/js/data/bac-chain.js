@@ -81,6 +81,7 @@
       'function anchor() view returns (address)',
       'function watchdog() view returns (address)',
       'function portal() view returns (address)',
+      // PancakeSwap V2 Router（毕业后回购走外盘），不是 BacTaxRouter —— 数据层叫它 dexRouter
       'function router() view returns (address)',
       'function EXTENSION() view returns (address)',
       'function OWNER_POWER_NOTICE() view returns (string)',
@@ -137,7 +138,11 @@
       'event Paused(address indexed by, uint64 until_, uint64 cumulative)',
       'event Unpaused(address indexed by, uint64 cumulative)',
       'event Halted(uint8 cause)',
-      // OpenZeppelin：ERC1967Upgrade 与 Ownable2StepUpgradeable
+      'event EscapeArmed(address indexed by, uint8 cause, uint64 effectiveAt)',
+      'event EscapeArmCancelled(address indexed by)',
+      'event EpochOwedRevoked(uint64 indexed epoch, address indexed by, uint256 revoked)',
+      // OpenZeppelin：Initializable、ERC1967Upgrade 与 Ownable2StepUpgradeable
+      'event Initialized(uint8 version)',
       'event Upgraded(address indexed implementation)',
       'event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner)',
       'event OwnershipTransferred(address indexed previousOwner, address indexed newOwner)'
@@ -163,15 +168,17 @@
       'function getMetadata(uint256 agentId, string key) view returns (bytes)',
       'function tokenURI(uint256 agentId) view returns (string)'
     ],
-    // ChainAnchor：结构体按 contracts/src/interfaces/IChainAnchor.sol（12 个字段）
+    /* ChainAnchor：结构体按 contracts/src/interfaces/IChainAnchor.sol（12 个字段）。
+       构造函数写的是占位值：lastPostedEpoch = firstEpoch − 1（让第一个锚点能过「纪元连续」检查）、
+       lastFinalEpoch 不写（0）、lastFinalAt = 部署时间（停机计时从部署开始）。所以必须读 firstEpoch 才分得清
+       「真的上报过」和「构造函数的占位」。SPEC 里的 cumulativeGasFees / cumulativeRemitted 合约里没有，不读。 */
     anchor: [
+      'function firstEpoch() view returns (uint64)',
       'function lastPostedEpoch() view returns (uint64)',
       'function lastFinalEpoch() view returns (uint64)',
       'function lastFinalAt() view returns (uint64)',
       'function cumulativeCredited() view returns (uint256)',
       'function cumulativeExit() view returns (uint256)',
-      'function cumulativeGasFees() view returns (uint256)',
-      'function cumulativeRemitted() view returns (uint256)',
       'function haltReason() view returns (uint8)',
       'function vetoCountInWindow() view returns (uint8)',
       'function disputeCountInWindow() view returns (uint8)',
@@ -187,17 +194,15 @@
       'function rewardBalance() view returns (uint256)',
       'function lifetimeFunded() view returns (uint256)',
       'function lifetimePaid() view returns (uint256)',
-      'function epochReward(uint64 epoch) view returns (uint256 pot, uint256 weight, uint256 rate, bool settled)',
-      'function rewardOf(uint64 epoch, address validator) view returns (uint256)',
+      // 奖池按「天」记：epochReward(epoch) 其实就是 dayReward(epoch / 144)，给的是整天的池子。
+      // 数据层直接读 dayReward(day) 并标成「天」，不把一天的池子标成「本纪元」。
+      'function dayReward(uint64 day) view returns (uint256 pot, uint256 weight, uint256 rate, bool settled)',
+      'function rewardOf(uint64 day, address validator) view returns (uint256)',
       'function revealerCount(uint64 epoch) view returns (uint256)',
-      'function MIN_VALIDATOR_STAKE() view returns (uint256)',
-      // 决策 #17（01 §11.5）：归集对账三元组的链上来源（合约里还没有的，单条失败 = null）
-      'function proposerRights(address v) view returns (bool)',
-      'function proposerAddressOf(address v) view returns (address)',
-      'function qualifyStreak(address v) view returns (uint16)',
-      'function remitStatus(address v) view returns (uint256 cumOwed, uint256 cumRemitted, uint256 arrears, bool shortfall)',
-      'function withheldOf(address v) view returns (uint256)',
-      'function lastRemitEpoch() view returns (uint64)'
+      'function MIN_VALIDATOR_STAKE() view returns (uint256)'
+      // 01 §11.5 的 proposerRights / proposerAddressOf / qualifyStreak / remitStatus / withheldOf / lastRemitEpoch
+      // 在 ValidatorStaking.sol 里不存在（编译产物核对过），读了每轮都是 revert，所以不列。
+      // 决策 #17 的 gas 归集对账改由索引器 /api/health 的 gas 块提供（来自 FINAL 锚点）。
     ],
     multicall3: [
       'function aggregate3(tuple(address target,bool allowFailure,bytes callData)[] calls) view returns (tuple(bool success,bytes returnData)[] returnData)',
@@ -238,8 +243,8 @@
   }
 
   function urlList(logs) {
-    var list = (logs ? CFG.logRpcs : CFG.rpcs) || [];
-    return list.slice();
+    var list = logs ? CFG.logRpcs : CFG.rpcs;
+    return Array.isArray(list) ? list.slice() : [];
   }
 
   /** 健康的排前面，退避中的排后面（但仍然会被试到，不彻底放弃）。 */
@@ -279,7 +284,9 @@
      3. Multicall3
      ══════════════════════════════════════════════════════ */
 
-  var mcState = { probed: false, available: null };
+  /* probed / available：只有 getCode 真的答了才定论（'0x' = 没有 Multicall3，整页改逐条）。
+     探针本身没答上（网络错误）不下结论：这一轮先逐条读，retryAt 之后再探（退避同 RPC 那条公式）。 */
+  var mcState = { probed: false, available: null, failures: 0, retryAt: 0 };
 
   function iface(name) {
     var e = ethersNS();
@@ -304,22 +311,34 @@
     if (!out.__failed) Object.defineProperty(out, '__failed', { value: {}, enumerable: false });
     return out.__failed;
   }
+  /** 另一张不可枚举的表：key → 读到它的那一批（aggregate3 的块号 0,1,2…；逐条 eth_call 是 -1）。
+      同一块 aggregate3 里的读数来自同一个区块；-1 的每条可能落在不同区块上。 */
+  function srcTable(out) {
+    if (!out.__src) Object.defineProperty(out, '__src', { value: {}, enumerable: false });
+    return out.__src;
+  }
 
-  /** Multicall3 是否存在（首次用 getCode 探一次，探不到就退回逐条 eth_call）。 */
+  /** Multicall3 是否存在：getCode 答了才定论；探针没答上 → 这一轮先逐条读，退避到期再探（不因一次网络抖动整页永久逐条）。 */
   function probeMulticall() {
     if (mcState.probed) return Promise.resolve(mcState.available);
+    if (mcState.retryAt && Date.now() < mcState.retryAt) return Promise.resolve(false);
     return withRead(function (p) { return p.getCode(C.MULTICALL3); })
       .then(function (code) {
         mcState.probed = true;
         mcState.available = !!(code && code !== '0x');
+        mcState.failures = 0; mcState.retryAt = 0;
         return mcState.available;
       })
-      .catch(function () { mcState.probed = true; mcState.available = false; return false; });
+      .catch(function () {
+        mcState.failures++;
+        mcState.retryAt = Date.now() + BAC.backoffMs(mcState.failures, 5000);
+        return false;
+      });
   }
 
   /** 逐条 eth_call 的退路，最多 6 条并发。 */
   function plainCalls(calls) {
-    var out = {}, failed = failTable(out), i = 0;
+    var out = {}, failed = failTable(out), src = srcTable(out), i = 0;
     function worker() {
       if (i >= calls.length) return Promise.resolve();
       var c = calls[i++];
@@ -329,7 +348,7 @@
       return withRead(function (p) { return p.call({ to: c.target, data: data }); })
         .then(function (ret) {
           var v = decode(c, ret);
-          if (v === undefined) failed[c.key] = 'revert'; else out[c.key] = v;
+          if (v === undefined) failed[c.key] = 'revert'; else { out[c.key] = v; src[c.key] = -1; }
         })
         .catch(function (e) { failed[c.key] = BAC.isRevert(e) ? 'revert' : 'error'; })
         .then(worker);
@@ -350,13 +369,14 @@
   function multi(calls) {
     var out = {};
     failTable(out);
+    var src = srcTable(out);
     if (!calls.length) return Promise.resolve(out);
     return probeMulticall().then(function (ok) {
       if (!ok) return plainCalls(calls);
       var mc = iface('multicall3');
       var groups = chunk(calls, MC_CHUNK);
       var failed = out.__failed;
-      return groups.reduce(function (chain, g) {
+      return groups.reduce(function (chain, g, gi) {
         return chain.then(function () {
           var payload = [];
           var usable = [];
@@ -376,7 +396,7 @@
                 if (!row || row[0] !== true) { failed[usable[i].key] = 'revert'; continue; } // success === false
                 try {
                   var v = decode(usable[i], row[1]);
-                  if (v === undefined) failed[usable[i].key] = 'revert'; else out[usable[i].key] = v;
+                  if (v === undefined) failed[usable[i].key] = 'revert'; else { out[usable[i].key] = v; src[usable[i].key] = gi; }
                 } catch (e) { failed[usable[i].key] = 'error'; }
               }
             })
@@ -385,6 +405,7 @@
               return plainCalls(usable).then(function (o) {
                 Object.assign(out, o);
                 Object.keys(o.__failed).forEach(function (k) { failed[k] = o.__failed[k]; });
+                Object.keys(o.__src).forEach(function (k) { src[k] = o.__src[k]; });
               });
             });
         });
@@ -404,11 +425,15 @@
   function sameAddr(a, b) { return !!a && !!b && lc(a) === lc(b); }
   /** 读到的地址：零地址当「没有」（null），不当成一个地址显示。 */
   function addrOrNull(v) { var s = str(v); return isAddr(s) ? s : null; }
-  /** ethers Result / 数组 / 对象 通吃：先按名字取，取不到按下标。 */
+  /** ethers Result / 数组 / 对象 通吃：先按名字取，取不到按下标。
+      按名字取到的是函数就不算：Result 是数组，字段名和 Array.prototype 撞车时（比如
+      BacBridge.deposits 的 `at`）名字拿到的是 Array.prototype.at，必须改用下标。 */
   function pick(r, name, i) {
-    if (r === undefined || r === null) return undefined;
-    if (typeof r === 'object' && r[name] !== undefined) return r[name];
-    if (i !== undefined && typeof r === 'object' && r[i] !== undefined) return r[i];
+    if (r === undefined || r === null || typeof r !== 'object') return undefined;
+    var v;
+    try { v = r[name]; } catch (e) { v = undefined; }
+    if (v !== undefined && typeof v !== 'function') return v;
+    if (i !== undefined && r[i] !== undefined) return r[i];
     return undefined;
   }
 
@@ -470,16 +495,19 @@
       : (/^data:application\/json[;,]/i.test(uri) ? 'data'
         : (/^ipfs:\/\//i.test(uri) ? 'ipfs' : (/^https?:\/\//i.test(uri) ? 'http' : 'other')));
     var sr = null;
-    if (kind === 'data' && uri.length <= URI_PARSE_MAX) {
+    // 主网上真有人把注册文件 gzip 之后再 base64（#10：data:application/json;enc=gzip;…）：本站不解压，照实说解不出来
+    var header = kind === 'data' ? uri.slice(0, uri.indexOf(',') + 1) : '';
+    if (kind === 'data' && uri.length <= URI_PARSE_MAX && !/enc=gzip/i.test(header)) {
       try {
-        var body = uri.slice(uri.indexOf(',') + 1), text;
-        if (/;base64,/i.test(uri.slice(0, uri.indexOf(',') + 1))) {
+        var body = uri.slice(uri.indexOf(',') + 1), text = null, j = null;
+        if (/;base64,/i.test(header)) {
           var bytes = b64bytes(body);
           text = bytes ? utf8(bytes) : null;
+          j = text ? JSON.parse(text) : null;
         } else {
-          text = decodeURIComponent(body);
+          // 不带 base64 的：先当原文解析，不行再按 URL 编码解
+          try { j = JSON.parse(body); } catch (e1) { j = JSON.parse(decodeURIComponent(body)); }
         }
-        var j = text ? JSON.parse(text) : null;
         if (j && typeof j === 'object') {
           sr = {
             name: typeof j.name === 'string' ? clip(j.name, 200) : null,
@@ -532,8 +560,23 @@
      6. 读 BSC：接线参数（一次）+ 代币参数（发射后一次）+ 活数据（每轮）
      ══════════════════════════════════════════════════════ */
 
-  /** 合约接线（不可变参数 + 互相核对）。升级之后（upgradeCount 变了）重读一次。 */
-  function loadParams() {
+  /* 接线参数与代币参数：**逐个 key 累积**。某一条这一轮没读到（网络抖动 / 那一条 revert），只把它留到下一轮补读，
+     已经读到的不重读；没读到的那一项绝不当成「核对通过」（wiring.ok = null，不是 true）。
+     升级过（upgradeCount 变了）或实现槽变了 → 清空重读（接线可能跟着实现一起变了）。 */
+  var paramRaw = {};        // key → 读到的原始值（接线参数）
+  var tokenRaw = {};        // key → 读到的原始值（代币参数）
+  function resetParams() {
+    paramRaw = {};
+    var P = BAC.state.bsc.params;
+    if (P) P.complete = false;   // 下一轮 liveTick 看到 complete = false 就会全部重读
+  }
+
+  // 接线核对与决策 #29a 那句要用到的 key：这些都读到了 loaded 才是 true。
+  // 其余（PUSH_GAS / watchdog / EXTENSION / 两段说明文字 / firstEpoch）缺了照样每轮补读，只是不挡 loaded。
+  var PARAM_REQUIRED = ['r.token', 'r.bridge', 'r.nodeFund', 'r.bps', 'b.token', 'b.identity', 'b.anchor', 'b.portal',
+    'b.dexRouter', 'b.notice', 'n.token'];
+
+  function paramCalls() {
     var calls = [];
     if (isAddr(A.router)) calls.push(
       call(A.router, 'router', 'r.token', 'bacToken'),
@@ -548,60 +591,94 @@
       call(A.bridge, 'bridge', 'b.anchor', 'anchor'),
       call(A.bridge, 'bridge', 'b.watchdog', 'watchdog'),
       call(A.bridge, 'bridge', 'b.portal', 'portal'),
-      call(A.bridge, 'bridge', 'b.router', 'router'),
+      // BacBridge.router() 是 PancakeSwap V2 Router（毕业后回购走外盘），**不是** BacTaxRouter
+      call(A.bridge, 'bridge', 'b.dexRouter', 'router'),
       call(A.bridge, 'bridge', 'b.extension', 'EXTENSION'),
       call(A.bridge, 'bridge', 'b.notice', 'OWNER_POWER_NOTICE'),
       call(A.bridge, 'bridge', 'b.idNotice', 'IDENTITY_LIMIT_NOTICE'),
       call(A.bridge, 'bridge', 'b.description', 'description')
     );
     if (isAddr(A.nodeFund)) calls.push(call(A.nodeFund, 'nodeFund', 'n.token', 'bacToken'));
-    return multi(calls).then(function (o) {
-      var bps = num(o['r.bps']);
-      var p = {
-        router: {
-          address: A.router,
-          bacToken: addrOrNull(o['r.token']), bridge: addrOrNull(o['r.bridge']), nodeFund: addrOrNull(o['r.nodeFund']),
-          bridgeBps: bps, nodeFundBps: bps === null ? null : C.BPS - bps,
-          pushGas: num(o['r.pushGas']),
-          owner: null            // 没有 owner：合约里不存在任何检查 msg.sender 的函数（决策 #30）
-        },
-        bridge: {
-          address: A.bridge,
-          bacToken: addrOrNull(o['b.token']), identityRegistry: addrOrNull(o['b.identity']),
-          anchor: addrOrNull(o['b.anchor']), watchdog: addrOrNull(o['b.watchdog']),
-          portal: addrOrNull(o['b.portal']), router: addrOrNull(o['b.router']),
-          extension: addrOrNull(o['b.extension']),
-          ownerPowerNotice: str(o['b.notice']), identityLimitNotice: str(o['b.idNotice']),
-          description: str(o['b.description'])
-        },
-        nodeFund: { address: A.nodeFund, bacToken: addrOrNull(o['n.token']) },
-        loaded: o['r.token'] !== undefined || o['b.token'] !== undefined
-      };
-      // 接线核对：任何一处对不上都是事故（税会进错地方），告警并列出是哪一处
-      var mm = [];
-      function chk(name, got, want) { if (got && want && !sameAddr(got, want)) mm.push(name); }
-      chk('router.bacToken', p.router.bacToken, A.token);
-      chk('router.bridge', p.router.bridge, A.bridge);
-      chk('router.nodeFund', p.router.nodeFund, A.nodeFund);
-      chk('bridge.bacToken', p.bridge.bacToken, A.token);
-      chk('bridge.router', p.bridge.router, A.router);
-      chk('bridge.identityRegistry', p.bridge.identityRegistry, CFG.identityRegistry);
-      chk('bridge.portal', p.bridge.portal, CFG.flapPortal);
-      chk('bridge.anchor', p.bridge.anchor, A.anchor);
-      chk('nodeFund.bacToken', p.nodeFund.bacToken, A.token);
-      p.wiring = { ok: p.loaded ? mm.length === 0 : null, mismatches: mm };
-      if (mm.length) BAC.pushWarning('wiring_mismatch'); else BAC.clearWarning('wiring_mismatch');
-      // 决策 #29a：链上那句必须与网站逐字一致
-      p.noticeMatches = p.bridge.ownerPowerNotice === null ? null : p.bridge.ownerPowerNotice === TEXT.OWNER_POWER;
-      if (p.noticeMatches === false) BAC.pushWarning('owner_notice_mismatch'); else BAC.clearWarning('owner_notice_mismatch');
-      return p;
+    if (isAddr(A.anchor)) calls.push(call(A.anchor, 'anchor', 'a.first', 'firstEpoch'));
+    return calls;
+  }
+
+  /** 合约接线（不可变参数 + 互相核对）。只读还缺的那几条，结果与之前读到的合在一起整形。 */
+  function loadParams() {
+    var all = paramCalls();
+    var need = all.filter(function (c) { return paramRaw[c.key] === undefined; });
+    return multi(need).then(function (o) {
+      need.forEach(function (c) { if (o[c.key] !== undefined) paramRaw[c.key] = o[c.key]; });
+      return shapeParams(paramRaw, all);
     });
   }
 
-  /** 代币参数：只在 TOKEN_LIVE 之后读（发射前那个地址上没有代码，读了也是空）。 */
-  function loadTokenParams() {
+  function shapeParams(o, all) {
+    var keys = all.map(function (c) { return c.key; });
+    var missing = keys.filter(function (k) { return o[k] === undefined; });
+    var bps = num(o['r.bps']);
+    var p = {
+      router: {
+        address: A.router,
+        bacToken: addrOrNull(o['r.token']), bridge: addrOrNull(o['r.bridge']), nodeFund: addrOrNull(o['r.nodeFund']),
+        bridgeBps: bps, nodeFundBps: bps === null ? null : C.BPS - bps,
+        pushGas: num(o['r.pushGas']),
+        owner: null            // 没有 owner：合约里不存在任何检查 msg.sender 的函数（决策 #30）
+      },
+      bridge: {
+        address: A.bridge,
+        bacToken: addrOrNull(o['b.token']), identityRegistry: addrOrNull(o['b.identity']),
+        anchor: addrOrNull(o['b.anchor']), watchdog: addrOrNull(o['b.watchdog']),
+        portal: addrOrNull(o['b.portal']),
+        dexRouter: addrOrNull(o['b.dexRouter']),     // BacBridge.router() = PancakeSwap V2 Router
+        extension: addrOrNull(o['b.extension']),
+        ownerPowerNotice: str(o['b.notice']), identityLimitNotice: str(o['b.idNotice']),
+        description: str(o['b.description'])
+      },
+      nodeFund: { address: A.nodeFund, bacToken: addrOrNull(o['n.token']) },
+      // 不可变：第一个能锚定的纪元（部署所在纪元）。null = 没读到（readLive 也会补读）
+      anchor: { address: A.anchor, firstEpoch: num(o['a.first']) },
+      missing: missing,
+      // loaded：接线核对与 #29a 那句要用的每一条都读到了；complete：连说明文字这些也都读到了（之后不再读）
+      loaded: keys.length > 0 && PARAM_REQUIRED.every(function (k) { return keys.indexOf(k) < 0 || o[k] !== undefined; }),
+      complete: missing.length === 0
+    };
+    /* 接线核对：任何一处对不上都是事故（税会进错地方），告警并列出是哪一处。
+       - 配置里那一项还没填（'0x0'）= 没法核对，不算对不上（否则没填的地址会拉响「税进错地方」的假警报）；
+       - 那一条还没读到 = 没核对过，记进 unchecked，wiring.ok = null —— **绝不算通过**；
+       - 读回来是零地址 = 对不上（未初始化的代理就是这样）。 */
+    var mm = [], unchecked = [], checked = 0;
+    function chk(name, key, want) {
+      if (keys.indexOf(key) < 0 || !isAddr(want)) return;
+      var got = o[key];
+      if (got === undefined) { unchecked.push(name); return; }
+      checked++;
+      if (!sameAddr(str(got), want)) mm.push(name);
+    }
+    chk('router.bacToken', 'r.token', A.token);
+    chk('router.bridge', 'r.bridge', A.bridge);
+    chk('router.nodeFund', 'r.nodeFund', A.nodeFund);
+    chk('bridge.bacToken', 'b.token', A.token);
+    chk('bridge.dexRouter', 'b.dexRouter', CFG.pancakeRouter);
+    chk('bridge.identityRegistry', 'b.identity', CFG.identityRegistry);
+    chk('bridge.portal', 'b.portal', CFG.flapPortal);
+    chk('bridge.anchor', 'b.anchor', A.anchor);
+    chk('nodeFund.bacToken', 'n.token', A.token);
+    p.wiring = {
+      ok: mm.length ? false : ((unchecked.length || !checked) ? null : true),
+      mismatches: mm,
+      unchecked: unchecked
+    };
+    if (mm.length) BAC.pushWarning('wiring_mismatch'); else BAC.clearWarning('wiring_mismatch');
+    // 决策 #29a：链上那句必须与网站逐字一致（没读到 = null，不是「一致」）
+    p.noticeMatches = p.bridge.ownerPowerNotice === null ? null : p.bridge.ownerPowerNotice === TEXT.OWNER_POWER;
+    if (p.noticeMatches === false) BAC.pushWarning('owner_notice_mismatch'); else BAC.clearWarning('owner_notice_mismatch');
+    return p;
+  }
+
+  function tokenCalls() {
     var T = A.token;
-    return multi([
+    return [
       call(T, 'token', 't.name', 'name'),
       call(T, 'token', 't.symbol', 'symbol'),
       call(T, 'token', 't.decimals', 'decimals'),
@@ -610,34 +687,60 @@
       call(T, 'token', 't.buyTax', 'buyTaxRate'),
       call(T, 'token', 't.sellTax', 'sellTaxRate'),
       call(T, 'token', 't.processor', 'taxProcessor')
-    ]).then(function (o) {
-      var proc = addrOrNull(o['t.processor']);
-      var tp = {
-        address: T,
-        name: str(o['t.name']), symbol: str(o['t.symbol']),
-        decimals: o['t.decimals'] === undefined ? null : Number(o['t.decimals']),
-        totalSupply: big(o['t.totalSupply']),
-        taxRate: num(o['t.taxRate']), buyTaxRate: num(o['t.buyTax']), sellTaxRate: num(o['t.sellTax']),
-        taxProcessor: proc,
-        taxFeeRateBps: null, marketAddress: null, marketAddressOk: null,
-        loaded: o['t.symbol'] !== undefined || o['t.processor'] !== undefined
-      };
-      if (!proc) return tp;
-      return multi([
-        call(proc, 'taxProcessor', 'p.market', 'marketAddress'),
-        call(proc, 'taxProcessor', 'p.cfg', 'feeConfigV2')
-      ]).then(function (p) {
-        tp.marketAddress = str(p['p.market']);
-        // 决策 #30 的硬检查：marketAddress 必须就是我们的 BacTaxRouter，否则税根本进不来
-        tp.marketAddressOk = tp.marketAddress ? sameAddr(tp.marketAddress, A.router) : null;
-        var cfg = p['p.cfg'];
-        // feeConfigV2().feeRate = Flap 协议先抽走的那一层（实测 1000 = 10%），50/50 分的是剩下的部分
-        if (cfg) tp.taxFeeRateBps = num(pick(cfg, 'feeRate', 4));
-        if (tp.marketAddressOk === false) BAC.pushWarning('market_address_mismatch');
-        else BAC.clearWarning('market_address_mismatch');
-        return tp;
-      }).catch(function () { return tp; });
-    });
+    ];
+  }
+  function processorCalls(proc) {
+    return [
+      call(proc, 'taxProcessor', 'p.market', 'marketAddress'),
+      call(proc, 'taxProcessor', 'p.cfg', 'feeConfigV2')
+    ];
+  }
+
+  /** 代币参数：只在 TOKEN_LIVE 之后读（发射前那个地址上没有代码，读了也是空）。同样逐个 key 累积、缺的下一轮补。
+      taxProcessor / marketAddress / feeConfigV2 任何一条没读到，loaded 都是 false（决策 #30 的硬检查不许停在 null 上）。 */
+  function loadTokenParams() {
+    var need = tokenCalls().filter(function (c) { return tokenRaw[c.key] === undefined; });
+    return multi(need).then(function (o) {
+      need.forEach(function (c) { if (o[c.key] !== undefined) tokenRaw[c.key] = o[c.key]; });
+      var proc = addrOrNull(tokenRaw['t.processor']);
+      if (!proc) return null;
+      var pc = processorCalls(proc).filter(function (c) { return tokenRaw[c.key] === undefined; });
+      return multi(pc).then(function (p) {
+        pc.forEach(function (c) { if (p[c.key] !== undefined) tokenRaw[c.key] = p[c.key]; });
+      });
+    }).catch(function () { /* 这一轮没读成：缺的下一轮补 */ }).then(function () { return shapeTokenParams(tokenRaw); });
+  }
+
+  function shapeTokenParams(o) {
+    var T = A.token;
+    var proc = addrOrNull(o['t.processor']);
+    var keys = tokenCalls().map(function (c) { return c.key; });
+    if (proc) keys = keys.concat(['p.market', 'p.cfg']);
+    var missing = keys.filter(function (k) { return o[k] === undefined; });
+    var tp = {
+      address: T,
+      name: str(o['t.name']), symbol: str(o['t.symbol']),
+      decimals: o['t.decimals'] === undefined ? null : Number(o['t.decimals']),
+      totalSupply: big(o['t.totalSupply']),
+      taxRate: num(o['t.taxRate']), buyTaxRate: num(o['t.buyTax']), sellTaxRate: num(o['t.sellTax']),
+      taxProcessor: proc,
+      taxFeeRateBps: null, marketAddress: null, marketAddressOk: null,
+      missing: missing,
+      // 硬检查要用的三条（taxProcessor，以及它的 marketAddress / feeConfigV2）都读到了才算 loaded
+      loaded: o['t.processor'] !== undefined && (!proc || (o['p.market'] !== undefined && o['p.cfg'] !== undefined)),
+      complete: missing.length === 0
+    };
+    if (proc && o['p.market'] !== undefined) {
+      tp.marketAddress = str(o['p.market']);
+      // 决策 #30 的硬检查：marketAddress 必须就是我们的 BacTaxRouter，否则税根本进不来。
+      // 配置里还没填 router = 没法核对（null），不是「对不上」
+      tp.marketAddressOk = isAddr(A.router) ? sameAddr(tp.marketAddress, A.router) : null;
+    }
+    // feeConfigV2().feeRate = Flap 协议先抽走的那一层（实测 1000 = 10%），50/50 分的是剩下的部分
+    if (proc && o['p.cfg'] !== undefined) tp.taxFeeRateBps = num(pick(o['p.cfg'], 'feeRate', 4));
+    if (tp.marketAddressOk === false) BAC.pushWarning('market_address_mismatch');
+    else BAC.clearWarning('market_address_mismatch');
+    return tp;
   }
 
   /** 每次刷新都读的活数据。 */
@@ -715,8 +818,7 @@
           call(A.staking, 'staking', 's.nodes', 'nodeCount'),
           call(A.staking, 'staking', 's.rewardBal', 'rewardBalance'),
           call(A.staking, 'staking', 's.funded', 'lifetimeFunded'),
-          call(A.staking, 'staking', 's.paid', 'lifetimePaid'),
-          call(A.staking, 'staking', 's.lastRemit', 'lastRemitEpoch')
+          call(A.staking, 'staking', 's.paid', 'lifetimePaid')
         );
       }
       if (isAddr(A.anchor)) {
@@ -726,13 +828,13 @@
           call(A.anchor, 'anchor', 'a.finalAt', 'lastFinalAt'),
           call(A.anchor, 'anchor', 'a.cumCredited', 'cumulativeCredited'),
           call(A.anchor, 'anchor', 'a.cumExit', 'cumulativeExit'),
-          call(A.anchor, 'anchor', 'a.cumGas', 'cumulativeGasFees'),
-          call(A.anchor, 'anchor', 'a.cumRemitted', 'cumulativeRemitted'),
           call(A.anchor, 'anchor', 'a.haltReason', 'haltReason'),
           call(A.anchor, 'anchor', 'a.vetoes', 'vetoCountInWindow'),
           call(A.anchor, 'anchor', 'a.disputes', 'disputeCountInWindow'),
           call(A.anchor, 'anchor', 'a.releaseBps', 'releaseBpsFor', [epoch])
         );
+        // firstEpoch 是不可变的，接线参数里读到过就不再读；没读到（那一条失败了）就每轮补一次
+        if (anchorFirstEpoch() === null) calls.push(call(A.anchor, 'anchor', 'a.first', 'firstEpoch'));
       }
     }
 
@@ -751,28 +853,74 @@
     return multi(calls);
   }
 
-  /** 第二跳：拿到 lastPostedEpoch 之后再读那个纪元的锚点与奖励。 */
+  /* ChainAnchor.firstEpoch：不可变，读到一次就缓存（接线参数里读，失败了由 readLive 补读）。 */
+  var anchorFirst = null;
+  function anchorFirstEpoch() {
+    if (anchorFirst !== null) return anchorFirst;
+    var p = BAC.state.bsc.params;
+    var v = p && p.anchor ? p.anchor.firstEpoch : null;
+    if (v !== null && v !== undefined && isFinite(Number(v))) anchorFirst = Number(v);
+    return anchorFirst;
+  }
+  function noteFirstEpoch(v) {
+    if (anchorFirst === null && v !== undefined && v !== null && isFinite(Number(v))) anchorFirst = Number(v);
+  }
+
+  /** 纪元 → ValidatorStaking 的「天」（奖池按天记，144 个纪元一天）。 */
+  function dayOf(epoch) {
+    if (epoch === null || epoch === undefined || !isFinite(Number(epoch))) return null;
+    return Math.floor(Number(epoch) / C.EPOCHS_PER_DAY);
+  }
+
+  /** 第二跳：拿到 lastPostedEpoch 之后再读那个纪元的锚点，以及它所在那一天的奖池（dayReward(day)）。
+      firstEpoch 之前的纪元一个锚点都不可能有（构造函数的占位 firstEpoch − 1 就是这种），不读。 */
   function readEpoch(epoch) {
     if (epoch === null || epoch === undefined || !BAC.CONTRACTS_LIVE) return Promise.resolve({});
+    var first = anchorFirstEpoch();
+    if (first !== null && Number(epoch) < first) return Promise.resolve({});
     var calls = [];
     if (isAddr(A.anchor)) calls.push(call(A.anchor, 'anchor', 'e.anchor', 'getAnchor', [epoch]));
-    if (isAddr(A.staking)) calls.push(call(A.staking, 'staking', 'e.reward', 'epochReward', [epoch]));
+    if (isAddr(A.staking)) calls.push(call(A.staking, 'staking', 'e.dayReward', 'dayReward', [dayOf(epoch)]));
     return multi(calls);
   }
 
-  /** ERC1967 实现槽：只在第一次、以及 upgradeCount 变了之后读（升级才会改它）。 */
-  var implCache = { count: null, impl: null, raw: null };
-  function readImplementation(upgradeCount) {
+  /** ERC1967 实现槽：**每一轮都读**（一条 eth_getStorageAt，很便宜）。
+      upgradeCount 是实现合约自己在 _authorizeUpgrade 里写的，而 owner 可以装任何实现（#29）：新实现完全可以改槽
+      却不加计数、不发 BridgeUpgraded。所以计数器不能当「要不要重读」的信号 —— #29c 要让 owner 的动作看得见，
+      它依赖的信号就不能由 owner 控制。槽变了而同一轮读到的计数器没变 → 一次没留痕的换实现：告警并记下来。 */
+  var implCache = { count: null, impl: null, raw: null, fresh: false };
+  var implChanges = [];      // 本页看到的「槽变了、计数器没变」：{ from, to, upgradeCount, block, detectedAt }
+  function readImplementation(upgradeCount, block) {
     if (!isAddr(A.bridge) || !BAC.CONTRACTS_LIVE) return Promise.resolve(null);
     var n = upgradeCount === undefined || upgradeCount === null ? null : Number(upgradeCount);
-    if (implCache.raw !== null && n !== null && implCache.count === n) return Promise.resolve(implCache.impl);
     return withRead(function (p) {
       return typeof p.getStorage === 'function' ? p.getStorage(A.bridge, C.ERC1967_IMPL_SLOT)
         : p.send('eth_getStorageAt', [A.bridge, C.ERC1967_IMPL_SLOT, 'latest']);
     }).then(function (v) {
-      implCache.raw = v; implCache.impl = addrFromSlot(v); implCache.count = n;
-      return implCache.impl;
-    }).catch(function () { return implCache.impl; });
+      var impl = addrFromSlot(v);
+      var prev = { raw: implCache.raw, impl: implCache.impl, count: implCache.count };
+      implCache.raw = v; implCache.impl = impl; implCache.count = n; implCache.fresh = true;
+      if (prev.raw === null || lc(prev.impl) === lc(impl)) return impl;
+      resetParams();       // 实现换了：接线可能跟着变了，下一轮全部重读
+      if (n === null || prev.count === null || n !== prev.count) return impl;   // 计数器跟着变了 = 正常升级
+      /* 槽变了、计数器看起来没变。计数器是在读槽**之前**读的：一次正常升级恰好落在两次读之间也会是这个样子。
+         所以读槽之后再读一次计数器 —— 还是没变，才是真的没留痕。 */
+      return multi([call(A.bridge, 'bridge', 'u.recheck', 'upgradeCount')]).then(function (o2) {
+        var n2 = o2['u.recheck'] === undefined ? null : Number(o2['u.recheck']);
+        if (n2 !== null) implCache.count = n2;
+        if (n2 !== null && n2 === prev.count) {
+          implChanges.push({ from: prev.impl, to: impl, upgradeCount: n2,
+            block: block === undefined ? null : block, detectedAt: Math.floor(Date.now() / 1000) });
+          BAC.pushWarning('implementation_changed_unlogged');
+        }
+        return impl;
+      });
+    }).catch(function () {
+      implCache.fresh = false;
+      // 读失败：缓存只有在「升级次数没变」时才可能还是当前实现（照样标成不是这一轮读到的）；
+      // 升级过了（或次数不知道）就不能拿旧实现冒充现在的
+      return (implCache.raw !== null && n !== null && implCache.count === n) ? implCache.impl : null;
+    });
   }
 
   /* ══════════════════════════════════════════════════════
@@ -810,14 +958,21 @@
     var ev;
     try { ev = iface(which).parseLog({ topics: l.topics, data: l.data }); } catch (e) { ev = null; }
     if (!ev || !ev.name) return null;
-    var a = ev.args || {};
-    var base = {
-      event: ev.name, contract: which,
+    return shapeEvent(which, ev.name, ev.args || {}, {
       block: num(l.blockNumber), tx: str(l.transactionHash),
       logIndex: num(l.index !== undefined ? l.index : l.logIndex),
       ts: null, source: 'rpc'
-    };
-    function g(name, i) { return pick(a, name, i); }
+    });
+  }
+
+  /** 一个已解码的事件（名字 + 参数）→ 时间线条目。BSC 日志（ethers Result，名字或下标都能取）和
+      索引器 /api/bridge/timeline（普通对象，按名字取，金额是十进制字符串）共用这一份，两边形状一模一样。
+      which = 'bridge' | 'router' | 'nodeFund'；base 里带 block / tx / logIndex / ts / source。 */
+  function shapeEvent(which, name, a, base) {
+    base = Object.assign({ event: name, contract: which, block: null, tx: null, logIndex: null, ts: null, source: null }, base || {});
+    base.event = name; base.contract = which;
+    var ev = { name: name };
+    function g(n, i) { return pick(a, n, i); }
     var it = null, list = null;
 
     if (which === 'bridge') {
@@ -830,7 +985,9 @@
             implementationConfirmed: null };
           break;
         case 'Upgraded':
-          it = { kind: 'implementation', implementation: str(g('implementation', 0)) };
+          // initial / unlogged 由 mergeUpgrades 定：和 Initialized(1) 同一笔交易 = 代理部署时的初始实现；
+          // 否则（同一笔里也没有 BridgeUpgraded）= 一次没留 BridgeUpgraded 的换实现
+          it = { kind: 'implementation', implementation: str(g('implementation', 0)), initial: null, unlogged: null };
           break;
         case 'EmergencyWithdraw': {
           var tok = str(g('token', 2));
@@ -854,6 +1011,19 @@
           break;
         case 'Halted':
           it = { kind: 'halt', cause: num(g('cause', 0)) };
+          break;
+        case 'EscapeArmed':
+          it = { kind: 'escapeArmed', by: str(g('by', 0)), cause: num(g('cause', 1)), effectiveAt: num(g('effectiveAt', 2)) };
+          break;
+        case 'EscapeArmCancelled':
+          it = { kind: 'escapeArmCancelled', by: str(g('by', 0)) };
+          break;
+        case 'EpochOwedRevoked':
+          it = { kind: 'owedRevoked', epoch: num(g('epoch', 0)), by: str(g('by', 1)), revoked: big(g('revoked', 2)) };
+          break;
+        case 'Initialized':
+          // 代理部署时 initialize() 发的（version 1）：时间线从这里开始才算从部署起
+          it = { kind: 'initialized', version: num(g('version', 0)) };
           break;
         case 'ReleaseReceived':
           list = 'flow';
@@ -903,8 +1073,10 @@
         default: return null;
       }
     }
+    // 事件里自带时间（BridgeUpgraded.at / EmergencyWithdraw.at）就用它，否则用来源给的块时间（没有就是 null）
+    var baseTs = base.ts === undefined ? null : base.ts;
     var out = Object.assign(base, it);
-    if (it.ts === undefined || it.ts === null) out.ts = null;
+    if (out.ts === undefined || out.ts === null) out.ts = baseTs;
     return { list: list, item: out };
   }
 
@@ -913,15 +1085,47 @@
     return (b.logIndex || 0) - (a.logIndex || 0);
   }
 
+  /** 同一条时间线的几个来源（BSC 日志窗口 / 索引器全量）合并：按 tx:logIndex 去重（排在前面的来源优先，
+      后面的只补它缺的时间戳），新 → 旧排序；owner 那条再把同一笔交易里的 BridgeUpgraded + Upgraded 并成一次升级。
+      **不改入参**（条目都是拷贝）。 */
+  function mergeTimeline(lists, isOwner) {
+    var seen = {}, out = [];
+    (lists || []).forEach(function (arr) {
+      (arr || []).forEach(function (x) {
+        if (!x || typeof x !== 'object') return;
+        var k = String(x.tx) + ':' + String(x.logIndex);
+        var prev = seen[k];
+        if (prev) {
+          if ((prev.ts === null || prev.ts === undefined) && x.ts !== null && x.ts !== undefined) prev.ts = x.ts;
+          return;
+        }
+        var c = Object.assign({}, x);
+        seen[k] = c;
+        out.push(c);
+      });
+    });
+    out.sort(byRecency);
+    return isOwner ? mergeUpgrades(out) : out;
+  }
+
   /** 同一笔交易里的 BridgeUpgraded + Upgraded 是同一次升级：把 Upgraded 并进去（核对实现地址），不重复显示。
-      单独的 Upgraded（代理部署时 ERC1967Proxy 构造函数发的）保留为「初始实现」。 */
+      单独的 Upgraded：只有和 Initialized(1) 在同一笔交易里（代理部署：ERC1967Proxy 构造函数发 Upgraded，
+      紧接着 initialize() 发 Initialized）才是「初始实现」（initial = true）；别的一律是一次没留 BridgeUpgraded 的
+      换实现（unlogged = true）—— owner 能装任何实现（#29），新实现不发 BridgeUpgraded 也照样能升级。 */
   function mergeUpgrades(list) {
-    var byTx = {};
-    list.forEach(function (x) { if (x.kind === 'upgrade') byTx[x.tx] = x; });
+    var byTx = {}, initTx = {};
+    list.forEach(function (x) {
+      if (x.kind === 'upgrade') byTx[x.tx] = x;
+      if (x.kind === 'initialized' && x.version === 1) initTx[x.tx] = true;
+    });
     return list.filter(function (x) {
       if (x.kind !== 'implementation') return true;
       var u = byTx[x.tx];
-      if (!u) return true;
+      if (!u) {
+        x.initial = !!initTx[x.tx];
+        x.unlogged = !x.initial;
+        return true;
+      }
       u.implementationConfirmed = sameAddr(u.newImplementation, x.implementation);
       return false;
     });
@@ -944,8 +1148,18 @@
       ['owner', 'flow', 'nodeFund'].forEach(function (k) {
         var arr = T[k].sort(byRecency);
         if (k === 'owner') arr = mergeUpgrades(arr);
+        if (arr.length > CFG.timelineMax) {
+          // 超出上限：丢最旧的那些，记下「这条列表不全了」以及丢到了哪个块（这一页里再也补不回来）
+          T.truncated[k] = true;
+          arr.slice(CFG.timelineMax).forEach(function (x) {
+            if (x.block !== null && x.block !== undefined && (T.droppedThrough[k] === null || x.block > T.droppedThrough[k])) {
+              T.droppedThrough[k] = x.block;
+            }
+          });
+        }
         T[k] = arr.slice(0, CFG.timelineMax);
       });
+      if (T.owner.some(function (x) { return x.unlogged === true; })) BAC.pushWarning('implementation_changed_unlogged');
     }
     return added;
   }
@@ -1027,8 +1241,16 @@
       if (ok) {
         T.ready = true; T.error = null; T.errorDetail = null; T.failures = 0;
         T.status = 'ok'; T.stale = false; T.source = 'rpc'; T.updatedAt = Date.now();
+        // 「全量」必须是真的扫过：从部署块（或更早）起、一直扫到链头、中间没有缺口。
+        // 窗口比两块大时，首轮只扫了前两块，离链头还差着 —— 那不叫全量。
+        T.caughtUp = T.syncedTo !== null && T.syncedTo >= head;
+        T.complete = !!(dep && T.fromBlock !== null && T.fromBlock <= dep && T.caughtUp && !T.gaps.length);
+      } else {
+        T.caughtUp = false;
+        // 失败：第一轮都没扫成（一条日志都没看过）或者这一轮记了缺口 → 绝不能说「全了」；
+        // 否则保持上一轮的结论（它只可能在一次真正扫到链头的成功之后才是 true，这一轮的失败另有 status / stale 标着）
+        T.complete = !!(T.complete && T.syncedTo !== null && !T.gaps.length);
       }
-      T.complete = !!(dep && T.fromBlock !== null && T.fromBlock <= dep && !T.gaps.length);
       return fillTimestamps();
     });
   }
@@ -1054,10 +1276,18 @@
     var missing = [];
     for (var i = lo; i < total; i++) if (!depCache[i]) missing.push(i);
     var due = force || !agentsAt || (Date.now() - agentsAt >= CFG.agentsPollMs);
+    var mcOk = false;
 
-    return multi(missing.map(function (id) {
-      return call(A.bridge, 'bridge', 'd.' + id, 'deposits', [id]);
-    })).then(function (o) {
+    /* Multicall3 用不了（探针没答上、退避中，或链上没有）时，名录会退成逐条 eth_call：400 笔存入 + 每个身份 6 条，
+       一轮就是上千个请求，公共节点必然限速。所以：存入每轮最多逐条读 plainDepositsPerTick 笔（新的优先，
+       没读全之前 total 是 null、只给「至少」）；身份的定时整批复读停掉，只给新身份读几个，其余字段保持 null（不知道）。 */
+    return probeMulticall().then(function (ok) {
+      mcOk = ok === true;
+      if (!mcOk && missing.length > CFG.plainDepositsPerTick) missing = missing.slice(-CFG.plainDepositsPerTick);
+      return multi(missing.map(function (id) {
+        return call(A.bridge, 'bridge', 'd.' + id, 'deposits', [id]);
+      }));
+    }).then(function (o) {
       missing.forEach(function (id) {
         var d = o['d.' + id];
         if (!d) return;
@@ -1083,14 +1313,20 @@
       }
       var list = Object.keys(agents).map(function (k) { return agents[k]; })
         .sort(function (a, b) { return (b.lastDepositId || 0) - (a.lastDepositId || 0); });
-      D.total = D.truncated ? null : list.length;          // 读的不是全部存入 → 总数不知道，不猜
+      // 读的不是全部存入（截断了，或有几笔这一轮没读到）→ 总数不知道，不猜，只给「至少」
+      var allRead = D.depositsRead === total - lo;
+      D.total = (!D.truncated && allRead) ? list.length : null;
       D.totalAtLeast = list.length;
+      D.itemsTruncated = list.length > CFG.agentsMax;
       list = list.slice(0, CFG.agentsMax);
 
       var fresh = list.filter(function (ag) { return !idCache[ag.agentId]; });
-      var toRead = due ? list : fresh;
+      // 逐条模式：定时的整批复读停掉，只给新出现的身份读几个（每个 6 条，总数和存入的逐条上限同一量级）
+      var idCap = Math.max(1, Math.floor(CFG.plainDepositsPerTick / 6));
+      var toRead = mcOk ? (due ? list : fresh) : fresh.slice(0, idCap);
+      D.identityPaused = !mcOk && (due || fresh.length > toRead.length);
       return readIdentities(toRead.map(function (ag) { return ag.agentId; })).then(function () {
-        if (due) agentsAt = Date.now();
+        if (due && mcOk) agentsAt = Date.now();
         D.identityAt = agentsAt || null;
         D.items = list.map(agentRow);
         D.ready = true; D.error = null; D.errorDetail = null; D.failures = 0;
@@ -1106,7 +1342,9 @@
 
   function readIdentities(ids) {
     if (!ids.length) return Promise.resolve();
-    var R = CFG.identityRegistry;
+    // 以桥自己的门禁为准（桥读的是哪个注册表，就查哪个）；接线还没读到时用配置 / 主网常量
+    var P = BAC.state.bsc.params;
+    var R = (P && P.bridge && P.bridge.identityRegistry) || CFG.identityRegistry;
     var calls = [];
     ids.forEach(function (id) {
       calls.push(
@@ -1290,16 +1528,25 @@
     if (sf) {
       shortfall = { bnb: big(pick(sf, 'bnbShort', 0)), bac: big(pick(sf, 'bacShort', 1)), source: 'contract' };
     } else if (bnbBook !== null && bnbHeld !== null) {
-      // shortfall() 在发射前会 revert（它要读代币余额）：BNB 那一半用两个真实读数自己推；
+      // shortfall() 在发射前会 revert（它要读代币余额）：BNB 那一半用两个真实读数自己推 ——
+      // 但只有两个数出自同一块 aggregate3（同一个区块）才推；逐条读的可能分属两个区块，推出来的差不作数。
       // BAC 那一半只有「账面是 0 且代币还不存在」时才确定是 0，否则不知道
+      var src = o.__src || {};
+      var sameBlock = src['b.bnbBook'] !== undefined && src['b.bnbBook'] >= 0 && src['b.bnbBook'] === src['bal.bridge'];
       shortfall = {
-        bnb: bnbBook > bnbHeld ? bnbBook - bnbHeld : 0n,
+        bnb: !sameBlock ? null : (bnbBook > bnbHeld ? bnbBook - bnbHeld : 0n),
         bac: (!BAC.TOKEN_LIVE && bacAcc === 0n) ? 0n : null,
         source: 'derived'
       };
     } else shortfall = { bnb: null, bac: null, source: null };
 
     var venue = bs ? num(pick(bs, 'venue', 3)) : null;
+    /* 合约里的 0 占位：时间戳 0 = 「从来没有过」，不是 1970-01-01；绝不能交给页面当时间显示。
+       currentRate() 在 creditsOutstanding = 0 时直接 return 0 —— 那是「没有汇率」，不是「每积分 0 BAC」。 */
+    var outstanding = big(o['b.outstanding']);
+    var rate = outstanding === 0n ? null : big(o['b.rate']);
+    var upCount = num(o['b.upgrades']), emCount = num(o['b.emCount']);
+    var potAt = rel ? tsOrNull(pick(rel, 'settledAt', 1)) : null;   // settleEpoch 真正发过一次 pot 才会写
     S.bridge = {
       address: A.bridge,
       // 账
@@ -1308,7 +1555,7 @@
       totalBurned: big(o['b.burned']),
       totalIssued: big(o['b.issued']),
       totalExited: big(o['b.exited']),
-      creditsOutstanding: big(o['b.outstanding']),
+      creditsOutstanding: outstanding,
       depositsTotal: num(o['b.depositId']),
       bnbBalance: bnbBook,
       poolBalance: bnbBook,                    // 旧键名 = bnbBalance（v2 合约里没有 poolBalance()）
@@ -1326,19 +1573,20 @@
       owedTotal: big(o['b.owed']),
       reservedTotal: big(o['b.reserved']),
       releasedInWindow: big(o['b.released']),
-      // currentRate() 在 v2 是「每 1 积分折合多少 BAC」（1e18 定点），不再是 BNB
-      bacPerCredit: big(o['b.rate']),
-      weiPerCredit: big(o['b.rate']),          // 旧键名，含义已变：单位是 BAC，不是 BNB
-      lastPot: rel ? big(pick(rel, 'pot', 0)) : null,
-      lastPotSettledAt: rel ? num(pick(rel, 'settledAt', 1)) : null,
-      lastPotBps: rel ? num(pick(rel, 'releaseBps', 2)) : null,
+      // currentRate() 在 v2 是「每 1 积分折合多少 BAC」（1e18 定点），不再是 BNB；没有在外的积分时是 null（没有汇率）
+      bacPerCredit: rate,
+      weiPerCredit: rate,                      // 旧键名，含义已变：单位是 BAC，不是 BNB
+      // 从来没发过 pot（settledAt = 0）：「上一次释放」不存在，三个数一起是 null
+      lastPot: potAt === null ? null : big(pick(rel, 'pot', 0)),
+      lastPotSettledAt: potAt,
+      lastPotBps: potAt === null ? null : num(pick(rel, 'releaseBps', 2)),
       paused: paused ? !!(pick(paused, 'paused', 0) === true) : null,
-      pausedUntil: paused ? num(pick(paused, 'until_', 1)) : null,
-      pausedCumulativeSec: paused ? num(pick(paused, 'cumulative', 2)) : null,
+      pausedUntil: paused ? tsOrNull(pick(paused, 'until_', 1)) : null,          // 0 = 从没暂停过
+      pausedCumulativeSec: paused ? num(pick(paused, 'cumulative', 2)) : null,   // 累计暂停秒数：0 就是真的 0
       halted: o['b.halted'] === undefined ? null : !!o['b.halted'],
       haltCause: num(o['b.haltCause']),
       pendingCause: num(o['b.pendingCause']),
-      escapeArmedAt: num(o['b.escapeArmedAt']),
+      escapeArmedAt: tsOrNull(o['b.escapeArmedAt']),                             // 0 = 没有武装过
       escapeTotalWeight: esc ? big(pick(esc, 'totalWeight', 0)) : null,
       escapeDistributedBac: esc ? big(pick(esc, 'distBac', 3)) : null,
       escapeDistributedBnb: esc ? big(pick(esc, 'distBnb', 4)) : null,
@@ -1349,11 +1597,16 @@
       owner: addrOrNull(o['b.owner']),
       pendingOwner: addrOrNull(o['b.pendingOwner']),
       implementation: impl || null,
+      // 这一轮真的读到了实现槽（false = 这一轮没读成，implementation 是上一轮的或 null）
+      implementationFresh: !!implCache.fresh,
+      // 本页看到的「实现槽变了、升级计数器没变」（没有 BridgeUpgraded 的换实现）
+      unloggedImplementationChanges: implChanges.map(function (x) { return Object.assign({}, x); }),
       extension: p ? p.bridge.extension : null,
-      upgradeCount: num(o['b.upgrades']),
-      lastUpgradeAt: num(o['b.lastUpgradeAt']),
-      emergencyCount: num(o['b.emCount']),
-      lastEmergencyAt: num(o['b.lastEmAt']),
+      dexRouter: p ? p.bridge.dexRouter : null,     // BacBridge.router() = PancakeSwap V2 Router
+      upgradeCount: upCount,
+      lastUpgradeAt: upCount === 0 ? null : tsOrNull(o['b.lastUpgradeAt']),     // 一次都没升级过 → null
+      emergencyCount: emCount,
+      lastEmergencyAt: emCount === 0 ? null : tsOrNull(o['b.lastEmAt']),        // 一次都没提取过 → null
       emergencyBnbWithdrawn: big(o['b.emBnb']),
       emergencyBacWithdrawn: big(o['b.emBac']),
       shortfall: shortfall,
@@ -1376,26 +1629,46 @@
       lifetimeTaxToRouter: big(o['tk.sentToRouter'])
     } : null;
 
-    var er = epochData && epochData['e.reward'];
+    var er = epochData && epochData['e.dayReward'];
     S.staking = {
       totalStaked: big(o['s.staked']),
       nodeCount: num(o['s.nodes']),
       rewardBalance: big(o['s.rewardBal']),
       lifetimeFunded: big(o['s.funded']),
       lifetimePaid: big(o['s.paid']),
-      lastRemitEpoch: num(o['s.lastRemit']),
-      epochPot: er ? big(pick(er, 'pot', 0)) : null,
-      epochWeight: er ? big(pick(er, 'weight', 1)) : null,
-      epochSettled: er ? !!pick(er, 'settled', 3) : null,
+      lastRemitEpoch: null,     // ValidatorStaking 里没有 lastRemitEpoch()（01 §11.5 还没落地），不读、不猜
+      // 奖池按「天」记（144 个纪元一天）：这是最近一个上报纪元所在那一天的池子 —— 不是「本纪元」的奖池
+      rewardDay: er ? dayOf(epoch) : null,
+      dayPot: er ? big(pick(er, 'pot', 0)) : null,
+      dayWeight: er ? big(pick(er, 'weight', 1)) : null,
+      dayRate: er ? big(pick(er, 'rate', 2)) : null,
+      daySettled: er ? !!pick(er, 'settled', 3) : null,
       minStake: C.MIN_VALIDATOR_STAKE
     };
 
+    /* 锚点：分清「真的上报过 / 定案过」和构造函数的占位。
+       - lastPostedEpoch < firstEpoch（构造函数写的 firstEpoch − 1）= 一个锚点都还没上报 → null；
+         firstEpoch 没读到时，只有那个纪元的锚点记录自己证明上报过（postedAt > 0）才信，否则 null；
+       - lastFinalEpoch 构造函数不写（0），< firstEpoch = 一个都还没定案 → lastFinalEpoch / lastFinalAt 都是 null；
+       - lastFinalAt 在没有定案时是**部署时间**（停机计时的起点），不是「上一个锚点定案的时间」，
+         原值另放在 haltClockFrom 里，给「多久没有新锚点就停机」的倒计时用。 */
+    noteFirstEpoch(o['a.first']);
+    var first = anchorFirstEpoch();
     var anchor = shapeAnchor(epochData && epochData['e.anchor']);
-    var cumGas = big(o['a.cumGas']), cumRem = big(o['a.cumRemitted']);
+    var postedRaw = num(o['a.posted']);
+    var posted;
+    if (postedRaw === null) posted = null;
+    else if (first !== null) posted = postedRaw >= first ? postedRaw : null;
+    else posted = (anchor && anchor.postedAt) ? postedRaw : null;
+    if (posted === null || (epoch !== null && epoch !== undefined && Number(epoch) !== posted)) anchor = null;
+    var finalRaw = num(o['a.final']);
+    var finalEpoch = (finalRaw === null || finalRaw === 0 || (first !== null && finalRaw < first)) ? null : finalRaw;
     S.anchor = {
-      lastPostedEpoch: num(o['a.posted']),
-      lastFinalEpoch: num(o['a.final']),
-      lastFinalAt: num(o['a.finalAt']),
+      firstEpoch: first,
+      lastPostedEpoch: posted,
+      lastFinalEpoch: finalEpoch,
+      lastFinalAt: finalEpoch === null ? null : tsOrNull(o['a.finalAt']),
+      haltClockFrom: tsOrNull(o['a.finalAt']),
       currentEpoch: BAC.currentEpoch(),
       epochLeftSec: BAC.epochLeft(),
       cumulativeCredited: big(o['a.cumCredited']),
@@ -1404,22 +1677,19 @@
       vetoCountInWindow: num(o['a.vetoes']),
       disputeCountInWindow: num(o['a.disputes']),
       releaseBps: num(o['a.releaseBps']),
-      anchorEpoch: epoch === undefined ? null : epoch,
+      anchorEpoch: anchor ? posted : null,
       anchor: anchor,
-      // 决策 #17 的对账三元组（累计口径）：已收 / 已转入 / 差额
-      gas: {
-        collected: cumGas,
-        remitted: cumRem,
-        shortfall: (cumGas !== null && cumRem !== null) ? (cumGas > cumRem ? cumGas - cumRem : 0n) : null,
-        epochCollected: anchor ? anchor.gasFeesInEpoch : null,
-        epochRemitted: anchor ? anchor.remittedInEpoch : null,
-        officialValidatorBps: C.OFFICIAL_BLOCK_VALIDATOR_BPS,
-        validatorSelfBps: C.VALIDATOR_BLOCK_VALIDATOR_BPS
-      }
+      // 决策 #17 的 gas 归集对账：ChainAnchor 里没有 cumulativeGasFees / cumulativeRemitted，链上读不到，
+      // 由视图层改用索引器 /api/health 的 gas 块（来自 FINAL 锚点）。这里不编。
+      gas: null
     };
+    BAC.clearWarning('gas_remittance_shortfall');
+  }
 
-    if (S.anchor.gas.shortfall !== null && S.anchor.gas.shortfall > 0n) BAC.pushWarning('gas_remittance_shortfall');
-    else BAC.clearWarning('gas_remittance_shortfall');
+  /** 合约里的时间戳：0 = 「从来没有过」→ null（不许显示成 1970-01-01）。 */
+  function tsOrNull(v) {
+    var n = num(v);
+    return n === null || !isFinite(n) || n <= 0 ? null : n;
   }
 
   /* ══════════════════════════════════════════════════════
@@ -1441,7 +1711,7 @@
   function markOk(reason) {
     var S = BAC.state, B = S.bsc;
     B.ready = true; B.error = null; B.errorDetail = null; B.failures = 0;
-    B.status = 'ok'; B.source = 'rpc';
+    B.status = 'ok'; B.source = 'rpc'; B.stale = false;
     B.updatedAt = Date.now();
     S.ready = true; S.error = null; S.errorDetail = null; S.loading = false;
     S.updatedAt = B.updatedAt; S.reason = reason || null;
@@ -1474,6 +1744,46 @@
 
   var lastUpgradeCountSeen = null;
 
+  /* 每个合约的「核心读数」。地址上有代码、这一轮却一条都没返回 = 这个合约读不出来
+     （ABI 和网站对不上 / 代理地址填错 / 节点全挂），绝不能报 status 'ok' 配一屏 null。 */
+  var CORE_KEYS = {
+    router: ['v.accounted', 'v.unsplit', 'v.toBridge', 'v.toNode', 'v.recognized', 'v.stuck', 'v.solvency'],
+    bridge: ['b.owner', 'b.locked', 'b.issued', 'b.outstanding', 'b.depositId', 'b.bnbBook', 'b.upgrades', 'b.emCount', 'b.settled'],
+    nodeFund: ['n.balance', 'n.received', 'n.withdrawn', 'n.owner'],
+    anchor: ['a.posted', 'a.final', 'a.finalAt', 'a.cumCredited', 'a.cumExit'],
+    staking: ['s.staked', 's.nodes', 's.rewardBal', 's.funded', 's.paid']
+  };
+  function failedContracts(o) {
+    if (!BAC.CONTRACTS_LIVE) return [];
+    return Object.keys(CORE_KEYS).filter(function (name) {
+      return isAddr(A[name]) && CORE_KEYS[name].every(function (k) { return o[k] === undefined; });
+    });
+  }
+  /** 那几个合约的核心读数是不是全都败在网络上（而不是合约拒绝 / 返回空 / 解不出来）。 */
+  function onlyNetwork(o, names) {
+    var f = o.__failed || {};
+    return names.length > 0 && names.every(function (name) {
+      return CORE_KEYS[name].every(function (k) { return f[k] === 'error'; });
+    });
+  }
+
+  /** 路由和桥一条核心读数都没返回：走错误路径。上一轮的真实读数原样保留、标成旧数（stale），不拿 null 盖掉。 */
+  function markReadFail(o, failed, reason) {
+    var S = BAC.state, B = S.bsc;
+    var net = onlyNetwork(o, failed);
+    B.failures++;
+    B.error = net ? TEXT.ERR : TEXT.NO_VAULT;
+    B.errorDetail = net ? '合约读数全部败在网络上：' + failed.join(' / ')
+      : '合约地址上有代码，但这些合约一条核心读数都没返回：' + failed.join(' / ');
+    B.status = 'error';
+    B.stale = !!B.ready;
+    S.loading = false;
+    S.error = B.error;
+    S.errorDetail = B.errorDetail;
+    S.reason = reason || null;
+    BAC.emit('state', S);
+  }
+
   function liveTick(opts) {
     var S = BAC.state.bsc;
     var head = null;
@@ -1488,22 +1798,36 @@
           BAC.time.setChainTime(Number(blk.timestamp));
         }
         var jobs = [];
-        if (BAC.CONTRACTS_LIVE && !(S.params && S.params.loaded)) {
+        // 接线 / 代币参数：还有没读到的 key 就每轮补读那几条（读到的不重读）
+        if (BAC.CONTRACTS_LIVE && !(S.params && S.params.complete)) {
           jobs.push(loadParams().then(function (p) { S.params = p; }));
         }
-        if (BAC.TOKEN_LIVE && !(S.tokenParams && S.tokenParams.loaded)) {
+        if (BAC.TOKEN_LIVE && !(S.tokenParams && S.tokenParams.complete)) {
           jobs.push(loadTokenParams().then(function (tp) { S.tokenParams = tp; }));
         }
         return Promise.all(jobs);
       })
       .then(function () { return readLive(BAC.currentEpoch()); })
       .then(function (o) {
+        var failed = failedContracts(o);
+        S.failedContracts = failed;
+        if (failed.length && !onlyNetwork(o, failed)) BAC.pushWarning('contract_reads_failed');
+        else BAC.clearWarning('contract_reads_failed');
+        if (failed.indexOf('router') >= 0 && failed.indexOf('bridge') >= 0) {
+          markReadFail(o, failed, opts.reason);
+          return syncLogs(head).catch(function (e) { BAC.logErr('syncLogs', e); })
+            .then(function () { BAC.emit('timeline', BAC.state.timeline); BAC.emit('state', BAC.state); });
+        }
+        noteFirstEpoch(o['a.first']);
         var posted = o['a.posted'] === undefined ? null : Number(o['a.posted']);
+        // 构造函数的占位（firstEpoch − 1）不是上报过的锚点：那个纪元的锚点是空的，不读（readEpoch 里也会挡）
+        var first = anchorFirstEpoch();
+        if (posted !== null && first !== null && posted < first) posted = null;
         var upgrades = o['b.upgrades'] === undefined ? null : Number(o['b.upgrades']);
-        // 升级过 → 接线参数可能变了，下一轮重读
-        if (upgrades !== null && lastUpgradeCountSeen !== null && upgrades !== lastUpgradeCountSeen && S.params) S.params.loaded = false;
+        // 升级过 → 接线参数可能变了，下一轮全部重读（实现槽变了也一样，见 readImplementation）
+        if (upgrades !== null && lastUpgradeCountSeen !== null && upgrades !== lastUpgradeCountSeen) resetParams();
         if (upgrades !== null) lastUpgradeCountSeen = upgrades;
-        return Promise.all([readEpoch(posted), readImplementation(upgrades)]).then(function (r) {
+        return Promise.all([readEpoch(posted), readImplementation(upgrades, head)]).then(function (r) {
           apply(o, r[0], posted, r[1]);
           markOk(opts.reason || 'refresh');
           var dep = o['b.depositId'];
@@ -1574,6 +1898,9 @@
     syncLogs: syncLogs,
     syncAgents: syncAgents,
     decodeLog: decodeLog,
+    shapeEvent: shapeEvent,
+    mergeTimeline: mergeTimeline,
+    anchorFirstEpoch: anchorFirstEpoch,
     shapeAnchor: shapeAnchor,
     shapePortal: shapePortal,
     parseTokenURI: parseTokenURI,

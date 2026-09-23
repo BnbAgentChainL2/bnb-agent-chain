@@ -57,9 +57,27 @@
   function statusOf(sec) { return contractStatus(sec); }
 
   function bscStatus() { return contractStatus(BAC.state.bsc); }
+  /** 某一个合约那一段：整体 ok、但这一轮这个合约一条核心读数都没返回（ABI 对不上 / 地址填错）→ 'error'，
+      不许拿一屏 null 报 'ok'。部分读数失败的仍然是 'ok'，失败那几个字段是 null。 */
+  function sectionStatus(name) {
+    var st = bscStatus();
+    if (st !== 'ok') return st;
+    var f = BAC.state.bsc.failedContracts || [];
+    return f.indexOf(name) >= 0 ? 'error' : st;
+  }
+  function sameAddr(a, b) { return typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase(); }
+  /** 已经确定 BSC 合约不存在（没配地址，或配了但链上没代码）。探针还没回来不算。 */
+  function contractsAbsent() {
+    if (!BAC.CONTRACTS_CONFIGURED) return true;
+    var c = BAC.state.bsc.code || {};
+    return c.router === false || c.bridge === false;
+  }
+  /** 索引器给的那几段（feed / 纪元历史 / 兑付率 / 验证者列表）：合约确定不存在时是 'pre'，
+      否则只看索引器自己读到没有 —— 不等 BSC 探针（BSC 的 RPC 挂了不该拖累索引器的数据）。 */
   function idxStatus(sec) {
     if (!BAC.HAS_INDEXER) return 'pre';
-    return statusOf(sec);
+    if (contractsAbsent()) return 'pre';
+    return plainStatus(sec);
   }
 
   /** 层内那一半（链指标 / 区块 / 交易）的状态。
@@ -177,7 +195,10 @@
   }
   function agents(opts) {
     var G = BAC.state.agentList, D = BAC.state.agentDir, S = BAC.state.summary, B = BAC.state.bsc;
-    var idxItems = G.items || [];
+    /* 索引器只认 v2：bac/agents/1、bac/summary/1 数的是已经删掉的自研 AgentRegistry 里的 agent（#31），
+       编号也不是 ERC-8004 身份号 —— 条目、总数、同号补数据一律不用。 */
+    var idxV2 = G.schema === 'bac/agents/2';
+    var idxItems = idxV2 ? (G.items || []) : [];
     var byId = {};
     idxItems.forEach(function (x) { byId[x.agentId] = x; });
     var chainOk = BAC.CONTRACTS_LIVE && D.ready;
@@ -191,24 +212,33 @@
       items = []; source = null;
       status = BAC.CONTRACTS_CONFIGURED ? contractStatus(D) : (BAC.HAS_INDEXER ? idxStatus(G) : 'pre');
     }
+    var sumV2 = !!(S && S.schema === 'bac/summary/2');
+    var idxTotal = sumV2 && S.agents && S.agents.total !== undefined && S.agents.total !== null ? Number(S.agents.total) : null;
+    var total = chainOk ? D.total : (idxV2 && G.total !== null && G.total !== undefined ? G.total : idxTotal);
+    // 'pre' = 桥合约还不存在（阶段 a）：这时候「进场过几个 agent」这个数不存在。索引器哪怕回了 0
+    // （或者演练用的条目），也不能和「发射后公布」一起出现 —— 页面先看数字再看 status，会把 0 画出来
+    if (status === 'pre') { items = []; source = null; }
+    // 同理：还在读（loading）/ 读失败（error）时不给任何数字 —— 只有 'ok' 才有「一共几个」
+    var numeric = status === 'ok';
+    if (!numeric) total = null;
     if (opts && opts.limit) items = items.slice(0, opts.limit);
-    var idxTotal = S && S.agents && S.agents.total !== undefined && S.agents.total !== null ? Number(S.agents.total) : null;
-    var total = chainOk ? D.total : (G.total !== null ? G.total : idxTotal);
     return {
       status: status,
       source: source,                     // 'chain' | 'indexer' | null
       items: items,
-      total: total,                        // null = 不知道（读的不是全部存入时不猜）
-      totalAtLeast: chainOk ? D.totalAtLeast : null,
+      total: total,                        // null = 不知道（读的不是全部存入时不猜；status 不是 ok 时也是 null）
+      totalAtLeast: (chainOk && numeric) ? D.totalAtLeast : null,
+      identityPaused: chainOk ? !!D.identityPaused : false,   // Multicall3 用不了：身份字段这一轮没读（null = 不知道）
       depositsTotal: B.bridge ? B.bridge.depositsTotal : null,   // BacBridge.depositId()，全量
-      truncated: chainOk ? !!D.truncated : false,
+      truncated: chainOk ? !!D.truncated : false,          // 存入太多，只读了最近 depositsMax 笔
+      itemsTruncated: chainOk ? !!D.itemsTruncated : false,  // 身份太多，只列了最近 agentsMax 个
       page: G.page,
       pageSize: CFG.agentsPageSize,
       // 状态机计数已作废（v2 没有这套状态）：只保留 total，其余 null —— 页面不许显示成 0
       counts: total === null ? null : {
         total: total, challenged: null, active: null, dormant: null, banned: null, retired: null
       },
-      totalFromChain: chainOk ? D.total : null,
+      totalFromChain: (chainOk && numeric) ? D.total : null,
       identityRegistry: CFG.identityRegistry,
       note: 'tokenURI（注册文件）与其中的名字、简介都是身份持有人自己写的，本站只原样转义显示，不背书其中任何说法。'
         + TEXT.IDENTITY_LIMIT
@@ -216,16 +246,31 @@
   }
 
   /* ── 税收路由 · 50/50（决策 #30：BacTaxRouter，没有金库了）──────────── */
+  /** 决策 #29a 的那句 + 节点基金那一半（决策 #10）。50/50 的基数是**扣掉 Flap 协议费之后**到账的 BNB
+      （HANDOFF §4：1 BNB 税 → 路由只收到约 0.9 BNB，节点基金拿其中一半 ≈ 税的 45%）。
+      协议费发射后以 feeConfigV2().feeRate 的真实读数为准，发射前用 Portal 实测的 1000 bps。 */
+  function disclosureText(feeBps) {
+    var fee = feeBps === null || feeBps === undefined ? C.FLAP_FEE_RATE_BPS : feeBps;
+    return TEXT.OWNER_POWER + '节点基金这一半（扣掉 Flap ' + BAC.fmt.pct(fee) + ' 协议费后到账 BNB 的 50%）'
+      + '由 BacNodeFund 的 owner 随时提取，用于服务器与节点搭建。';
+  }
+
+  /** 节点基金时间线：BSC 日志窗口 + 索引器的全量历史（只有提取和换 owner），按 tx:logIndex 合并。 */
+  function nodeFundTimeline() {
+    var T = BAC.state.timeline, O = BAC.state.ownerTimeline;
+    var idx = (O && O.ready && !O.addressMismatch) ? O.nodeFund : [];
+    return BAC.chain && BAC.chain.mergeTimeline ? BAC.chain.mergeTimeline([T.nodeFund, idx], false) : T.nodeFund.slice();
+  }
+
   function treasury() {
     var B = BAC.state.bsc, t = B.treasury, p = B.params, tp = B.tokenParams, T = BAC.state.timeline;
-    var st = bscStatus();
+    var st = sectionStatus('router');
     var base = {
       status: st,
       tokenStatus: tokenStatus(B),
       bridgeBps: C.BRIDGE_BPS, nodeFundBps: C.NODE_FUND_BPS,
       portalFeeRateBps: C.FLAP_FEE_RATE_BPS,
-      // 决策 #29a 的那句 + 节点基金那一半（决策 #10），逐字
-      disclosure: TEXT.OWNER_POWER + '节点基金这一半（税后 BNB 的 50%）由 BacNodeFund 的 owner 随时提取，用于服务器与节点搭建。',
+      disclosure: disclosureText(t ? t.taxFeeRateBps : null),
       routerOwner: null,
       routerNote: 'BacTaxRouter 没有 owner、没有管理员、没有升级入口：任何人都能调 settle() 触发分账，分账比例写死在代码里。'
     };
@@ -271,9 +316,12 @@
       wiring: p ? p.wiring : null,
       // 时间线（最近窗口的日志）：税收 → 路由 → 分账 → 推送；节点基金的到账 / 提取 / 换 owner
       flow: T.flow.slice(),
-      nodeFundEvents: T.nodeFund.slice(),
+      nodeFundEvents: nodeFundTimeline(),
       timelineStatus: contractStatus(T),
-      timelineComplete: !!T.complete,
+      // 「全了」= 从部署块扫到了链头、没有缺口，**而且**两条列表都没因为超过 timelineMax 丢过最旧的条目
+      timelineComplete: !!T.complete && !(T.truncated && (T.truncated.flow || T.truncated.nodeFund)),
+      timelineTruncated: { flow: !!(T.truncated && T.truncated.flow), nodeFund: !!(T.truncated && T.truncated.nodeFund) },
+      timelineMax: CFG.timelineMax,
       settleNote: '路由的稳态余额取决于有没有人调 settle()：没有任何合约或定时器会自动调它。'
     });
   }
@@ -281,7 +329,7 @@
   /* ── 桥（BacBridge：UUPS 代理，owner 可升级 + 紧急提取，决策 #29）──────── */
   function bridge() {
     var B = BAC.state.bsc, b = B.bridge;
-    var st = bscStatus();
+    var st = sectionStatus('bridge');
     if (!b) return { status: st, tokenStatus: tokenStatus(B), notice: TEXT.OWNER_POWER, maxExitShareBps: C.MAX_EXIT_SHARE_BPS };
     var p = B.params;
     return {
@@ -325,7 +373,11 @@
       owner: b.owner,
       pendingOwner: b.pendingOwner,
       implementation: b.implementation,
+      implementationFresh: !!b.implementationFresh,
+      unloggedImplementationChanges: (b.unloggedImplementationChanges || []).slice(),
       extension: b.extension,
+      // BacBridge.router()：PancakeSwap V2 Router（毕业后回购走外盘），不是税收路由
+      dexRouter: p ? p.bridge.dexRouter : null,
       upgradeCount: b.upgradeCount,
       lastUpgradeAt: b.lastUpgradeAt,
       emergencyCount: b.emergencyCount,
@@ -348,8 +400,12 @@
      计数器（upgradeCount / emergencyCount / 累计提取额）直接读合约，是全量的；
      逐条记录来自 BSC 日志，公共节点只给最近一个窗口 —— 缺几条就照实说缺几条，并给出 BscScan 事件页。 */
   function ownerPowers() {
-    var B = BAC.state.bsc, b = B.bridge || {}, T = BAC.state.timeline;
-    var items = T.owner.slice();
+    var B = BAC.state.bsc, b = B.bridge || {}, T = BAC.state.timeline, O = BAC.state.ownerTimeline;
+    /* 两个来源合并：BSC 日志窗口（最近约 40 分钟，新鲜）+ 索引器 /api/bridge/timeline（从部署起的全量历史）。
+       索引器那份读到过一次就一直可用（链上事件不会消失），这一轮失败只是没有更新的部分。 */
+    var idxUsable = !!(O && O.ready && !O.addressMismatch);
+    var idxItems = idxUsable ? O.owner : [];
+    var items = BAC.chain && BAC.chain.mergeTimeline ? BAC.chain.mergeTimeline([T.owner, idxItems], true) : T.owner.slice();
     var seenUp = items.filter(function (x) { return x.kind === 'upgrade'; }).length;
     var seenEm = items.filter(function (x) { return x.kind === 'emergency'; }).length;
     function miss(total, seen) {
@@ -360,9 +416,47 @@
     var countersCovered = missing.upgrades === 0 && missing.emergencies === 0;
     var blocks = CFG.logWindowBlocks;
     function v(x) { return x === undefined ? null : x; }
+    /* 「整条时间线全了」两条路：
+       ① 日志窗口自己从部署块扫起、扫到链头、没有缺口（T.complete）；
+       ② 索引器的历史从部署那一刻开始（看得到 initialize 发的 Initialized，或 owner 从零地址给出去的那一条）、
+          没被 limit 截断、它的摄取游标和日志窗口接得上（窗口起点 ≤ 游标 + 1，窗口里的缺口都在游标之前），
+          而且日志窗口这一轮扫到了链头。任何一条不满足就不说「全了」。 */
+    var ZERO_RE = /^0x0{40}$/i;
+    var fromDeploy = items.some(function (x) {
+      return x.kind === 'initialized' || (x.kind === 'ownership' && typeof x.from === 'string' && ZERO_RE.test(x.from));
+    });
+    var cur = idxUsable ? O.bscCursor : null;
+    var joined = cur !== null && cur !== undefined && T.fromBlock !== null && T.fromBlock <= cur + 1
+      && T.gaps.every(function (g) { return g[1] <= cur; });
+    /* 日志窗口那条 owner 列表超过 timelineMax 时丢过最旧的条目（这一页里补不回来）：
+       ① 自己那条路就不能再说全了；② 走索引器那条路，要索引器的历史覆盖到丢掉的最新那一块才行。 */
+    var cut = !!(T.truncated && T.truncated.owner);
+    var droppedThrough = T.droppedThrough ? T.droppedThrough.owner : null;
+    var droppedCovered = !cut || (cur !== null && cur !== undefined && droppedThrough !== null && droppedThrough <= cur);
+    var viaRpc = !!T.complete && !cut;
+    var viaIndexer = !!(idxUsable && plainStatus(O) === 'ok' && !O.truncated && fromDeploy
+      && joined && T.caughtUp && plainStatus(T) === 'ok' && droppedCovered);
+    var complete = viaRpc || viaIndexer;
+    /* #29c 靠的信号不能只由 owner 控制：
+       - 时间线里单独的 Upgraded（不和 Initialized(1) 同一笔、同一笔里也没有 BridgeUpgraded）= 没留痕的换实现；
+       - 本页读实现槽时看到槽变了、升级计数器没变（bac-chain.js readImplementation）；
+       - 时间线全了的时候，日志里最后一次换到的实现必须就是现在实现槽里的那个。 */
+    var lastImpl = null;
+    for (var i = 0; i < items.length; i++) {
+      var x = items[i];
+      if (x.kind === 'upgrade') { lastImpl = x.newImplementation; break; }
+      if (x.kind === 'implementation') { lastImpl = x.implementation; break; }
+    }
+    var implNow = v(b.implementation);
+    var unloggedEvents = items.filter(function (x) { return x.kind === 'implementation' && x.unlogged === true; }).length;
+    var slotChanges = (b.unloggedImplementationChanges || []).slice();
     return {
-      status: bscStatus(),
+      status: sectionStatus('bridge'),
       timelineStatus: contractStatus(T),
+      // 索引器那份全量历史的状态（旧版索引器没有这个端点 → 'error'，页面照旧只用日志窗口）
+      historyStatus: idxStatus(O),
+      historyTotals: idxUsable ? O.totals : null,
+      sources: { rpc: T.owner.length, indexer: idxItems.length },
       owner: v(b.owner),
       pendingOwner: v(b.pendingOwner),
       implementation: v(b.implementation),
@@ -380,13 +474,27 @@
       missing: missing,
       // 升级与紧急提取两类：计数器对上了就是全的（哪怕日志窗口没覆盖到部署块）
       upgradesAndWithdrawalsComplete: countersCovered,
-      // 整条时间线（含换 owner / 暂停）：只有从部署块起连续扫过、没有缺口才算全
-      complete: !!T.complete,
-      coverage: { fromBlock: T.fromBlock, syncedTo: T.syncedTo, deployBlock: T.deployBlock, windowBlocks: blocks, gaps: T.gaps.slice() },
+      // 整条时间线（含换 owner / 暂停）：见上面两条路，任何一条成立才算全
+      complete: complete,
+      completeVia: viaRpc ? 'rpc' : (viaIndexer ? 'indexer' : null),
+      coverage: {
+        fromBlock: T.fromBlock, syncedTo: T.syncedTo, deployBlock: T.deployBlock, windowBlocks: blocks, gaps: T.gaps.slice(),
+        indexerThrough: cur === undefined ? null : cur, fromDeploy: fromDeploy,
+        // 日志窗口那条列表超过 timelineMax 丢过最旧的条目；droppedThrough = 丢掉的最新那一块
+        truncated: cut, droppedThrough: cut ? droppedThrough : null, timelineMax: CFG.timelineMax
+      },
+      implementationFresh: !!b.implementationFresh,
+      // 日志里最后一次换到的实现（null = 时间线里一次都没看到）
+      loggedImplementation: lastImpl,
+      // 现在的实现槽和日志对不对得上：只有整条时间线全了、而且升级计数器和日志里的升级次数一致时才下结论
+      // （一次升级正落在「扫日志」和「读槽」之间时两边会差一轮，那时计数器也对不上 → null，不报假的「对不上」）
+      implementationMatchesLog: (complete && implNow && lastImpl && missing.upgrades === 0 && b.upgradeCount === seenUp)
+        ? sameAddr(implNow, lastImpl) : null,
+      unlogged: { upgradedEvents: unloggedEvents, slotChanges: slotChanges, total: unloggedEvents + slotChanges.length },
       eventsUrl: BAC.isAddr(CFG.addresses.bridge) ? BAC.links.addressEvents(CFG.addresses.bridge) : null,
-      note: '次数、最近一次的时间和累计提取额直接读桥合约的计数器，是全量的。逐条记录来自 BSC 日志：'
-        + '公共节点只给最近约 ' + blocks + ' 个块（约 ' + Math.round(blocks * C.BSC_BLOCK_TIME / 60) + ' 分钟），'
-        + '更早的记录请到 BscScan 的事件页核对。'
+      note: '次数、最近一次的时间和累计提取额直接读桥合约的计数器，是全量的。逐条记录来自索引器的全量历史'
+        + '与 BSC 日志：公共节点只给最近约 ' + blocks + ' 个块（约 ' + Math.round(blocks * C.BSC_BLOCK_TIME / 60) + ' 分钟），'
+        + '索引器读不到时更早的记录请到 BscScan 的事件页核对。'
     };
   }
 
@@ -442,23 +550,55 @@
   /* ── 验证者（含 gas 归集对账三元组）──────────────────── */
   function validators() {
     var V = BAC.state.validators, B = BAC.state.bsc;
-    var s = B.staking, a = B.anchor;
-    var chainGas = a && a.gas ? a.gas : null;
+    var s = B.staking;
+    /* 决策 #17 的「已收 / 已转入 / 差额」：ChainAnchor / ValidatorStaking 里没有对应的读函数（编译产物核对过），
+       所以唯一真实来源是索引器 /api/health 的 gas 块（来自 FINAL 锚点，单位是层内 BAC）。索引器读不到就是 null。 */
+    var L = BAC.state.layer, lg = L && L.gas ? L.gas : null;
+    // 一个 FINAL 锚点都还没有（lastAnchoredEpoch = null）时索引器给的是占位 "0"：那不是「已收 0」，是还没有这笔账
+    if (lg && (lg.lastAnchoredEpoch === null || lg.lastAnchoredEpoch === undefined || contractsAbsent())) lg = null;
+    var chainGas = lg ? {
+      collected: lg.received, remitted: lg.remitted, shortfall: lg.gap,
+      epochCollected: null, epochRemitted: null,
+      officialValidatorBps: lg.officialBlockValidatorBps !== null ? lg.officialBlockValidatorBps : C.OFFICIAL_BLOCK_VALIDATOR_BPS,
+      validatorSelfBps: lg.validatorBlockValidatorBps !== null ? lg.validatorBlockValidatorBps : C.VALIDATOR_BLOCK_VALIDATOR_BPS,
+      lastAnchoredEpoch: lg.lastAnchoredEpoch,
+      source: 'indexer'
+    } : null;
+    /* 总质押 / 奖励余额：**链上直读优先**（ValidatorStaking.totalStaked() / rewardBalance() 是真的测量值）。
+       索引器的 totalStaked 不是测量值，是它已经索引到的验证者行的求和：摄取落后、或它没配 staking 地址时就是 "0"。
+       所以只在链上这个数没读到、而且本站配了 staking 地址时才拿索引器的顶上（来源另标）。 */
+    var stakingCfg = BAC.isAddr(CFG.addresses.staking);
+    function pickNum(chainV, idxV) {
+      if (chainV !== null && chainV !== undefined) return { v: chainV, src: 'chain' };
+      if (stakingCfg && idxV !== null && idxV !== undefined) return { v: idxV, src: 'indexer' };
+      return { v: null, src: null };
+    }
+    var ts = pickNum(s ? s.totalStaked : null, V.totalStaked);
+    var rb = pickNum(s ? s.rewardBalance : null, V.rewardBalance);
     return {
-      status: V.items.length ? idxStatus(V) : bscStatus(),
+      status: V.items.length ? idxStatus(V) : sectionStatus('staking'),
       items: V.items.slice(),
       itemsStatus: idxStatus(V),
       // 链上直接读到的总量（索引器挂了也有）
       nodeCount: s ? s.nodeCount : null,
-      totalStaked: V.totalStaked !== null ? V.totalStaked : (s ? s.totalStaked : null),
-      rewardBalance: V.rewardBalance !== null ? V.rewardBalance : (s ? s.rewardBalance : null),
+      totalStaked: ts.v,
+      totalStakedSource: ts.src,            // 'chain' | 'indexer' | null
+      rewardBalance: rb.v,
+      rewardBalanceSource: rb.src,
       lifetimeFunded: s ? s.lifetimeFunded : null,
       lifetimePaid: s ? s.lifetimePaid : null,
       minStake: C.MIN_VALIDATOR_STAKE,
-      epochPot: s ? s.epochPot : null,
-      epochSettled: s ? s.epochSettled : null,
-      lastRemitEpoch: s ? s.lastRemitEpoch : null,
-      // 决策 #17：层内 gas 费的「已收 / 已转入 / 差额」，全链累计口径
+      /* 奖池按「天」记（ValidatorStaking.dayReward(day)，144 个纪元一天）：rewardDay 是最近一个上报纪元所在的那一天。
+         合约里没有「每个纪元的奖池」—— epochPot / epochSettled 恒为 null，不许把一天的池子标成「本纪元」。 */
+      rewardDay: s ? s.rewardDay : null,
+      dayPot: s ? s.dayPot : null,
+      dayWeight: s ? s.dayWeight : null,
+      daySettled: s ? s.daySettled : null,
+      epochsPerDay: C.EPOCHS_PER_DAY,
+      epochPot: null,
+      epochSettled: null,
+      lastRemitEpoch: null,     // 合约里没有这个读函数
+      // 决策 #17：层内 gas 费的「已收 / 已转入 / 差额」，截至最近一个 FINAL 锚点的累计口径（来源：索引器）
       gas: chainGas ? {
         collected: chainGas.collected,
         remitted: chainGas.remitted,
@@ -467,7 +607,9 @@
         epochRemitted: chainGas.epochRemitted,
         officialValidatorBps: chainGas.officialValidatorBps,   // 官方出块 → 验证者池 10%
         validatorSelfBps: chainGas.validatorSelfBps,           // 验证者出块 → 自留 50%
-        ok: chainGas.shortfall === null ? null : chainGas.shortfall === 0n
+        lastAnchoredEpoch: chainGas.lastAnchoredEpoch,
+        source: chainGas.source,
+        ok: chainGas.shortfall === null || chainGas.shortfall === undefined ? null : chainGas.shortfall === 0n
       } : null,
       gasNote: '归集是受信但可对账的：合约不能强制任何人把 gas 费转进 FeeSplitter，'
         + '能保证的只有「已收 / 已转入 / 差额」三个数是公开的、任何人都能自己重算。',
@@ -478,16 +620,20 @@
   /* ── 纪元 ─────────────────────────────────────────────── */
   function epoch() {
     var B = BAC.state.bsc, a = B.anchor, E = BAC.state.epochs;
-    var st = bscStatus();
+    var st = sectionStatus('anchor');
     var cur = BAC.currentEpoch();
     return {
       status: st,
       current: cur,
       leftSec: BAC.epochLeft(),
       lengthSec: C.EPOCH,
+      // null = 一个锚点都还没上报 / 定案过（构造函数的占位值已经在数据层滤掉，不会出现在这里）
+      firstEpoch: a && a.firstEpoch !== undefined ? a.firstEpoch : null,
       lastPosted: a ? a.lastPostedEpoch : null,
       lastFinal: a ? a.lastFinalEpoch : null,
       lastFinalAt: a ? a.lastFinalAt : null,
+      // 「多久没有新的 FINAL 锚点就停机」的计时起点：还没有 FINAL 锚点时就是锚点合约的部署时间
+      haltClockFrom: a && a.haltClockFrom !== undefined ? a.haltClockFrom : null,
       commitWindowSec: C.COMMIT_WINDOW,
       // 锚点等待（决策 #18 术语 / #25 时长）。字段名 challengeWindowSec 保留为兼容别名，
       // 页面一律读 anchorWaitSec，显示文案一律是「锚点等待」。
@@ -534,8 +680,10 @@
       addresses: Object.assign({}, CFG.addresses, {
         vault: CFG.addresses.router,
         identityRegistry: CFG.identityRegistry,
-        flapPortal: CFG.flapPortal
+        flapPortal: CFG.flapPortal,
+        pancakeRouter: CFG.pancakeRouter      // 桥毕业后回购走的外盘（BacBridge.router()）
       }),
+      failedContracts: (s.bsc.failedContracts || []).slice(),
       layerAddresses: Object.assign({}, BAC.LAYER),
       explorer: CFG.explorer,
       flapUrl: CFG.flapUrl,

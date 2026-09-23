@@ -269,8 +269,9 @@ function deployBacBridge(
     address portal_,
     address router_
 ) returns (BacBridge) {
-    bytes memory init =
-        abi.encodeCall(BacBridge.initialize, (owner_, bac_, identity_, anchor_, watchdog_, portal_, router_));
+    bytes memory init = abi.encodeCall(
+        BacBridge.initialize, (owner_, bac_, identity_, anchor_, watchdog_, portal_, router_)
+    );
     return BacBridge(address(new ERC1967Proxy(address(impl), init)));
 }
 
@@ -411,6 +412,18 @@ contract BacBridgeTestBase is Test {
         vm.warp(vm.getBlockTimestamp() + uint256(n) * E);
     }
 
+    /// @dev `collect`'s per-address cap for `span` epochs: 10% of what the last settled daily rate
+    ///      releases from the whole bucket in one epoch. Deliberately NOT a share of the last pot.
+    function _cap(uint256 span) internal view returns (uint256) {
+        (,, uint16 bps) = bridge.lastEpochRelease();
+        return (bridge.buybackBac() * bps * bridge.MAX_EXIT_SHARE_BPS() * span) / (1e8 * 144);
+    }
+
+    /// @dev What `who` has been released and not yet collected, before the speed limit.
+    function _released(address who) internal view returns (uint256) {
+        return bridge.owed(who) - bridge.unreleasedOwed(who);
+    }
+
     /// @dev The release the contract must compute: a DAILY rate divided down to one epoch.
     function _expectedPot(uint256 assets, uint256 reserved, uint16 dailyBps) internal pure returns (uint256) {
         return ((assets - reserved) * dailyBps) / (10000 * 144);
@@ -536,6 +549,30 @@ contract BacBridgeEntryTest is BacBridgeTestBase {
         assertEq(swept, 1 ether);
         assertEq(bridge.bnbBalance(), 5 ether);
         assertEq(bridge.sweepUntracked(), 0);
+    }
+
+    /// `BacTaxRouter` pushes the bridge half with `call{gas: PUSH_GAS = 100_000}`. Behind the
+    /// proxy `acceptRelease` pays for one extra hop (the EIP-1967 slot read and a DELEGATECALL
+    /// into a cold implementation), so pin it well below that stipend, including the heavier
+    /// post-halt path that also feeds the junior accumulator.
+    function test_AcceptReleaseThroughTheProxyFitsTheRouterStipend() public {
+        vm.deal(address(this), 10 ether);
+        uint256 g = gasleft();
+        (bool ok,) = address(bridge).call{value: 1 ether, gas: 100_000}(abi.encodeWithSignature("acceptRelease()"));
+        uint256 used = g - gasleft();
+        assertTrue(ok, "acceptRelease failed inside the router's stipend");
+        assertLt(used, 60_000, "first (cold, zero-to-nonzero) acceptRelease too expensive");
+
+        _lock(alice, 1, 1e18);
+        vm.prank(watchdog);
+        bridge.armEscape();
+        vm.warp(vm.getBlockTimestamp() + bridge.ESCAPE_ARM_DELAY());
+        bridge.checkHalt();
+        g = gasleft();
+        (ok,) = address(bridge).call{value: 1 ether, gas: 100_000}(abi.encodeWithSignature("acceptRelease()"));
+        used = g - gasleft();
+        assertTrue(ok, "post-halt acceptRelease failed inside the router's stipend");
+        assertLt(used, 60_000, "post-halt acceptRelease too expensive");
     }
 
     function test_PlainSendReverts() public {
@@ -1124,8 +1161,9 @@ contract BacBridgeSettleTest is BacBridgeTestBase {
         bridge.collect(alice);
 
         _warpEpochs(1);
-        uint256 pot = _settleNext(3);
-        uint256 cap = (pot * bridge.MAX_EXIT_SHARE_BPS()) / 10000; // span == 1
+        _settleNext(3);
+        uint256 cap = _cap(1);
+        assertGt(_released(alice), cap, "the release outruns one epoch's allowance here");
         assertEq(bridge.pendingCollect(alice), cap, "pendingCollect must already be truncated");
 
         uint256 owedBefore = bridge.owed(alice);
@@ -1146,23 +1184,20 @@ contract BacBridgeSettleTest is BacBridgeTestBase {
         bridge.collect(alice); // establish lastCollectEpoch
 
         // 20 epochs of releases with nobody collecting
-        uint256 pot;
         for (uint64 i = 0; i < 20; i++) {
             _warpEpochs(1);
-            pot = _settleNext(3);
+            _settleNext(3);
         }
-        uint256 cap1 = (pot * bridge.MAX_EXIT_SHARE_BPS()) / 10000;
-        uint256 cap20 = (pot * bridge.MAX_EXIT_SHARE_BPS() * 20) / 10000;
-        assertGt(bridge.pendingCollect(alice), cap1 * 19, "20 epochs of allowance must be claimable at once");
-        assertLe(bridge.pendingCollect(alice), cap20, "and no more than 20 epochs of it");
+        assertGt(_released(alice), _cap(20), "released more than 20 epochs of allowance");
+        assertEq(bridge.pendingCollect(alice), _cap(20), "20 epochs of allowance are claimable at once");
 
         // beyond one day the multiplier stops growing
         for (uint64 i = 0; i < 400; i++) {
             _warpEpochs(1);
-            pot = _settleNext(3);
+            _settleNext(3);
         }
-        uint256 capDay = (pot * bridge.MAX_EXIT_SHARE_BPS() * bridge.MAX_CATCHUP_EPOCHS()) / 10000;
-        assertLe(bridge.pendingCollect(alice), capDay, "MAX_CATCHUP_EPOCHS bounds the multiplier");
+        assertEq(_cap(144), _cap(bridge.MAX_CATCHUP_EPOCHS()));
+        assertLe(bridge.pendingCollect(alice), _cap(144), "MAX_CATCHUP_EPOCHS bounds the multiplier");
     }
 
     function test_DoubleCollectInSameEpochRejected() public {
@@ -1265,10 +1300,295 @@ contract BacBridgeSettleTest is BacBridgeTestBase {
         anchor.setAnchor(e, bytes32(uint256(1)), 3, IChainAnchor.State.FINAL);
         fresh.settleEpoch(e);
         assertEq(fresh.reservedTotal(), 0);
-        assertEq(fresh.accPerOwed(), 0);
+        (uint160 p, uint48 scale, uint48 gen) = fresh.releaseIndex();
+        assertEq(uint256(p), fresh.RELEASE_ONE(), "nothing owed: the release index must not move");
+        assertEq(uint256(scale) + uint256(gen), 0);
     }
 }
 
+// ============================================================================
+//        RELEASE INDEX + COLLECT CAP  (review findings of 2026-09-23)
+// ============================================================================
+
+/// @notice Regression tests for the two release bugs of the pre-fix accumulator:
+///         (1) `collect` capped at 10% of `lastPot`, and a pot is 0 once every owed wei has been
+///             released, so the last exiters were locked out of BAC already reserved for them;
+///         (2) each pot was spread over the WHOLE `owedTotal`, released owed included, so part of
+///             every pot went to addresses that could never collect it (`collect` clamps at `owed`)
+///             and sat in `reservedTotal` while later exiters starved — the B3 invariant failure.
+///         Numbers follow the finding: two agents lock 1,000,000 BAC each, 100,000 BAC bought back.
+contract BacBridgeReleaseTest is BacBridgeTestBase {
+    function setUp() public override {
+        super.setUp();
+        _lock(alice, 1, 1_000_000e18);
+        _lock(bob, 2, 1_000_000e18);
+        _seedBuyback(100_000e18);
+    }
+
+    function _exit(address to, uint256 exitId, uint256 agentId, uint256 credits) internal returns (uint256) {
+        _postSingle(_curEpoch(), _leaf(exitId, agentId, to, credits), 3);
+        return _claim(_curEpoch(), exitId, agentId, to, credits);
+    }
+
+    function _next() internal returns (uint256 pot) {
+        _warpEpochs(1);
+        pot = _settleNext(3);
+    }
+
+    /// Finding 1 (T1): a lone exiter fully released by one pot must still be paid after the next
+    /// pot comes out 0 — immediately, and after any number of keeper settles.
+    function test_FullReleaseThenAZeroPotStillCollects() public {
+        uint256 amt = _exit(alice, 1, 1, 100e18);
+        assertEq(amt, 5e18);
+        assertEq(_next(), 5e18, "one pot releases everything owed");
+        assertEq(_next(), 0, "nothing left to release: the pot is 0");
+        (uint256 lastPot,,) = bridge.lastEpochRelease();
+        assertEq(lastPot, 0, "lastPot stays honest");
+        for (uint256 i = 0; i < 144; i++) {
+            _next();
+        }
+        assertEq(bridge.pendingCollect(alice), 5e18);
+        vm.prank(alice);
+        assertEq(bridge.collect(alice), 5e18, "reserved BAC must stay collectable");
+        assertEq(bridge.owedTotal(), 0);
+        assertEq(bridge.reservedTotal(), 0);
+        _assertBacBooks();
+    }
+
+    /// Finding 1 (T2): two FINAL epochs settled in the same block (a keeper catching up) left no
+    /// window at all under the old cap. Now the reserved BAC is collectable regardless.
+    function test_CatchUpSettlesInOneBlockDoNotLockTheExiterOut() public {
+        _exit(alice, 1, 1, 100e18);
+        _warpEpochs(3);
+        _settleNext(3);
+        _settleNext(3);
+        vm.prank(alice);
+        assertEq(bridge.collect(alice), 5e18);
+    }
+
+    /// Finding 1 (T4): an exiter whose owed is larger than the per-epoch speed limit, collecting
+    /// every epoch, is paid every wei — not frozen once the headroom reaches 0 after ~30 epochs.
+    function test_ALargeExiterCollectingEveryEpochIsPaidInFull() public {
+        uint256 amt = _exit(alice, 1, 1, 20_000e18); // 1% of the credits: owed 1,000 BAC
+        assertEq(amt, 1000e18);
+        vm.prank(alice);
+        vm.expectRevert(unicode"Nothing to collect / 没有可领取的金额");
+        bridge.collect(alice); // nothing released yet
+
+        uint256 paid;
+        uint256 epochs;
+        bool sawZeroPot;
+        while (bridge.owed(alice) > 0) {
+            if (_next() == 0) sawZeroPot = true;
+            vm.prank(alice);
+            try bridge.collect(alice) returns (uint256 got) {
+                paid += got;
+            } catch {}
+            epochs++;
+            assertLt(epochs, 2000, "the exit must finish");
+        }
+        assertTrue(sawZeroPot, "the headroom did run out while BAC was still reserved");
+        assertEq(paid, amt, "every wei owed was paid");
+        assertEq(bridge.owedTotal(), 0);
+        assertEq(bridge.reservedTotal(), 0);
+        _assertBacBooks();
+    }
+
+    /// Finding 2 (T2): alice is fully released and does not collect; bob exits the same size
+    /// afterwards; one settle. The pot must go to bob only — alice's released owed takes no share
+    /// of it — and both are then payable in full, leaving no reservation behind.
+    function test_APotIsSharedOnlyOverUnreleasedOwed() public {
+        _exit(alice, 1, 1, 100e18);
+        _next(); // alice fully released
+        assertEq(_released(alice), 5e18);
+        uint256 bobAmt = _exit(bob, 2, 2, 100e18);
+        assertEq(bridge.unreleasedOwed(bob), bobAmt);
+
+        uint256 pot = _next();
+        assertEq(pot, bobAmt, "the headroom is exactly bob's owed");
+        assertEq(_released(alice), 5e18, "alice took nothing of bob's pot");
+        assertEq(_released(bob), bobAmt, "bob got all of it");
+        assertEq(bridge.reservedTotal(), 5e18 + bobAmt);
+
+        vm.prank(alice);
+        assertEq(bridge.collect(alice), 5e18);
+        vm.prank(bob);
+        assertEq(bridge.collect(bob), bobAmt);
+        assertEq(bridge.unclaimed(alice), 0, "no dead reservation left with alice");
+        assertEq(bridge.owedTotal(), 0);
+        assertEq(bridge.reservedTotal(), 0);
+        _assertBacBooks();
+    }
+
+    /// A pot smaller than the headroom releases the SAME fraction of every address's unreleased
+    /// part, whatever each address has already been released.
+    function test_APartialPotReleasesTheSameFractionOfEveryUnreleasedPart() public {
+        // a bucket small enough that one pot cannot release everything
+        bridge = _newBridge();
+        _lock(alice, 1, 1000e18);
+        _lock(bob, 2, 1000e18);
+        _seedBuyback(10e18);
+        _exit(alice, 1, 1, 1000e18); // owed 5e18
+        _next(); // alice partly released
+        uint256 relA0 = _released(alice);
+        assertGt(relA0, 0);
+        assertLt(relA0, bridge.owed(alice));
+        _exit(bob, 2, 2, 1000e18);
+        uint256 uA = bridge.unreleasedOwed(alice);
+        uint256 uB = bridge.unreleasedOwed(bob);
+        uint256 headroom = bridge.owedTotal() - bridge.reservedTotal();
+        assertApproxEqAbs(uA + uB, headroom, 1, "the headroom is the sum of the unreleased parts");
+
+        uint256 pot = _next();
+        assertLt(pot, headroom);
+        uint256 gotA = _released(alice) - relA0;
+        uint256 gotB = _released(bob);
+        assertApproxEqAbs(gotA + gotB, pot, 2, "the pot is released, all of it and no more");
+        // same fraction: gotA / uA == gotB / uB == pot / headroom
+        assertApproxEqAbs(gotA, (uA * pot) / headroom, 1);
+        assertApproxEqAbs(gotB, (uB * pot) / headroom, 1);
+    }
+
+    /// The shape of the persisted B3 counterexample: claim, full release, a second claim, a settle,
+    /// then the watchdog revokes the second one. The reservation must still back exactly the
+    /// claims that can be paid — no more (a phantom), no less (a shortfall).
+    function test_RevokeAfterAFullReleaseKeepsTheReservationExact() public {
+        _exit(alice, 1, 1, 100e18);
+        _next();
+        uint64 bad = _curEpoch();
+        _exit(bob, 2, 2, 100_000e18);
+        _next(); // a partial pot, over bob only
+        assertEq(_released(alice), 5e18);
+        assertGt(_released(bob), 0);
+
+        vm.prank(watchdog);
+        bridge.pause();
+        address[] memory who = new address[](1);
+        who[0] = bob;
+        vm.prank(watchdog);
+        assertGt(bridge.revokeEpochOwed(bad, who), 0);
+
+        uint256 claims = _released(alice) + _released(bob);
+        assertLe(claims, bridge.reservedTotal() + 2, "reserved below the claims it backs");
+        assertLe(bridge.reservedTotal(), claims + 2, "a reservation nobody can collect");
+        assertEq(bridge.owed(bob), 0);
+    }
+}
+
+/// @dev Exposes the release-index internals of `BacBridgeCore` on a bare contract with its own
+///      storage, so rescales and generations can be driven directly. Through `settleEpoch` one
+///      rescale needs the unreleased owed to shrink a billion-fold without ever being released
+///      in full, which the release rate never produces in a test-sized run.
+contract ReleaseHarness is BacBridge {
+    constructor() {
+        releaseIndex.p = uint160(RELEASE_ONE);
+    }
+
+    function give(address who, uint256 amount) external {
+        _harvest(who);
+        owed[who] += amount;
+        owedTotal += amount;
+    }
+
+    function release(uint256 pot) external {
+        _advanceRelease(pot, owedTotal - reservedTotal);
+        reservedTotal += pot;
+    }
+
+    function harvest(address who) external {
+        _harvest(who);
+    }
+
+    function released(address who) external view returns (uint256) {
+        return owed[who] - _unreleased(who);
+    }
+
+    function headroom() external view returns (uint256) {
+        return owedTotal - reservedTotal;
+    }
+}
+
+contract BacBridgeReleaseIndexTest is Test {
+    ReleaseHarness internal h;
+    address internal alice = makeAddr("alice");
+    address internal bob = makeAddr("bob");
+
+    function setUp() public {
+        h = new ReleaseHarness();
+    }
+
+    /// Whatever the sequence of partial pots, full releases, late entrants and harvests, the
+    /// released amounts add up to the pots (up to 1 wei per address) and nobody is ever
+    /// released more than it is owed.
+    function testFuzz_PotsReleaseExactlyWhatTheyAddUpTo(uint256 a, uint256 b, uint256[8] memory fr) public {
+        a = bound(a, 1, 1e27);
+        b = bound(b, 1, 1e27);
+        h.give(alice, a);
+        for (uint256 i = 0; i < 8; i++) {
+            if (i == 3) h.give(bob, b); // a late entrant: no share of the first three pots
+            if (i == 5) h.harvest(alice);
+            uint256 room = h.headroom();
+            if (room == 0) continue;
+            // mostly partial pots, sometimes a full release
+            uint256 f = bound(fr[i], 1, 1e18);
+            uint256 pot = (room * f) / 1e18;
+            if (pot == 0) pot = 1;
+            if (i == 2) assertEq(h.released(bob), 0);
+            h.release(pot);
+        }
+        uint256 relA = h.released(alice);
+        uint256 relB = h.released(bob);
+        assertLe(relA, h.owed(alice));
+        assertLe(relB, h.owed(bob));
+        assertApproxEqAbs(relA + relB, h.reservedTotal(), 2, "released != the pots");
+        assertApproxEqAbs(h.unreleasedOwed(alice) + h.unreleasedOwed(bob), h.headroom(), 2);
+    }
+
+    /// `p` falls a billion-fold several times: every step is a rescale, the unreleased part keeps
+    /// tracking the headroom exactly, and a full release afterwards resets `scale` without any
+    /// older snapshot (taken at a HIGHER scale) underflowing.
+    function test_RescalesThenAFullReleaseNeverUnderflow() public {
+        h.give(alice, 1e27); // a billion BAC
+        for (uint256 i = 0; i < 4; i++) {
+            uint256 room = h.headroom();
+            h.release(room - room / 1e5); // keep 1e-5 of it
+            assertEq(h.unreleasedOwed(alice), h.headroom(), "alice alone is the headroom");
+        }
+        (, uint48 scale,) = h.releaseIndex();
+        assertGe(uint256(scale), 2, "p was rescaled");
+        assertEq(h.headroom(), 1e7, "1e27 * 1e-20");
+
+        h.give(bob, 5e18); // snapshot at scale >= 2
+        h.release(h.headroom() / 2);
+        assertApproxEqAbs(h.released(bob), 2.5e18, 1, "half of bob's part");
+
+        h.release(h.headroom()); // a full release
+        (uint160 p, uint48 scale2, uint48 gen) = h.releaseIndex();
+        assertEq(uint256(p), h.RELEASE_ONE());
+        assertEq(uint256(scale2), 0);
+        assertEq(uint256(gen), 1);
+        assertEq(h.unreleasedOwed(bob), 0, "an older generation reads as fully released");
+        assertEq(h.released(bob), 5e18);
+        assertEq(h.released(alice), 1e27);
+        assertEq(h.reservedTotal(), h.owedTotal());
+    }
+
+    /// A snapshot four or more rescales old has less than 1e-27 of its part left: it reads 0.
+    function test_FourRescalesOldReadsAsFullyReleased() public {
+        h.give(alice, 1e18);
+        for (uint256 i = 0; i < 8; i++) {
+            h.give(bob, 1e27); // new owed refills the headroom without touching `p`
+            uint256 room = h.headroom();
+            h.release(room - room / 1e5); // `p` shrinks ~1e5-fold each time
+        }
+        (, , uint48 gen) = h.releaseIndex();
+        assertEq(uint256(gen), 0, "never a full release");
+        (, uint48 scale,) = h.releaseIndex();
+        assertGe(uint256(scale), 4);
+        assertEq(h.unreleasedOwed(alice), 0);
+        assertEq(h.released(alice), 1e18);
+    }
+}
 // ============================================================================
 //                    revokeEpochOwed  (decision #25a)
 // ============================================================================
@@ -1868,7 +2188,7 @@ contract BacBridgeUpgradeTest is BacBridgeTestBase {
             bridge.exitedCredits(1),
             bridge.owed(alice),
             bridge.unclaimed(alice),
-            bridge.owedDebt(alice),
+            bridge.unreleasedOwed(alice),
             uint256(bridge.lastClaimAt(alice)),
             uint256(bridge.lastCollectEpoch(alice)),
             bridge.epochOwed(exitEpoch, alice),
@@ -1878,7 +2198,9 @@ contract BacBridgeUpgradeTest is BacBridgeTestBase {
 
     function test_ImplementationCanNeverBeInitialisedOrUpgraded() public {
         vm.expectRevert("Initializable: contract is already initialized");
-        impl.initialize(owner, address(bac), address(identity), address(anchor), watchdog, address(portal), address(router));
+        impl.initialize(
+            owner, address(bac), address(identity), address(anchor), watchdog, address(portal), address(router)
+        );
         assertEq(impl.owner(), address(0), "the bare implementation has no owner");
 
         BacBridgeV2Mock v2 = new BacBridgeV2Mock();
@@ -1962,6 +2284,7 @@ contract BacBridgeUpgradeTest is BacBridgeTestBase {
     /// The extension's copies of the events must be the very same events the ABI of `BacBridge`
     /// promises, or the indexer would miss everything the extension emits.
     function test_ExtensionEmitsTheSameEventsAsTheBridge() public pure {
+        assertEq(BacBridgeExtension.EpochSettled.selector, BacBridge.EpochSettled.selector);
         assertEq(BacBridgeExtension.EpochOwedRevoked.selector, BacBridge.EpochOwedRevoked.selector);
         assertEq(BacBridgeExtension.EscapeArmed.selector, BacBridge.EscapeArmed.selector);
         assertEq(BacBridgeExtension.EscapeArmCancelled.selector, BacBridge.EscapeArmCancelled.selector);
@@ -2302,7 +2625,9 @@ contract BacBridgeEmergencyTest is BacBridgeTestBase {
         MockBAC other = new MockBAC();
         other.mint(address(bridge), 5e18);
         vm.expectEmit(true, true, true, true, address(bridge));
-        emit BacBridge.EmergencyWithdraw(owner, treasury, address(other), 5e18, 0, 0, 0, 1, uint64(vm.getBlockTimestamp()));
+        emit BacBridge.EmergencyWithdraw(
+            owner, treasury, address(other), 5e18, 0, 0, 0, 1, uint64(vm.getBlockTimestamp())
+        );
         vm.prank(owner);
         bridge.emergencyWithdrawToken(address(other), treasury, 0);
         assertEq(other.balanceOf(treasury), 5e18);
@@ -2468,9 +2793,10 @@ contract BacBridgeEmergencyTest is BacBridgeTestBase {
         }
     }
 
-    /// Requirement 2: escape fails on the transfer when the asset is gone, `shortfall()` says by
-    /// how much, and a refill makes it payable again.
-    function test_EscapeFailsOnTheTransferWhenTheMoneyIsGone() public {
+    /// Requirement 2 + review finding (2026-09-23): the escape settles its two legs one by one.
+    /// With every BNB gone, the BAC leg — physically here — is still paid; the BNB leg keeps its
+    /// debt, `shortfall()` says by how much, and a refill makes exactly that leg payable again.
+    function test_EscapeBnbHoleNeverStrandsTheBac() public {
         _haltNow();
         vm.prank(owner);
         bridge.emergencyWithdrawBnb(payable(treasury), 0);
@@ -2478,27 +2804,66 @@ contract BacBridgeEmergencyTest is BacBridgeTestBase {
         assertEq(bac_, 10e18);
         assertEq(bnb_, 10 ether, "the books still promise the whole junior pot");
 
+        vm.expectEmit(true, true, true, true, address(bridge));
+        emit BacBridge.EscapeCollected(1, alice, 10e18, 0);
         vm.prank(alice);
-        vm.expectRevert(unicode"BNB transfer failed / BNB 转账失败");
-        bridge.escapeCollect(1, alice);
+        (uint256 bacPaid, uint256 bnbPaid) = bridge.escapeCollect(1, alice);
+        assertEq(bacPaid, 10e18, "the BAC that is here is paid");
+        assertEq(bnbPaid, 0, "the missing BNB is skipped, not reverted on");
+        assertEq(bac.balanceOf(alice), 10e18);
+        (bac_, bnb_) = bridge.escapeClaimable(1);
+        assertEq(bac_, 0);
+        assertEq(bnb_, 10 ether, "the BNB leg keeps its whole debt");
         (uint256 bnbShort,) = bridge.shortfall();
         assertEq(bnbShort, 10 ether);
 
+        vm.prank(alice);
+        vm.expectRevert(unicode"Bridge short of funds / 桥内资金不足");
+        bridge.escapeCollect(1, alice);
+
         vm.deal(address(bridge), 10 ether); // force-sent back
         vm.prank(alice);
-        (uint256 bacPaid, uint256 bnbPaid) = bridge.escapeCollect(1, alice);
-        assertEq(bacPaid, 10e18);
+        (bacPaid, bnbPaid) = bridge.escapeCollect(1, alice);
+        assertEq(bacPaid, 0);
         assertEq(bnbPaid, 10 ether);
+        assertEq(bac.balanceOf(address(bridge)), 1000e18, "the deposits never moved");
     }
 
-    function test_EscapeBacPartNeverDipsIntoDeposits() public {
+    /// The mirror case: a BAC hole (here 1 wei of the junior BAC) skips the BAC leg — which still
+    /// never dips into the deposits — and the BNB that is here is paid.
+    function test_EscapeBacHoleNeverStrandsTheBnbNorDipsIntoDeposits() public {
         _haltNow();
         vm.prank(owner);
         bridge.emergencyWithdrawToken(address(bac), treasury, 1e18); // part of the junior BAC
         vm.prank(alice);
-        vm.expectRevert(unicode"Bridge short of BAC / 桥内 BAC 不足");
+        (uint256 bacPaid, uint256 bnbPaid) = bridge.escapeCollect(1, alice);
+        assertEq(bacPaid, 0, "9e18 of 10e18 is here, but the leg is paid whole or not at all");
+        assertEq(bnbPaid, 10 ether);
+        assertEq(bac.balanceOf(address(bridge)), 1009e18, "nothing left the deposits");
+        (uint256 bac_, uint256 bnb_) = bridge.escapeClaimable(1);
+        assertEq(bac_, 10e18);
+        assertEq(bnb_, 0);
+
+        vm.prank(treasury);
+        bac.transfer(address(bridge), 1e18);
+        vm.prank(alice);
+        (bacPaid, bnbPaid) = bridge.escapeCollect(1, alice);
+        assertEq(bacPaid, 10e18);
+        assertEq(bac.balanceOf(address(bridge)), 1000e18);
+    }
+
+    /// Both assets gone: a clean refusal, and no debt moves.
+    function test_EscapeWithBothAssetsGoneRefusesAndMovesNoDebt() public {
+        _haltNow();
+        vm.startPrank(owner);
+        bridge.emergencyWithdrawBnb(payable(treasury), 0);
+        bridge.emergencyWithdrawToken(address(bac), treasury, 10e18);
+        vm.stopPrank();
+        vm.prank(alice);
+        vm.expectRevert(unicode"Bridge short of funds / 桥内资金不足");
         bridge.escapeCollect(1, alice);
-        assertEq(bac.balanceOf(address(bridge)), 1009e18);
+        assertEq(bridge.escapeDebtBac(1), 0);
+        assertEq(bridge.escapeDebtBnb(1), 0);
     }
 
     function test_ClaimOwedAfterHaltFailsWhenTheBacIsGone() public {
@@ -2602,34 +2967,61 @@ contract BacBridgeControllerTest is BacBridgeTestBase {
         assertEq(bridge.depositId(), 1);
     }
 
-    /// Requirement 4: a later lock by another wallet that passes the gate for the same identity
-    /// (here its signature-proven `agentWallet`) adds a deposit record and never moves the claim.
-    function test_LaterLocksNeverOverwriteTheController() public {
+    string internal constant NOT_CONTROLLER =
+        unicode"Another address controls this agent id, see setAgentController / 该身份已由其他地址控制，见 setAgentController";
+
+    /// @dev Approves and tries to lock, expecting the controller refusal; the allowance is reset
+    ///      afterwards, as `lock`'s NatSpec asks every caller to do.
+    function _lockRefused(address who, uint256 agentId, uint256 amount) internal {
+        bac.mint(who, amount);
+        vm.startPrank(who);
+        bac.approve(address(bridge), amount);
+        vm.expectRevert(bytes(NOT_CONTROLLER));
+        bridge.lock(agentId, amount);
+        bac.approve(address(bridge), 0);
+        vm.stopPrank();
+    }
+
+    /// Review finding (2026-09-23): once an id has entered, only its controller may lock more
+    /// under it. A second wallet that passes the gate for the same identity (here its
+    /// signature-proven `agentWallet`) is refused until the controller hands the claim over.
+    function test_OnlyTheControllerMayAddToAnEnteredId() public {
         address hot = makeAddr("aliceHot");
         identity.setAgentWallet(1, hot);
         _lock(alice, 1, 5e18);
+        assertTrue(bridge.holdsIdentity(hot, 1), "the gate alone would let the wallet in");
+        _lockRefused(hot, 1, 7e18);
+        assertEq(bac.balanceOf(hot), 7e18, "a refused deposit never leaves the wallet");
+        assertEq(bridge.credited(1), 5e18);
 
+        vm.prank(alice);
+        bridge.setAgentController(1, hot);
         vm.recordLogs();
         _lock(hot, 1, 7e18);
         bytes32 sig = keccak256("AgentControllerSet(uint256,address,address)");
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i = 0; i < logs.length; i++) {
-            assertTrue(logs[i].topics.length == 0 || logs[i].topics[0] != sig, "second lock re-set the controller");
+            assertTrue(logs[i].topics.length == 0 || logs[i].topics[0] != sig, "a lock re-set the controller");
         }
-        assertEq(bridge.agentController(1), alice);
+        assertEq(bridge.agentController(1), hot);
         (address from,, uint256 agentId, uint256 amount) = bridge.deposits(1);
         assertEq(from, hot);
         assertEq(agentId, 1);
         assertEq(amount, 7e18);
-        assertEq(bridge.credited(1), 12e18, "both deposits sit behind the one claim");
+        assertEq(bridge.credited(1), 12e18, "both deposits sit behind the one claim, now the wallet's");
+        _lockRefused(alice, 1, 1e18); // and the owner is now the one who must ask
     }
 
-    function test_WhoeverEntersFirstIsTheController() public {
+    /// Review finding: an `agentWallet` that locks 1 wei first can no longer capture its owner's
+    /// escape share — the owner's deposit is refused instead of silently joining the claim.
+    function test_AgentWalletDustFirstCannotCaptureTheOwnersDeposit() public {
         address hot = makeAddr("aliceHot");
         identity.setAgentWallet(1, hot);
-        _lock(hot, 1, 1e18);
-        _lock(alice, 1, 1e18);
+        _lock(hot, 1, 1);
         assertEq(bridge.agentController(1), hot);
+        _lockRefused(alice, 1, 1000e18);
+        assertEq(bac.balanceOf(alice), 1000e18);
+        assertEq(bridge.credited(1), 1);
     }
 
     function test_SetAgentControllerOnlyByTheCurrentController() public {
@@ -2664,14 +3056,14 @@ contract BacBridgeControllerTest is BacBridgeTestBase {
         assertEq(bridge.agentController(1), alice);
     }
 
-    /// Requirement 4: an identity transferred AFTER entry does not move the escape claim; the old
-    /// controller can still escape, and the new holder's own later deposits land behind the SAME
-    /// claim — which is why a buyer must read `agentController` before depositing.
+    /// Requirement 4: an identity transferred AFTER entry does not move the escape claim — the old
+    /// controller can still escape its own deposit — and the new holder cannot add to that claim.
     function test_IdentityTransferAfterEntryDoesNotMoveTheEscapeClaim() public {
         _lock(alice, 1, 600e18);
         vm.prank(alice);
         identity.transfer(1, bob);
-        _lock(bob, 1, 400e18); // bob holds the NFT now, so the gate lets him in
+        assertTrue(bridge.holdsIdentity(bob, 1), "bob holds the NFT now, so the gate alone lets him in");
+        _lockRefused(bob, 1, 400e18);
         assertEq(bridge.agentController(1), alice);
         _seedBuyback(10e18);
         _haltNow();
@@ -2682,7 +3074,36 @@ contract BacBridgeControllerTest is BacBridgeTestBase {
 
         vm.prank(alice);
         (uint256 bacPaid,) = bridge.escapeCollect(1, alice);
-        assertEq(bacPaid, 10e18, "the whole weight of identity 1 sits behind its first controller");
+        assertApproxEqAbs(bacPaid, 10e18, 1e3, "alice's own deposit is the whole weight of identity 1");
+    }
+
+    /// Review finding (2026-09-23), the exact scenario: alice enters with 1 wei, sells the
+    /// identity to bob, bob deposits 1000 BAC. Before the fix bob's deposit joined alice's claim
+    /// and a halt paid bob's whole junior share to alice. Now bob's deposit is refused until alice
+    /// hands the claim over, and after the hand-over the escape pays bob, not alice.
+    function test_SellerWithDustCannotCaptureTheBuyersDeposit() public {
+        _lock(alice, 1, 1);
+        vm.prank(alice);
+        identity.transfer(1, bob);
+        _lockRefused(bob, 1, 1000e18);
+        _lock(carol, 3, 1000e18);
+        assertEq(bridge.credited(1), 1, "nothing of bob's reached alice's claim");
+
+        vm.prank(alice);
+        bridge.setAgentController(1, bob);
+        _lock(bob, 1, 1000e18);
+        _seedBuyback(100e18);
+        vm.deal(address(this), 10 ether);
+        bridge.acceptRelease{value: 10 ether}();
+        _haltNow();
+
+        vm.prank(alice);
+        vm.expectRevert(unicode"Only the agent controller / 仅限该 agent 的控制地址");
+        bridge.escapeCollect(1, alice);
+        vm.prank(bob);
+        (uint256 bacPaid, uint256 bnbPaid) = bridge.escapeCollect(1, bob);
+        assertApproxEqAbs(bacPaid, 50e18, 1e6, "bob's half of the junior BAC");
+        assertApproxEqAbs(bnbPaid, 5 ether, 1e6, "bob's half of the junior BNB");
     }
 
     function test_HandedOverClaimEscapesToTheNewController() public {
@@ -2725,14 +3146,26 @@ contract BacBridgeDescriptionTest is BacBridgeTestBase {
     }
 
     function test_NoticesAreTheDecidedSentencesWordForWord() public view {
-        assertEq(bridge.OWNER_POWER_NOTICE(), unicode"项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。");
-        assertTrue(_contains(bridge.IDENTITY_LIMIT_NOTICE(), unicode"我们要求持有 agent 身份，我们不能证明它是 AI"));
+        assertEq(
+            bridge.OWNER_POWER_NOTICE(),
+            unicode"项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。"
+        );
+        assertTrue(
+            _contains(
+                bridge.IDENTITY_LIMIT_NOTICE(), unicode"我们要求持有 agent 身份，我们不能证明它是 AI"
+            )
+        );
     }
 
     function test_DescriptionCarriesBothNoticesVerbatim() public view {
         string memory d = bridge.description();
         assertTrue(_contains(d, bridge.OWNER_POWER_NOTICE()), "decision #29a missing");
-        assertTrue(_contains(d, unicode"项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。"));
+        assertTrue(
+            _contains(
+                d,
+                unicode"项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。"
+            )
+        );
         assertTrue(_contains(d, bridge.IDENTITY_LIMIT_NOTICE()), "decision #31a missing");
         assertTrue(_contains(d, unicode"我们要求持有 agent 身份，我们不能证明它是 AI"));
         // a bilingual summary, honest about cost and trust
@@ -2741,6 +3174,9 @@ contract BacBridgeDescriptionTest is BacBridgeTestBase {
         assertTrue(_contains(d, unicode"中心化"));
         assertTrue(_contains(d, "withdraw all funds at any time"));
         assertTrue(_contains(d, "does not prove the holder is an AI"));
+        // review finding (2026-09-23): the upgrade power reaches standing allowances, not only the pool
+        assertTrue(_contains(d, unicode"不要给桥留授权额度"), "allowance warning (zh) missing");
+        assertTrue(_contains(d, "can spend any allowance left on the bridge"), "allowance warning (en) missing");
         assertEq(impl.description(), d, "pure: the implementation says the same");
     }
 

@@ -90,6 +90,13 @@ body::before { display: none; }
 .headblk .caret { display: none; }
 .language-picker { display: flex; align-items: center; gap: 5px; flex: none; padding: 5px 8px; color: #4e6472; background: #f4f6f7; border: 1px solid #cbd6de; border-radius: 7px; }
 .language-picker select { min-width: 76px; border: 0; background: transparent; color: #294554; font: 500 12px var(--sans); padding: 4px 0; cursor: pointer; }
+/* 官方社交入口（页头图标 + 页脚文字链），与语言切换同一套外观 */
+.social { display: flex; align-items: center; gap: 5px; flex: none; }
+.soc { display: grid; place-items: center; width: 32px; height: 32px; color: #4e6472; background: #f4f6f7; border: 1px solid #cbd6de; border-radius: 7px; transition: color .15s, border-color .15s; }
+.soc:hover { color: #1f2d36; border-color: #F0B90B; }
+.f-social { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 13px; }
+.f-social a { color: #294554; text-decoration: none; border-bottom: 1px solid #cbd6de; overflow-wrap: anywhere; }
+.f-social a:hover { color: #A17C08; border-color: #F0B90B; }
 html[lang="en"] .nav a { padding-left: 12px; padding-right: 12px; }
 html[lang="en"] .nav-meta { display: none; }
 html[lang="en"] .hero h1 em { white-space: normal; }
@@ -173,6 +180,15 @@ html[lang="en"] .ph-t { text-transform: none; white-space: normal; min-width: 0;
 .hero-disc li { color: #c5d2d8; line-height: 1.8; }
 .hero-disc li.own { color: #f0c657; }
 .hero-disc li b { color: #efc74d; background: rgba(240,185,11,.1); border-color: #6b5a26; }
+.hero-disc .ca-v code { color: #eef4f6; }
+.hero-disc .ca-n { color: #b5c6d0; }
+.hero-disc .ca-scan { color: #f3d27a; }
+.hero-disc .cpy { background: #294652; border-color: #4a616c; color: #dce7ec; }
+.hero-disc .cpy:hover { background: #304d5a; border-color: #d4b65d; color: #f3d27a; }
+.hero-pos { color: #dce7ec; font-size: 13.5px; line-height: 1.85; margin: -12px 0 22px; }
+.vfy-st { color: #f3f6f7; font-size: 13.5px; }
+.addr.ca-row .ca-scan { color: var(--link); border-bottom-color: currentColor; }
+.addr.ca-row .ca-n { color: #8d6d1e; }
 /* Verify-it-yourself card: same surface as the chain-head card, readable with JavaScript off. */
 .vfy { background: #233d49; border-color: #49616c; border-radius: 12px; padding: 20px 24px 18px; box-shadow: 0 6px 20px rgba(7,19,25,.1); }
 .vfy-h h2 { color: #f3f6f7; font-size: 16px; font-weight: 650; }
@@ -380,7 +396,7 @@ html[lang="en"] .ph-t { text-transform: none; white-space: normal; min-width: 0;
   .ov-top { grid-template-columns: minmax(0,1fr); }
 }
 @media(max-width:860px) {
-  .language-picker { order: 2; }
+  .language-picker, .social { order: 2; }
   :root { --h-bar1: auto; --app-max: 100%; }
   .shell { position: relative; }
   .bar1 { padding: 13px 16px; gap: 12px; }
@@ -409,6 +425,9 @@ html[lang="en"] .ph-t { text-transform: none; white-space: normal; min-width: 0;
 @media(max-width:620px) {
   .bar1 .leds { display: none; }
   .language-picker { margin-left: auto; padding: 4px 6px; }
+  .social { margin-left: auto; }
+  .social + .language-picker { margin-left: 0; }
+  .soc { width: 30px; height: 30px; }
   .language-picker select { min-width: 73px; }
   html[lang="en"] .ss b { font-size: 18px; white-space: normal; }
   html[lang="en"] .datum b { font-size: 23px; }
@@ -470,6 +489,40 @@ html[lang="en"] .ph-t { text-transform: none; white-space: normal; min-width: 0;
   .foot { margin-top: 30px; }
   .sb-i { gap: 4px; }
   .sb-i.clock { display: none; }
+}
+/* ≤400px（常见的 360×640 安卓）：决策 #29a 那句必须落在首屏以内 —— 开不开 JS、中文英文都一样。
+   两条披露提到副标题前面（.hero-l 是纵向 flex，只改 order，不动文档顺序），其余只收紧留白，不删内容。
+   没有 JS 时顶上那条 noscript 说明有两种语言，字号和行距一起收一点。 */
+@media(max-width:400px) {
+  .bar-note.nojs { padding: 7px 14px; font-size: 11.5px; line-height: 1.55; }
+  .hero { padding: 18px 16px; gap: 18px; }
+  .eyebrow { margin-bottom: 10px; }
+  .hero h1 { font-size: 24px; line-height: 1.35; margin-bottom: 12px; }
+  .hero-disc { margin: 0 0 14px; padding: 9px 11px; gap: 6px; }
+  .hero-disc li { line-height: 1.65; }
+  .hero-sub { order: 1; font-size: 13.5px; line-height: 1.8; margin-bottom: 18px; }
+  .hero-pos { order: 1; font-size: 12.5px; margin: -8px 0 16px; }
+  .hero-act { order: 2; }
+}
+/* 宽屏（两栏首屏）：首屏清单 —— 定位句、#29a、演练链、CA 与「自己验证这条链」的标题 —— 要落在 900px 高的首屏以内（关 JS 时）。
+   左栏本来有 ~750px 宽，文字却被 44–68ch 夹成一条窄带，把整块 hero 撑高了近 150px：
+   这里让几段文字用满左栏、CA 标签与地址并排，并收一点纵向留白。只改排版，不删字。 */
+@media(min-width:901px) {
+  .hero { padding-top: 28px; padding-bottom: 28px; row-gap: 24px; }
+  .eyebrow { margin-bottom: 12px; }
+  .hero h1 { margin-bottom: 10px; line-height: 1.32; }
+  .hero-sub { line-height: 1.75; margin-bottom: 16px; }
+  .hero-pos { line-height: 1.75; margin: -6px 0 14px; }
+  .hero-disc { max-width: none; margin: 0 0 16px; padding: 9px 14px; gap: 5px; }
+  .hero-disc li { line-height: 1.7; }
+  .hero-disc li.ca { flex-wrap: nowrap; }
+  .hero-disc li.ca .ca-v { flex: 1 1 auto; }
+  .hero-facts { padding-top: 16px; }
+}
+/* 两段无底色的文字只在够宽的屏上放宽，并停在 600px：再往右是背景里的 agent 网络图，字压在图上读不清。
+   有底色的披露框才用满左栏。 */
+@media(min-width:1241px) {
+  .hero-sub,.hero-pos { max-width: 600px; }
 }
 @media(prefers-reduced-motion:reduce) {
   .hero *, .hero *::after,.hero::before,.hero::after { animation: none !important; }

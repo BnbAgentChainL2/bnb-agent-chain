@@ -19,18 +19,21 @@
     NOT_ANCHORED: '未锚定 · 仅来自官方节点',
     ANCHORED: '已锚定',
     NO_SOURCE: '这一项还没有数据来源',
-    /* 面板小标上的「这个数字是谁给的」 */
-    SRC_RPC: '直读层内 RPC · 索引器未上线',
+    /* 面板小标上的「这个数字是谁给的」。索引器已经部署在同一台主机上：
+       它没答话只能说「读不到」，第一轮还没回来时说「读取中」—— 绝不说它「还没上线」。 */
+    SRC_RPC: '直读层内 RPC · 索引器读不到',
+    SRC_RPC_WAIT: '直读层内 RPC · 索引器读取中',
+    SRC_RPC_ONLY: '直读层内 RPC',
     SRC_IDX: '索引器 API',
-    NO_IDX: '索引器未上线',
-    /* 只有索引器算得出的那些聚合数：它没上线时，数字写「—」，原因写在这里 */
-    NEED_IDX: '这个数要索引器把全链扫一遍才算得出来，索引器还没上线。',
+    NO_IDX: '索引器读不到',
+    /* 只有索引器算得出的那些聚合数：它读不到时，数字写「—」，原因写在这里 */
+    NEED_IDX: '这个数要索引器把全链扫一遍才算得出来，索引器现在读不到。',
     /* BSC 侧还不存在的合约 */
     NEED_BSC: '这一项在 BSC 上，代币还没发射，合约还没部署。'
   };
 
   /** 一段的状态 → 该显示什么。数值是 null 但整段 ok 时显示「—」（不知道 ≠ 0）。
-      'noidx' = 这一项只有索引器算得出、索引器还没上线：显示「—」，**不显示「发射后公布」**
+      'noidx' = 这一项只有索引器算得出、索引器现在读不到：显示「—」，**不显示「发射后公布」**
       （那是骗人的：链现在就在跑，只是这个聚合数没人算）。 */
   function miss(status) {
     if (status === 'pre') return TEXT.PRE;
@@ -39,11 +42,20 @@
     return DASH;
   }
 
-  /** 面板小标：这一段的数字现在是谁给的。 */
+  /** 面板小标：这一段的数字现在是谁给的。
+      索引器的状态照 VM.st.idx 说：'loading'（第一轮还没回来）不许说成读不到；
+      索引器在供数、这一段却是直读 RPC 给的（数据层切换来源的那几秒）时，只写「直读层内 RPC」。 */
   function srcLabel(source) {
+    var idx = root.BACVM && root.BACVM.st ? root.BACVM.st.idx : null;
     if (source === 'indexer') return TEXT.SRC_IDX;
-    if (source === 'rpc') return TEXT.SRC_RPC;
-    return TEXT.NO_IDX;
+    if (source === 'rpc') return idx === 'loading' ? TEXT.SRC_RPC_WAIT : (idx === 'ok' ? TEXT.SRC_RPC_ONLY : TEXT.SRC_RPC);
+    return idx === 'loading' ? TEXT.LOADING : (idx === 'ok' ? TEXT.SRC_IDX : TEXT.NO_IDX);
+  }
+  /** 只跟索引器有关的小标（不管层内数据从哪来）：在供数 / 读取中 / 读不到。 */
+  function idxLabel() {
+    var idx = root.BACVM && root.BACVM.st ? root.BACVM.st.idx : null;
+    if (idx === 'ok') return TEXT.SRC_IDX;
+    return idx === 'loading' ? TEXT.LOADING : TEXT.NO_IDX;
   }
 
   /** 有值就格式化，没值就按状态显示占位。**永远不把 null 当 0。** */
@@ -178,6 +190,7 @@
   UI.DASH = DASH;
   UI.miss = miss;
   UI.srcLabel = srcLabel;
+  UI.idxLabel = idxLabel;
   UI.val = val;
   UI.esc = esc;
   UI.comma = comma;

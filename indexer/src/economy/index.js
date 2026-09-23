@@ -11,7 +11,7 @@
 // 幂等（§7.5.1）：流水表主键都是 (tx, log_index)，一律 INSERT OR IGNORE，
 // **所有计数器与累计量只在 changes() == 1（这条日志第一次写入）时才动**。没有这一条，一次重启就能让持有量翻倍。
 import { tx as withTx } from "../db.js";
-import { agentIdOfWallet } from "../store.js";
+import { agentIdOfWallet, isBlockAnchored } from "../store.js";
 import { epochOf, addr, hash } from "../decode.js";
 import { warn } from "../warnings.js";
 import { renderTokenNew, renderPairNew, renderTokenFirstTrade } from "../render.js";
@@ -962,7 +962,6 @@ export function refreshZeroOnly(db, address, now) {
 function pushFeed(db, { uniq, kind, ts, block, agentId, textZh, tx, epoch }) {
   const exists = db.prepare("SELECT feed_id FROM feed_key WHERE uniq = ?").get(uniq);
   if (exists) return Number(exists.feed_id);
-  const anchored = db.prepare("SELECT state FROM epochs WHERE epoch = ?").get(Number(epoch));
   const info = db
     .prepare(
       "INSERT INTO feed (chain, kind, ts, block, agent_id, text_zh, tx, anchored, epoch) VALUES ('layer',?,?,?,?,?,?,?,?)"
@@ -974,7 +973,8 @@ function pushFeed(db, { uniq, kind, ts, block, agentId, textZh, tx, epoch }) {
       agentId === null || agentId === undefined ? null : Number(agentId),
       textZh,
       hash(tx),
-      anchored && anchored.state === "FINAL" ? 1 : 0,
+      // 锚定按块高判断（见 store.js 的 isBlockAnchored），不拿纪元号比
+      isBlockAnchored(db, block),
       Number(epoch)
     );
   const feedId = Number(info.lastInsertRowid);

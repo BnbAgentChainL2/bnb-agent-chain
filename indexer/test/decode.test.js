@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { decodeLog } from "../src/decode.js";
 import { renderEvent } from "../src/render.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAddress } from "ethers";
@@ -225,8 +225,14 @@ for (const [contract, event, args, check] of CASES) {
   });
 }
 
-test("v2 的 ABI 与 forge 编译产物逐条一致（有 contracts/out 时才核）", () => {
+test("v2 的 ABI 与 forge 编译产物逐条一致（有 contracts/out 时才核）", (t) => {
   const out = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "contracts", "out");
+  // 只有整个 contracts/out 都不存在（服务器 / 没编译过的 CI）才跳过；目录在而某个产物缺了（改名、没编出来）必须失败，
+  // 否则这条用例对「BacBridge 的事件改了而索引器没跟上」永远是绿的。
+  if (!existsSync(out)) {
+    t.skip("没有 contracts/out（没跑过 forge build）");
+    return;
+  }
   const pairs = [
     ["BacBridge.sol/BacBridge.json", "BacBridge"],
     ["BacTaxRouter.sol/BacTaxRouter.json", "BacTaxRouter"],
@@ -239,12 +245,9 @@ test("v2 的 ABI 与 forge 编译产物逐条一致（有 contracts/out 时才�
   ];
   let checked = 0;
   for (const [file, name] of pairs) {
-    let abi;
-    try {
-      abi = JSON.parse(readFileSync(join(out, file), "utf8")).abi;
-    } catch {
-      continue; // 没编译过就跳过（CI / 服务器上没有 contracts/out）
-    }
+    const path = join(out, file);
+    assert.ok(existsSync(path), `contracts/out 在，但缺编译产物 ${file}（改名了？没编出来？）`);
+    const abi = JSON.parse(readFileSync(path, "utf8")).abi;
     const sig = (e) => `${e.name}(${e.inputs.map((i) => `${i.type}${i.indexed ? " indexed" : ""} ${i.name}`).join(",")})`;
     const compiled = abi.filter((x) => x.type === "event").map(sig).sort();
     const ours = [];
@@ -254,7 +257,7 @@ test("v2 的 ABI 与 forge 编译产物逐条一致（有 contracts/out 时才�
     assert.deepEqual(ours.sort(), compiled, `${name} 的事件 ABI 与编译产物不一致`);
     checked += 1;
   }
-  assert.ok(checked >= 0);
+  assert.equal(checked, pairs.length, "每一个合约都必须核过");
 });
 
 test("已删除的合约不再有 ABI（决策 #30 / #31）", () => {

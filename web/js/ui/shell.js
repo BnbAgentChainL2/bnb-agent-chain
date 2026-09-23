@@ -53,21 +53,21 @@
   function paintStrip() {
     var c = VM.chain, s = VM.st.chain;
 
-    /* 复合插槽：一个格子里两个数，单独拼 */
+    /* 已进场 agent：v2（决策 #31）没有状态机，数据层的 counts 里只有 total 是真的，
+       active / dormant / banned 一律 null —— 只写进场过的身份数，不拼「休眠 · 封禁」。
+       下面那行小字（算的是什么）写死在 index.html 里。 */
     var ag = c.agentCounts;
-    UI.setHTML('#ssAgents', ag
-      ? comma(ag.active) + '<u>/' + comma(ag.total) + '</u>'
-      : esc(miss(VM.st.agents)));
-    UI.setText('#ssAgentsSub', ag
-      ? ag.dormant + ' 休眠 · ' + ag.banned + ' 封禁'
-      : miss(VM.st.agents));
+    var agTotal = ag && ag.total !== null && ag.total !== undefined ? ag.total : null;
+    UI.setHTML('#ssAgents', agTotal !== null ? comma(agTotal) : esc(miss(VM.st.agents)));
 
     UI.setHTML('#ssVal', c.nodeCount !== null && c.nodeCount !== undefined
       ? comma(c.nodeCount) + '<u>/' + (c.nodeSlots || 64) + '</u>'
       : esc(miss(VM.st.validators)));
+    /* 总质押：质押合约没部署时 bind.js 已经把它置成 null（索引器那边的默认 0 不是「质押了 0」，是没有这份账），
+       这里只在真有数时才写数字；发射前写「质押发射后开放」，不写 0。 */
     UI.setText('#ssValSub', VM.validators.totalStaked !== null && VM.validators.totalStaked !== undefined
       ? '质押 ' + UI.tokenAmt(VM.validators.totalStaked) + ' BAC'
-      : miss(VM.st.validators));
+      : (VM.st.validators === 'pre' ? '质押发射后开放' : miss(VM.st.validators)));
 
     /* peers / txpool：Besu 默认不开 TXPOOL API（实测 -32601），读不到就写「—」，不写 0 */
     UI.setHTML('#ssPeers', (c.peers !== null && c.peers !== undefined) || (c.txPool !== null && c.txPool !== undefined)
@@ -103,7 +103,7 @@
 
     /* 三个服务灯：只有真读到才点亮，读不到就是灰的。
        NODE = 层内出块节点（现在就在出块）；RELAY = 中继（要 BSC 的 ChainAnchor，还没部署）；
-       INDEX = 索引器（还没部署）。 */
+       INDEX = 索引器（已部署在同一台主机上，答话才点亮）。 */
     setLed('#ledNode', VM.st.chain === 'ok' ? 'ok' : (VM.st.chain === 'error' ? 'bad' : 'idle'));
     setLed('#ledRelay', VM.st.epochs === 'ok' ? 'ok' : (VM.st.epochs === 'error' ? 'bad' : 'idle'));
     setLed('#ledIndex', VM.st.idx === 'ok' ? 'ok' : 'idle');
@@ -132,14 +132,15 @@
   }
 
   /** 「这个数字是谁给的」：面板小标 [data-src] 与页脚 / 状态栏的端点地址。
-      索引器还没上线时必须如实写「直读层内 RPC · 索引器未上线」，不许装成索引器给的。 */
+      直读 RPC 时必须如实写「直读层内 RPC · 索引器读不到 / 读取中」，不许装成索引器给的；
+      索引器第一轮还没回来（'loading'）时不许说它读不到。 */
   function paintSource() {
     var src = VM.layer && VM.layer.source ? VM.layer.source : null;
     var label = VM.mode === 'demo' ? '演示模式 · 不连任何节点' : UI.srcLabel(src);
     $$('[data-src]').forEach(function (el) {
       var kind = el.getAttribute('data-src');
       if (kind === 'layer') el.textContent = label;
-      else if (kind === 'idx') el.textContent = VM.st.idx === 'ok' ? UI.TEXT.SRC_IDX : UI.TEXT.NO_IDX;
+      else if (kind === 'idx') el.textContent = UI.idxLabel();
       else if (kind === 'bsc') el.textContent = VM.mode === 'demo' ? '演示模式' : 'BSC · 合约未部署';
       else if (kind === 'endpoint') el.textContent = shortEp(VM.layer && VM.layer.endpoint);
     });
@@ -158,6 +159,8 @@
       现在出块的是演练链 —— 这一条必须照实写在最前面：创世预置了测试 BAC（桥里是 0），
       预置账户的私钥是公开的 Hardhat 测试私钥（谁都能发交易），发射时重建、数据清空；
       v1 只有官方一个验证者，但演练链的只读同步已经公开（HANDOFF §2），验证者发射后才开放。
+      数据源照实说：索引器在供数时区块与交易来自同一台主机上的索引 API，不是「直接读节点」；
+      「索引器读不到」只在 VM.st.idx === 'noidx' 时说，'loading'（第一轮还没回来）不算。
       每一句单独一个元素：翻译表按整句匹配，句子之间不拼成一个文本节点。
       手机上（≤620px）只留加粗那句和公开 RPC，其余（.bar-x）收在「详情」后面 ——
       否则英文下这条横幅有近 300px 高，会把首屏的决策 #29a 那句挤到折线以下。 */
@@ -167,7 +170,7 @@
       var html = null;
       if (VM.mode === 'demo') html = null;                      // 演示模式有自己的横幅
       else if (VM.st.chain === 'error') html = esc(UI.TEXT.ERR + '：层内节点两个地址都没答话，区块与交易暂时读不到。');
-      else if (VM.rehearsal || VM.st.idx !== 'ok') {
+      else if (VM.rehearsal || VM.st.idx === 'noidx') {
         /* 给人去核对的是**配置里的公开 RPC**：数据源切到索引器之后 VM.layer.endpoint 是索引器的根地址，
            对它 POST eth_blockNumber 会 405。只有真在直读 RPC 时（可能是兜底 IP），才写实际在用的那个。 */
         var ly = VM.layer || {};
@@ -180,9 +183,9 @@
             + '<code class="bar-x">' + esc(UI.NODE_JSON) + '</code>'
             + '<span class="bar-x"> 自己跑一个只读节点（没有任何奖励）；质押 BAC 做验证者、分 gas 费发射后开放。</span>'
           : '')
-          + '<span>区块、交易、块高、gas 是本站直接读层内节点拿到的真数据，任何人都能向同一个公开 RPC 自己核对：</span>'
-          + '<code>' + esc(ep) + '</code> '
-          + (VM.st.idx !== 'ok' ? '<span class="bar-x">索引器还没上线，所以历史检索、agent 名录、日聚合曲线暂时没有。</span>' : '')
+          + '<span>区块、交易、块高、gas 是本站从层内节点（及同一台主机上的索引 API）读到的真数据，任何人都能向同一个公开 RPC 自己核对：</span>'
+          + '<code>' + esc(ep) + '</code><span>。</span> '
+          + (VM.st.idx === 'noidx' ? '<span class="bar-x">索引器现在读不到，所以历史检索、agent 名录、日聚合曲线暂时没有。</span>' : '')
           + (VM.st.treasury === 'pre'
             ? '<span class="bar-x">BSC 侧的代币还没发射，税收路由 / 桥 / 质押 / 锚点合约都还不存在，那些数字写「' + esc(UI.TEXT.PRE) + '」。</span>'
             : '')
@@ -211,8 +214,9 @@
       var demo = VM.mode === 'demo';
       demoBar.hidden = !demo;
       if (demo && !demoBar.firstChild) {
+        /* 正式站点的数据来源照实写：索引器在线时区块与交易经本项目自己的索引 API 转手，不是「每一个数字都直接来自链上」 */
         demoBar.innerHTML = '<span>演示模式（</span><code>?demo=1</code>'
-          + '<span>）：页面上的数字是占位值，只为看排版。正式站点的每一个数字都直接来自链上。</span>';
+          + '<span>）：页面上的数字是占位值，只为看排版。正式站点不显示占位值：块高、区块与交易来自层内节点，索引器在线时经本项目自己的索引 API（同一台主机）转手，不在线时由浏览器直读公开 RPC；agent 名录、代币与交易对只有索引器给得出；BSC 侧的合约读数由浏览器经公开 BSC RPC 直接读。</span>';
       } else if (!demo && demoBar.firstChild) demoBar.textContent = '';
     }
   }
@@ -240,11 +244,11 @@
   /* 倒计时：纪元剩余秒数，每秒本地递减，来源仍然是链上时间 */
   function paintCountdown() {
     var left = VM.chain.epochLeftSec;
-    var len = VM.chain.epochLenSec || 86400;
+    var len = VM.chain.epochLenSec || 600;
     var s = left === null || left === undefined ? miss(VM.st.chain) : UI.hmsLeft(left);
     ['#ssAnchor', '#anchorCd', '#cd2', '#epCd', '#heroCd'].forEach(function (sel) { UI.setText(sel, s); });
     var fill = $('#cdFill');
-    /* 进度条按纪元真实长度算（纪元长度是数据层的常量，改了这里跟着走，不写死 86400） */
+    /* 进度条按纪元真实长度算（纪元长度是数据层的常量 EPOCH = 600，改了这里跟着走，不写死） */
     if (fill) {
       var pctDone = (left === null || left === undefined) ? 0
         : Math.max(0, Math.min(100, (1 - left / len) * 100));
@@ -341,9 +345,9 @@
   function hintText() {
     if (VM.st.blocks === 'pre') return '还没有发射：链上还没有区块、交易或 agent 可以搜。';
     var base = '可以输入：区块高度、0x 开头的交易哈希 / 地址 / 合约地址、agent 编号（如 #17）、纪元号。';
-    /* 索引器还没上线：块高和完整交易哈希能直接查层内节点，其余的等索引器 —— 照实说 */
+    /* 现在是直读层内节点（索引器读不到或还没回话）：块高和完整交易哈希能直接查，其余的等索引器 —— 照实说 */
     if (VM.layer && VM.layer.source === 'rpc') {
-      base += '索引器还没上线，现在能查的是区块高度和完整交易哈希（直接问层内节点）。';
+      base += '现在是直读层内节点，能查的是区块高度和完整交易哈希。';
     }
     return base;
   }

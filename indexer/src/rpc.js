@@ -26,6 +26,19 @@ export function isRevertError(e) {
   return /revert/i.test(String(e.rpcMessage || ""));
 }
 
+/**
+ * 节点不给这一段历史：publicnode 对离链头约 7k–20k 块（1–2.5 小时）以外的 eth_getLogs 返回
+ * -32602 "Archive requests require a personal token…"（2026-09-23 只读探测：链头 123540779 往回 3000 / 7000 块 OK，
+ * 20000 块就是这个错）。它**不是限速**：缩小分片、等多久都拿不到，只能换一个能查历史的（带密钥的）日志 RPC。
+ * 所以它不重试、不砍分片、不记限速，直接抛出去，并由 getLogsChunked 打 bsc_log_history_unavailable 告警。
+ */
+const HISTORY_UNAVAILABLE_RE = /archive requests?|personal token|history (has been )?pruned|historical (state|data) (is )?not available/i;
+export function isHistoryUnavailableError(e) {
+  if (!(e instanceof RpcError)) return false;
+  if (e.code === 3) return false;
+  return HISTORY_UNAVAILABLE_RE.test(String(e.rpcMessage || ""));
+}
+
 export class Rpc {
   constructor(url, { name = "rpc", timeoutMs = 20000, maxRetries = 5 } = {}) {
     this.url = url;
@@ -67,7 +80,7 @@ export class Rpc {
         if (body.error) {
           const code = Number(body.error.code);
           const msg = String(body.error.message || "");
-          if (RATE_LIMIT_CODES.has(code) && !/revert/i.test(msg)) {
+          if (RATE_LIMIT_CODES.has(code) && !/revert/i.test(msg) && !HISTORY_UNAVAILABLE_RE.test(msg)) {
             this.rateLimitHits.push(Date.now());
             warn("rpc_rate_limited", `${this.name} 对 ${method} 返回 ${code}：${body.error.message}`);
           }
@@ -79,6 +92,8 @@ export class Rpc {
         lastErr = e;
         // revert 是确定性结果，重试没有意义（见 isRevertError）。
         if (isRevertError(e)) throw e;
+        // 节点不给历史也是确定性结果（见 isHistoryUnavailableError），重试只会白等。
+        if (isHistoryUnavailableError(e)) throw e;
         // 限窗类错误交给调用方缩小分片，不在这里盲目重试。
         if (e instanceof RpcError && RATE_LIMIT_CODES.has(e.code)) throw e;
         attempt += 1;
@@ -126,6 +141,63 @@ export class Rpc {
   }
 }
 
+/**
+ * 放进 FailoverRpc 当主 RPC 时的预算：5 秒超时、只重试 1 次。
+ * 用 Rpc 的默认值（20 秒 × 6 次 + 0.5+1+2+4+8 秒退避）时，主 RPC 慢一次就要约 135 秒才轮到第二个，
+ * 而快照每 30 秒要串行打 60–90 个 eth_call —— 一个慢的主节点会把每一轮快照都拖住。
+ */
+export const FAILOVER_PRIMARY_OPTS = { timeoutMs: 5000, maxRetries: 1 };
+/** 第二个（最后一个）RPC：它后面没有人兜底了，给多一点耐心，但也不用 135 秒。 */
+export const FAILOVER_LAST_OPTS = { timeoutMs: 10000, maxRetries: 2 };
+
+/**
+ * 只读 view 的两路兜底：BSC_RPC 出了网络错误 / 被限速（不是 revert、也不是「不给历史」）就换 BSC_RPC_2，
+ * 并**一直用第二个**，直到 retryPrimaryAfterMs（默认 10 分钟）过去再回头试主 RPC ——
+ * 这个对象跨快照复用（snapshot.js 的 bscReadRpc），所以换过去之后每一轮都直接走好的那个，不会每轮先在坏的上等一遍。
+ * **eth_getLogs 永远只走第一个**：bsc-dataseed 对 eth_getLogs 在任何跨度上都返回 -32005（2026-09-22 实测），
+ * 不能当日志来源。revert 是确定性答案，不换节点再问一遍。
+ */
+export class FailoverRpc extends Rpc {
+  constructor(rpcs, { name = "rpc", retryPrimaryAfterMs = 10 * 60 * 1000, now = () => Date.now() } = {}) {
+    const list = rpcs.filter(Boolean);
+    super(list[0].url, { name });
+    this.rpcs = list;
+    this.active = 0;
+    this.failovers = 0;
+    this.failedOverAt = null;
+    this.retryPrimaryAfterMs = retryPrimaryAfterMs;
+    this.now = now;
+  }
+
+  rateLimited24h(now = Date.now()) {
+    return this.rpcs.reduce((a, r) => a + (r.rateLimited24h ? r.rateLimited24h(now) : 0), 0);
+  }
+
+  async call(method, params = []) {
+    if (method === "eth_getLogs") return this.rpcs[0].call(method, params);
+    if (this.active !== 0 && this.failedOverAt !== null && this.now() - this.failedOverAt >= this.retryPrimaryAfterMs) {
+      this.active = 0;
+      this.failedOverAt = null;
+    }
+    let lastErr = null;
+    for (let i = this.active; i < this.rpcs.length; i++) {
+      try {
+        const out = await this.rpcs[i].call(method, params);
+        if (i !== this.active) {
+          this.active = i;
+          this.failovers += 1;
+          this.failedOverAt = this.now();
+        }
+        return out;
+      } catch (e) {
+        if (isRevertError(e) || isHistoryUnavailableError(e)) throw e;
+        lastErr = e;
+      }
+    }
+    throw lastErr;
+  }
+}
+
 export function toHex(n) {
   return "0x" + BigInt(n).toString(16);
 }
@@ -155,6 +227,16 @@ export async function getLogsChunked(rpc, { address, topics, from, to, range, mi
         ...(topics ? { topics } : {}),
       });
     } catch (e) {
+      if (isHistoryUnavailableError(e)) {
+        // 不许当成限速去砍分片 / 等 30 秒：那样会永远卡在同一段上，只留下一条笼统的 bsc_ingest_failed。
+        warn(
+          "bsc_log_history_unavailable",
+          `${rpc.name} 不提供 ${cur}–${end} 这一段的日志（${e.code} ${e.rpcMessage}）。` +
+            "公共节点只给最近约 1–2.5 小时的 eth_getLogs：回填与停机后追赶必须用能查历史的、带密钥的日志 RPC（BSC_RPC），" +
+            "并把 BAC_BSC_START_BLOCK 设在部署交易所在块附近。游标停在这里，不跳过任何区块。"
+        );
+        throw e;
+      }
       if (e instanceof RpcError && RATE_LIMIT_CODES.has(e.code) && size > minRange) {
         size = Math.max(minRange, Math.floor(size / 2));
         okStreak = 0;

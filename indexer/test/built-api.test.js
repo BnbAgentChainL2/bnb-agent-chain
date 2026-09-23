@@ -293,7 +293,7 @@ test("§7.6 GET /api/swaps：条目字段逐字一致，side 相对 token0，age
     "pair", "price1Per0", "recipient", "sender", "side", "tokenIn", "tokenOut", "ts", "tx", "txFrom",
   ]);
   assert.equal(s.cursor, "106:2");
-  assert.equal(s.epoch, Math.floor((T + 18) / 86400));
+  assert.equal(s.epoch, Math.floor((T + 18) / 600), "600 秒的结算纪元，与 epochs 表同一个单位");
   assert.deepEqual(keys(s.pair), ["address", "kind", "token0", "token1"]);
   assert.deepEqual(s.pair.token0, { address: A.tokenA, symbol: "FUEL", decimals: 18, known: true });
   assert.equal(s.agentId, 30, "归属取 tx.from，不是 sender / recipient");

@@ -648,6 +648,11 @@ test("§7.7：TOKEN_NEW / PAIR_NEW / TOKEN_FIRST_TRADE 进 feed；成交本身�
 test("X4：不可信文本截断 128 字节、非 UTF-8 换 U+FFFD、去控制字符、裁空白", () => {
   assert.equal(sanitizeText(Buffer.from("  hi  ")), "hi");
   assert.equal(sanitizeText(Buffer.from("a\u0000b\u0007c")), "abc");
+  // 双向控制符（RLO 能把 "USDT" 之类的名字倒着显示）与零宽空格也去掉；C1 控制字符同样
+  const RLO = String.fromCharCode(0x202e);
+  const ZWSP = String.fromCharCode(0x200b);
+  const C1 = String.fromCharCode(0x9b);
+  assert.equal(sanitizeText(Buffer.from("US" + RLO + "DT" + ZWSP + C1)), "USDT");
   assert.equal(sanitizeText(Buffer.from("x".repeat(300))).length, 128);
   assert.ok(sanitizeText(Buffer.from([0xff, 0xfe, 0x41])).includes("A"));
   assert.ok(sanitizeText(Buffer.from([0xff, 0xfe, 0x41])).includes("�"));

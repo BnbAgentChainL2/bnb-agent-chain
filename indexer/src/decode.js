@@ -3,9 +3,18 @@
 import { getAddress } from "ethers";
 import { TOPIC0, IFACES, CONTRACT_CHAIN, HASH_KIND, STATUS_NAME } from "./abi.js";
 
-/** 纪元号：epoch = floor(timestamp / 86400)。BSC 与层内同一个定义（03 开头的约定）。 */
+/**
+ * 结算纪元的长度（秒）。决策 #20 把两条链的结算纪元都改成了 10 分钟：
+ * ChainAnchor.EPOCH = L2Bridge.EPOCH = BacBridge.EPOCH = 600。epochs 表的主键就是这个编号，
+ * 所以 blocks.epoch / feed.epoch / swaps.epoch 也必须是它 —— 两种单位混在一起比较就会出错
+ * （旧版按 86400 算，第一个 FINAL 锚点会把整条层内 feed 标成「已锚定」）。
+ * AgentBook.EPOCH 仍是 86400（发布上限按天算），它的天序号只进 actions.epoch，不进别处。
+ */
+export const EPOCH_SEC = 600;
+
+/** 纪元号：epoch = floor(timestamp / 600)，与 ChainAnchor / L2Bridge / BacBridge 的 EPOCH 一致。 */
 export function epochOf(ts) {
-  return Math.floor(Number(ts) / 86400);
+  return Math.floor(Number(ts) / EPOCH_SEC);
 }
 
 /** 地址归一到 EIP-55；非地址原样返回。 */

@@ -51,6 +51,11 @@
     ERC8004_IDENTITY: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
     // 决策 #30：Flap 的普通 Portal（v5.24.0），代币状态从这里读（getTokenV8Safe）
     FLAP_PORTAL: '0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0',
+    // PancakeSwap V2 Router：BacBridge.router() 存的是它（毕业后回购走外盘用），**不是** BacTaxRouter。
+    // DeployBac.s.sol 默认填这个（BAC_PANCAKE_ROUTER），部署后检查 bridge.router() == 它。
+    PANCAKE_V2_ROUTER: '0x10ED43C718714eb63d5aA57B78B54704E256024E',
+    // ValidatorStaking.EPOCHS_PER_DAY：奖池按「天」记（dayReward(day)），day = floor(epoch / 144)
+    EPOCHS_PER_DAY: 144,
     // Portal 实测的协议费（docs/research 09~12）：税先被抽走 10%，路由收到约 0.90 倍。
     // 这是 Portal 的参数，不是 BAC 自己的读数；发射后以 taxProcessor.feeConfigV2().feeRate 为准。
     FLAP_FEE_RATE_BPS: 1000,
@@ -80,7 +85,9 @@
     ANCHORED: '已锚定',
     // 决策 #18（术语）+ #25：锚点的等待期一律这么说，页面各处逐字复用这一句
     ANCHOR_WAIT: '锚点等待 2 分钟',
-    ANCHOR_WAIT_NOTE: '锚点提交后要等 2 分钟才能兑付，这期间任何人都能指出它是错的',
+    // 决策 #25a：2 分钟等于人工发现窗口归零，这段等待是给自动 watchdog 用的，不是给人用的
+    ANCHOR_WAIT_NOTE: '锚点提交后要等 2 分钟才能兑付。这段等待是给自动 watchdog 用的，不是给人用的：'
+      + '2 分钟里没人来得及人工核对，剩下的闸门只有暂停开关和每天 2–5% 的释放上限。',
     // 决策 #29a，逐字（BacBridge.OWNER_POWER_NOTICE 也是这一句，数据层会拿链上那份来比对）
     OWNER_POWER: '项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。',
     // 决策 #31a，逐字
@@ -135,11 +142,26 @@
   }
   var rawAddrs = raw.addresses && typeof raw.addresses === 'object' ? raw.addresses : {};
 
+  /** RPC 列表防御式读取：数组 → 只留非空字符串；单个字符串 → 当成只有一个；别的一律空数组。
+      （写成字符串时 .slice() 还是字符串，withRead 的 list.forEach 会同步抛出，整个 BSC 刷新就停了。） */
+  function urlArray(v) {
+    if (typeof v === 'string') return v ? [v] : [];
+    if (!Array.isArray(v)) return [];
+    return v.filter(function (u) { return typeof u === 'string' && u.length > 0; });
+  }
+  /* eth_getLogs 的节点：配置写了 logRpcs 就照它；没写就从 rpcs 里挑，但**排除 bsc-dataseed** ——
+     它对 eth_getLogs 一律回 -32005 limit exceeded（实测），拿它扫日志只会白白退避。 */
+  var LOGS_REFUSED = /^https?:\/\/bsc-dataseed/i;
+  var cfgRpcs = urlArray(raw.rpcs);
+  var cfgLogRpcs = raw.logRpcs !== undefined && raw.logRpcs !== null
+    ? urlArray(raw.logRpcs)
+    : cfgRpcs.filter(function (u) { return !LOGS_REFUSED.test(u); });
+
   var CFG = {
     chainId: Number(raw.chainId || 56),
     chainName: raw.chainName || 'BNB Smart Chain',
-    rpcs: (raw.rpcs || []).slice(),
-    logRpcs: (raw.logRpcs || raw.rpcs || []).slice(),
+    rpcs: cfgRpcs,
+    logRpcs: cfgLogRpcs,
     explorer: (raw.explorer || 'https://bscscan.com').replace(/\/+$/, ''),
     layerChainId: Number(raw.layerChainId || C.LAYER_CHAIN_ID),
     layerRpc: raw.layerRpc || '',
@@ -154,6 +176,8 @@
     // 主网常量：允许配置覆盖（测试网 / 换注册表），默认就是 BSC 主网那两个
     identityRegistry: isAddr(raw.identityRegistry) ? raw.identityRegistry : C.ERC8004_IDENTITY,
     flapPortal: isAddr(raw.flapPortal) ? raw.flapPortal : C.FLAP_PORTAL,
+    // 桥的回购外盘（BacBridge.router()）：接线核对拿它比，不拿 BacTaxRouter 比
+    pancakeRouter: isAddr(raw.pancakeRouter) ? raw.pancakeRouter : C.PANCAKE_V2_ROUTER,
     // 合约部署所在的 BSC 块号（日志时间线从这里开始才算「完整」）；0 / 缺省 = 不知道
     deployBlock: Math.max(0, Math.floor(Number(raw.deployBlock) || 0)),
     // 层内现在是不是演练链：配置显式写了就照它（bind.js 读 BAC.CFG.rehearsal）；没写是 null
@@ -175,6 +199,8 @@
     // agent 名录（BacBridge.deposits + ERC-8004）：最多读最近多少笔存入、多少个身份
     depositsMax: Math.max(10, Math.min(2000, Number(raw.depositsMax || 400))),
     agentsMax: Math.max(5, Math.min(500, Number(raw.agentsMax || 100))),
+    // Multicall3 暂时用不了（探针没答上，退避中）时，名录每轮最多逐条读几笔存入；身份那 6 条一律暂停
+    plainDepositsPerTick: Math.max(5, Math.min(200, Number(raw.plainDepositsPerTick || 40))),
     agentsPollMs: Math.max(15000, Number(raw.agentsPollMs || 120000)),
     apiPollMs: Math.max(3000, Number(raw.apiPollMs || 6000)),
     // 层内直读 RPC 的节奏：链 3 秒一块，不许比它更快
@@ -585,7 +611,7 @@
     ready: false,
     loading: false,
     hidden: false,
-    error: null,          // null | TEXT.ERR | TEXT.NO_RPC | TEXT.NO_VAULT
+    error: null,          // null | TEXT.ERR | TEXT.NO_RPC | TEXT.NO_VAULT（合约有代码，但路由与桥一条核心读数都没返回）
     errorDetail: null,
     warnings: [],
     updatedAt: null,
@@ -597,6 +623,8 @@
       // eth_getCode 探针：true 有代码 / false 没代码 / null 还没探或探失败
       code: { token: null, router: null, bridge: null, at: null },
       params: null,       // 合约接线（router / bridge / nodeFund 的不可变参数与互相核对）
+      // 地址上有代码、但这一轮一条核心读数都没返回的合约（'router' | 'bridge' | 'nodeFund' | 'anchor' | 'staking'）
+      failedContracts: [],
       tokenParams: null,  // 代币元数据 / 税率 / taxProcessor（只在 TOKEN_LIVE 之后才有）
       token: null,        // 代币的活数据：Portal 状态、价格、待分发税、桥里的 BAC
       treasury: null,     // BacTaxRouter + 桥池 + 节点基金
@@ -609,11 +637,26 @@
     timeline: Object.assign(section(), {
       owner: [], flow: [], nodeFund: [],
       fromBlock: null, syncedTo: null, deployBlock: CFG.deployBlock || null,
-      complete: false, gaps: [], windowBlocks: CFG.logWindowBlocks
+      // caughtUp：最近一轮成功扫到了链头（窗口比两块大时首轮追不上）
+      complete: false, caughtUp: false, gaps: [], windowBlocks: CFG.logWindowBlocks,
+      // 每条列表最多留 timelineMax 条：超过就丢最旧的，丢过就记 truncated（这一页里再也补不回来），
+      // droppedThrough = 丢掉的那些里最新的块号（索引器的历史覆盖到它，才能说合并后是全的）
+      truncated: { owner: false, flow: false, nodeFund: false },
+      droppedThrough: { owner: null, flow: null, nodeFund: null }
     }),
     // agent 名录（BSC 链上：BacBridge.deposits + ERC-8004 注册表）
     agentDir: Object.assign(section(), {
-      items: [], total: null, depositsTotal: null, depositsRead: 0, truncated: false, identityAt: null
+      items: [], total: null, totalAtLeast: null, depositsTotal: null, depositsRead: 0,
+      truncated: false, itemsTruncated: false, identityAt: null,
+      // Multicall3 暂时用不了：身份（ownerOf / agentWallet / tokenURI …）这一轮没读，字段是 null（不知道），不是「不存在」
+      identityPaused: false
+    }),
+    // 决策 #29c 的完整历史：索引器 GET /api/bridge/timeline（它从部署块起全量摄取，不受公共节点日志窗口限制）。
+    // owner / nodeFund 两条已经整形成和 BSC 日志时间线同一个形状，视图层按 tx:logIndex 合并去重。
+    ownerTimeline: Object.assign(section(), {
+      owner: [], nodeFund: [], totals: null, limit: null, truncated: false,
+      addressMismatch: false, bridgeAddress: null, nodeFundAddress: null,
+      bscCursor: null   // 这份历史至少覆盖到的 BSC 块（索引器摄取游标，取的是保守值）
     }),
 
     // ── 层内 + feed（走索引器；索引器挂了进降级模式）──
@@ -633,10 +676,16 @@
     feed: Object.assign(section(), { items: [], head: null, anchoredThrough: null }),
     blocks: Object.assign(section(), { items: [] }),
     txs: Object.assign(section(), { items: [] }),
-    agentList: Object.assign(section(), { items: [], total: null, page: 1 }),
+    // schema：索引器应答的版本（视图只认 bac/agents/2 的条目与总数）
+    agentList: Object.assign(section(), { items: [], total: null, page: 1, schema: null }),
     validators: Object.assign(section(), { items: [], totalStaked: null, rewardBalance: null }),
     epochs: Object.assign(section(), { items: [] }),
-    rate: Object.assign(section(), { weiPerCredit: null, poolBalance: null, owedTotal: null })
+    // v2（bac/rate/2）：兑付的是回购来的 BAC，bacPerCredit 是「每 1 积分约多少 BAC」（1e18 定点）。
+    // weiPerCredit / poolBalance 是旧键名，值与 bacPerCredit / buybackBac 相同，单位看 unit。
+    rate: Object.assign(section(), {
+      bacPerCredit: null, buybackBac: null, unit: null,
+      weiPerCredit: null, poolBalance: null, owedTotal: null
+    })
   };
 
   BAC.newSection = section;

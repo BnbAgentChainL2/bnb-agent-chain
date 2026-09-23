@@ -9,12 +9,14 @@
 //
 // 两条硬规矩：
 //   1. 注册文件里的任何东西（名字、介绍、图片、服务地址）都是自述，API 一律带 selfReported: true；
-//      http / ipfs 链接**不去抓**（索引器不替任何人访问任意 URL），图片链接更不加载；
+//      https / ipfs / ar 链接**不去抓**（索引器不替任何人访问任意 URL），图片链接更不加载；
+//      文本一律去掉控制字符与双向控制符，只有 https: / ipfs: / ar: 才算链接（src/text.js）；
 //   2. 持有 ERC-8004 身份不能证明对方是 AI（决策 #31a）。这句话跟着每一个身份块走。
 import { Interface, getAddress, ZeroAddress } from "ethers";
 import { isRevertError } from "./rpc.js";
 import { upsert } from "./db.js";
 import { warn, clearWarning } from "./warnings.js";
+import { cleanText, cleanLink, isLinkable, isDangerous, schemeOf } from "./text.js";
 
 export const IDENTITY_NOTE = "我们要求持有 agent 身份，我们不能证明它是 AI。";
 export const REGISTRATION_NOTE =
@@ -23,56 +25,120 @@ export const REGISTRATION_NOTE =
 const IFACE = new Interface([
   "function ownerOf(uint256) view returns (address)",
   "function getMetadata(uint256,string) view returns (bytes)",
-  "function tokenURI(uint256) view returns (string)",
+  // tokenURI 故意按 bytes 解：string 与 bytes 的 ABI 编码逐字节相同，但 ethers 解 string 时遇到非法 UTF-8 会抛错。
+  // tokenURI 是持有人自己写的，Solidity 的 string 里可以塞任意字节 —— 按 string 解，一个人造的身份就能让读数卡死。
+  "function tokenURI(uint256) view returns (bytes)",
 ]);
+
+const UTF8_STRICT = new TextDecoder("utf-8", { fatal: true });
+const UTF8_LENIENT = new TextDecoder("utf-8");
+
+/** tokenURI 的原始字节转文本。非法 UTF-8 不抛错：按替换字符宽松转换，并标出来（解析时一律算 unparsable）。 */
+export function uriFromBytes(bytesHex) {
+  const h = String(bytesHex ?? "0x");
+  const buf = Buffer.from(h.startsWith("0x") ? h.slice(2) : h, "hex");
+  try {
+    return { text: UTF8_STRICT.decode(buf), validUtf8: true };
+  } catch {
+    return { text: UTF8_LENIENT.decode(buf), validUtf8: false };
+  }
+}
+
+/**
+ * ethers 的 ABI 解码错误（返回值的字节解不开）。这是**这一个身份**的确定性结果，不是网络问题：
+ * 记下来、接着读下一个，不许让它挡住其他身份。
+ */
+export function isDecodeError(e) {
+  if (!e) return false;
+  if (["BAD_DATA", "BUFFER_OVERRUN", "INVALID_ARGUMENT", "NUMERIC_FAULT"].includes(e.code)) return true;
+  return /ABI decoding|could not decode|invalid codepoint|invalid utf-?8/i.test(String(e.message || ""));
+}
 
 /** tokenURI 原文最多存这么多字符（data: URI 可能内嵌整张图片）。解析在截断之前做。 */
 export const TOKEN_URI_MAX = 16384;
 const STR_MAX = { name: 200, description: 2000, image: 2048, type: 200, service: 512 };
+/** reg_kind = 'text' 时，API 最多给出这么多字符的原文。 */
+const TEXT_URI_MAX = 200;
 
-const cap = (v, n) => {
-  if (v === null || v === undefined) return null;
-  const s = typeof v === "string" ? v : String(v);
-  return s.length > n ? s.slice(0, n) : s;
-};
+/**
+ * 清洗一份（已经抽过字段的）注册文件：存库前做一次，出库（identityOf）再做一次 —— 幂等，
+ * 这样哪怕库里是旧规则存下的行，发出去的也是清洗过的。
+ *   - 文本字段：去控制字符、双向控制符（RLO 之类）、零宽字符，按码点截断（src/text.js，与 economy X4 同一张字符表）；
+ *   - image：只留 https: / ipfs: / ar:，别的 scheme（javascript:、data:、http:…）丢掉并记进 dropped；
+ *   - services[].endpoint：ERC-8004 允许非 URL 的值（ENS 名、did:、eip155:…），所以照样给出，
+ *     但只有 https: / ipfs: / ar: 标 linkable = true；javascript: / vbscript: / data: / file: / blob: 连文本都不留，记进 dropped。
+ */
+export function cleanRegistration(p) {
+  if (!p || typeof p !== "object" || Array.isArray(p)) return null;
+  const dropped = [];
+  let image = cleanLink(p.image, STR_MAX.image);
+  if (image !== null && !isLinkable(image)) {
+    image = null;
+    dropped.push("image");
+  }
+  const services = (Array.isArray(p.services) ? p.services : []).slice(0, 10).map((x, i) => {
+    const s = x && typeof x === "object" && !Array.isArray(x) ? x : { endpoint: x };
+    let endpoint = cleanLink(s.endpoint, STR_MAX.service);
+    if (endpoint !== null && isDangerous(endpoint)) {
+      endpoint = null;
+      dropped.push(`services[${i}].endpoint`);
+    }
+    return {
+      name: cleanText(s.name, STR_MAX.service),
+      endpoint,
+      version: cleanText(s.version, 64),
+      linkable: endpoint !== null && isLinkable(endpoint),
+    };
+  });
+  const servicesTotal = Number.isSafeInteger(p.servicesTotal) && p.servicesTotal >= services.length ? p.servicesTotal : services.length;
+  return {
+    type: cleanText(p.type, STR_MAX.type),
+    name: cleanText(p.name, STR_MAX.name),
+    description: cleanText(p.description, STR_MAX.description),
+    image,
+    services,
+    servicesTotal,
+    supportedTrust: (Array.isArray(p.supportedTrust) ? p.supportedTrust : []).slice(0, 10).map((x) => cleanText(x, 64)),
+    dropped: [...(Array.isArray(p.dropped) ? p.dropped.filter((d) => typeof d === "string" && !dropped.includes(d)) : []), ...dropped].slice(0, 20),
+  };
+}
 
-/** 从一份注册文件 JSON 里只抽这几个字段，别的一概不收（不可信文本越少越好）。 */
+/** 从一份注册文件 JSON 里只抽这几个字段，别的一概不收（不可信文本越少越好），再清洗。 */
 function pickRegistration(j) {
   if (!j || typeof j !== "object" || Array.isArray(j)) return null;
   const svcSrc = Array.isArray(j.services) ? j.services : Array.isArray(j.endpoints) ? j.endpoints : [];
   const services = svcSrc.slice(0, 10).map((x) =>
-    x && typeof x === "object"
-      ? {
-          name: cap(x.name ?? x.type ?? null, STR_MAX.service),
-          endpoint: cap(x.endpoint ?? x.url ?? null, STR_MAX.service),
-          version: cap(x.version ?? null, 64),
-        }
-      : { name: null, endpoint: cap(x, STR_MAX.service), version: null }
+    x && typeof x === "object" && !Array.isArray(x)
+      ? { name: x.name ?? x.type ?? null, endpoint: x.endpoint ?? x.url ?? null, version: x.version ?? null }
+      : { name: null, endpoint: x, version: null }
   );
-  const trust = Array.isArray(j.supportedTrust) ? j.supportedTrust.slice(0, 10).map((x) => cap(x, 64)) : [];
-  return {
-    type: cap(j.type ?? null, STR_MAX.type),
-    name: cap(j.name ?? null, STR_MAX.name),
-    description: cap(j.description ?? null, STR_MAX.description),
-    image: cap(j.image ?? null, STR_MAX.image),
+  return cleanRegistration({
+    type: j.type ?? null,
+    name: j.name ?? null,
+    description: j.description ?? null,
+    image: j.image ?? null,
     services,
     servicesTotal: svcSrc.length,
-    supportedTrust: trust,
-  };
+    supportedTrust: Array.isArray(j.supportedTrust) ? j.supportedTrust : [],
+  });
 }
 
 /**
  * 解析 tokenURI。返回 { kind, fields }：
  *   kind = 'empty'      —— 空字符串 / 没读到
- *        = 'data-json'  —— data:application/json（base64 或 URL 编码），fields 是抽出来的几个字段
- *        = 'uri'        —— http(s) / ipfs / ar 等外部链接：**不抓取**，fields = null
+ *        = 'data-json'  —— data:application/json（base64 或 URL 编码），fields 是抽出来并清洗过的几个字段
+ *        = 'uri'        —— **只有** https: / ipfs: / ar: 链接：**不抓取**，fields = null
+ *        = 'text'       —— 别的一切（裸字符串、0x…、http:、javascript:…）：不是能点的链接，fields = null
  *        = 'unparsable' —— data: 但解不开 / 不是 JSON 对象
  */
 export function parseRegistration(uri) {
   const s = String(uri ?? "").trim();
   if (!s) return { kind: "empty", fields: null };
   const m = /^data:application\/json([^,]*),(.*)$/is.exec(s);
-  if (!m) return { kind: s.startsWith("data:") ? "unparsable" : "uri", fields: null };
+  if (!m) {
+    if (schemeOf(s) === "data:") return { kind: "unparsable", fields: null };
+    return { kind: isLinkable(s) ? "uri" : "text", fields: null };
+  }
   try {
     const meta = m[1].toLowerCase();
     const body = meta.includes(";base64")
@@ -104,7 +170,8 @@ async function call(rpc, registry, fn, args) {
 
 /**
  * 读一个身份。revert 是确定性答案（不存在 / 没设置），网络错误才往外抛（下一轮重试）。
- * 返回 { exists, holder, agentWallet, tokenURI }。
+ * 返回 { exists, holder, agentWallet, tokenURI, tokenURIValidUtf8 }。
+ * tokenURI 里有非法 UTF-8 时照样返回（宽松转换），tokenURIValidUtf8 = false，存库时记 reg_kind = 'unparsable'。
  */
 export async function readIdentity(rpc, registry, agentId) {
   const id = BigInt(agentId);
@@ -120,6 +187,7 @@ export async function readIdentity(rpc, registry, agentId) {
   }
   let agentWallet = null;
   let tokenURI = null;
+  let tokenURIValidUtf8 = true;
   if (exists) {
     try {
       agentWallet = walletFromMetadata(await call(rpc, registry, "getMetadata", [id, "agentWallet"]));
@@ -127,17 +195,20 @@ export async function readIdentity(rpc, registry, agentId) {
       if (!isRevertError(e)) throw e;
     }
     try {
-      tokenURI = String(await call(rpc, registry, "tokenURI", [id]));
+      const u = uriFromBytes(await call(rpc, registry, "tokenURI", [id]));
+      tokenURI = u.text;
+      tokenURIValidUtf8 = u.validUtf8;
     } catch (e) {
       if (!isRevertError(e)) throw e;
     }
   }
-  return { exists, holder, agentWallet, tokenURI };
+  return { exists, holder, agentWallet, tokenURI, tokenURIValidUtf8 };
 }
 
 /** 把一次读数写进 agent_identity。 */
 export function storeIdentity(db, { agentId, registry, read, now, bscBlock }) {
-  const reg = parseRegistration(read.tokenURI);
+  // 非法 UTF-8：原文按替换字符存（让人能看见它长什么样），但不去解析 —— 这是一个明确的最终答案，不再重试。
+  const reg = read.tokenURIValidUtf8 === false ? { kind: "unparsable", fields: null } : parseRegistration(read.tokenURI);
   const uri = read.tokenURI ?? null;
   upsert(
     db,
@@ -162,8 +233,11 @@ export function storeIdentity(db, { agentId, registry, read, now, bscBlock }) {
 }
 
 /**
- * 每轮快照读一小批：从没读过的、换了注册表的、超过 staleSec 没重读的，最旧的先读。
- * 网络错误只记在那一行的 attempts / last_error 上，并停止这一轮（多半是 RPC 出问题了），不写任何猜测值。
+ * 每轮快照读一小批：从没读过的、换了注册表的、超过 staleSec 没重读的，最旧的先读；**失败过的排在最后**
+ * —— 否则一个读不出来的身份（checked_at 永远是 NULL）每轮都排第一、每轮都先失败，别的身份永远轮不到。
+ * 失败只记在那一行的 attempts / last_error 上，不写任何猜测值：
+ *   - 解码错误（这个身份自己的数据解不开）：记下来，接着读下一个；
+ *   - 网络 / 节点错误（多半是整个 RPC 出了问题）：停下这一轮，下一轮再来，别让一次快照卡上几分钟。
  */
 export async function refreshIdentities(db, rpc, { registry, now, bscBlock = null, max = 10, staleSec = 3600 }) {
   if (!registry || max <= 0) return { read: 0, failed: 0 };
@@ -171,10 +245,13 @@ export async function refreshIdentities(db, rpc, { registry, now, bscBlock = nul
     .prepare(
       `SELECT a.agent_id AS id FROM agents a LEFT JOIN agent_identity i ON i.agent_id = a.agent_id
         WHERE i.agent_id IS NULL OR i.checked_at IS NULL OR i.checked_at < ? OR i.registry <> ?
-        ORDER BY COALESCE(i.checked_at, 0) ASC, a.agent_id ASC LIMIT ?`
+        ORDER BY CASE WHEN COALESCE(i.attempts, 0) > 0 THEN 1 ELSE 0 END ASC,
+                 COALESCE(i.checked_at, 0) ASC, a.agent_id ASC
+        LIMIT ?`
     )
     .all(Number(now) - staleSec, registry, max);
   let read = 0;
+  const failures = [];
   for (const r of rows) {
     const agentId = Number(r.id);
     try {
@@ -187,12 +264,16 @@ export async function refreshIdentities(db, rpc, { registry, now, bscBlock = nul
         `INSERT INTO agent_identity (agent_id, registry, attempts, last_error) VALUES (?, ?, 1, ?)
          ON CONFLICT(agent_id) DO UPDATE SET attempts = agent_identity.attempts + 1, last_error = excluded.last_error`
       ).run(agentId, registry, msg);
-      warn("identity_read_failed", `ERC-8004 身份 #${agentId} 读取失败：${msg}`);
-      return { read, failed: 1 };
+      failures.push(`#${agentId}：${msg}`);
+      if (!isDecodeError(e)) break;
     }
   }
-  clearWarning("identity_read_failed");
-  return { read, failed: 0 };
+  if (failures.length) {
+    warn("identity_read_failed", `ERC-8004 身份读取失败 ${failures.length} 个（${failures.slice(0, 3).join("；")}）`);
+  } else {
+    clearWarning("identity_read_failed");
+  }
+  return { read, failed: failures.length };
 }
 
 /** API 用：一个 agent 的身份块。没读过就全是 null，并照实说「还没读到」。 */
@@ -202,12 +283,15 @@ export function identityOf(db, agentId, registryFallback = null) {
   let fields = null;
   if (r && r.reg_json) {
     try {
-      fields = JSON.parse(r.reg_json);
+      // 出库再洗一遍（幂等）：旧规则存下的行也不会把 javascript: 图片或 RLO 字符发出去
+      fields = cleanRegistration(JSON.parse(r.reg_json));
     } catch {
       fields = null;
     }
   }
-  const kind = read ? r.reg_kind : null;
+  let kind = read ? r.reg_kind : null;
+  // 旧规则把任何非 data: 的字符串都记成 'uri'：出库时按白名单重判，不是 https: / ipfs: / ar: 的一律是 'text'
+  if (kind === "uri" && !isLinkable(r.token_uri)) kind = "text";
   return {
     standard: "ERC-8004",
     registry: (r && r.registry) || registryFallback,
@@ -222,8 +306,11 @@ export function identityOf(db, agentId, registryFallback = null) {
     registration: {
       selfReported: true,
       kind,
-      // data: URI 本身就是文件内容，不重复返回；外部链接原样给出（不抓取）
-      uri: kind === "uri" ? r.token_uri : null,
+      // data: URI 本身就是文件内容，不重复返回；https: / ipfs: / ar: 链接清洗后给出（不抓取）
+      uri: kind === "uri" ? cleanLink(r.token_uri, TOKEN_URI_MAX) : null,
+      // 不是链接的 tokenURI（裸字符串、0x…、http:…）：清洗、截断后当纯文本给出，**不是链接**；
+      // javascript: / data: 这类会被执行或内嵌的，连文本都不给
+      text: kind === "text" && !isDangerous(r.token_uri) ? cleanText(r.token_uri, TEXT_URI_MAX) : null,
       uriTruncated: read ? Number(r.token_uri_truncated) === 1 : false,
       name: fields ? fields.name : null,
       description: fields ? fields.description : null,
@@ -231,6 +318,8 @@ export function identityOf(db, agentId, registryFallback = null) {
       type: fields ? fields.type : null,
       services: fields ? fields.services : [],
       supportedTrust: fields ? fields.supportedTrust : [],
+      // 因为 scheme 不在白名单里被丢掉的字段（"image"、"services[0].endpoint"…）
+      dropped: fields ? fields.dropped : [],
       note: REGISTRATION_NOTE,
     },
     note: IDENTITY_NOTE,

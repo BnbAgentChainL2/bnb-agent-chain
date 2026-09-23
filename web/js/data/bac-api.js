@@ -142,7 +142,9 @@
       return j;
     }, function (err) {
       apiHealth.bad(key, err, now);
-      markIndexerFail(err);
+      // 4xx = 索引器答话了，只是这个端点没有 / 参数不对（比如线上还是旧版索引器、没有 /api/bridge/timeline）：
+      // 这个端点自己退避，但**不算索引器挂了**，不许因此拉起降级横幅
+      if (!(err && err.status >= 400 && err.status < 500)) markIndexerFail(err);
       throw err;
     });
   }
@@ -227,26 +229,53 @@
     };
   }
 
-  /** 索引器的 agent 条目。v2（决策 #31）没有自研 AgentRegistry、没有状态机：
+  /** 两个名字取第一个给了的（v2 新名在前，v1 旧名兜底）。 */
+  function pickFirst(a, k1, k2) {
+    if (a[k1] !== undefined && a[k1] !== null) return a[k1];
+    return a[k2];
+  }
+  function strList(v) {
+    return Array.isArray(v) ? v.filter(function (x) { return typeof x === 'string' && x; }).map(String) : [];
+  }
+
+  /** 索引器的 agent 条目。两版都认：
+        v1（bac/agents/1）credited / exited / wallet
+        v2（bac/agents/2）creditsLocked / creditsExited / layerWallets[] / holder / identityExists / registrationName / lockCount
+      v2（决策 #31）没有自研 AgentRegistry、没有状态机：
       status / statusName / statusZh / solved / lastHeartbeatEpoch / missed / endpointHash / modelFingerprint
       一律 null —— 哪怕旧索引器还在发这些字段，它们描述的是一个已经不存在的合约，不许再显示。
-      ERC-8004 的几项（identityId / identityOwner / agentWallet / tokenURI）索引器给了就原样带上。 */
+      ERC-8004 的几项（identityId / identityOwner / agentWallet / tokenURI）索引器给了就原样带上；
+      registrationName 是持有人自己写的注册文件里的名字 → 放进 selfReported（和链上直读的名录同一个形状）。 */
   function agentItem(a) {
+    a = a && typeof a === 'object' ? a : {};
     var id = a.identityId !== undefined && a.identityId !== null ? num(a.identityId) : num(a.agentId);
+    var wallets = strList(a.layerWallets);
+    var wallet = wallets.length ? wallets[0] : str(a.wallet);
+    var regName = typeof a.registrationName === 'string' && a.registrationName ? a.registrationName.slice(0, 200) : null;
     return {
       agentId: num(a.agentId), identityId: id,
-      controller: str(a.controller), wallet: str(a.wallet),
+      controller: str(a.controller),
+      wallet: wallet,                        // 层内钱包（v2 可能有多个：layerWallets，第一个 = 最早进场的那个）
+      layerWallets: wallets.length ? wallets : (wallet ? [wallet] : []),
       identityOwner: str(a.identityOwner) || str(a.holder),
+      identityExists: a.identityExists === undefined || a.identityExists === null ? null : !!a.identityExists,
+      identityCheckedAt: num(a.identityCheckedAt),
       agentWallet: str(a.agentWallet),
       tokenURI: str(a.tokenURI),
+      registrationName: regName,
+      selfReported: regName ? { name: regName, description: null, hasImage: null, note: TEXT.SELF_REPORTED } : null,
       source: 'indexer',
       status: null, statusName: null, statusZh: null,
       registeredAt: null, activatedAt: num(a.activatedAt !== undefined ? a.activatedAt : a.firstLockAt),
+      firstLockAt: num(a.firstLockAt),
+      deposits: num(a.lockCount),
       solved: null, lastHeartbeatEpoch: null, missed: null,
-      credited: big(a.credited), exited: big(a.exited), layerBalance: big(a.layerBalance),
+      credited: big(pickFirst(a, 'creditsLocked', 'credited')),
+      exited: big(pickFirst(a, 'creditsExited', 'exited')),
+      layerBalance: big(a.layerBalance),
       deploys: num(a.deploys), announces: num(a.announces), lastLayerBlock: num(a.lastLayerBlock),
       agentURI: null, endpointHash: null, modelFingerprint: null,
-      untrusted: true                        // tokenURI 是身份持有人自己写的
+      untrusted: true                        // tokenURI / 注册名是身份持有人自己写的
     };
   }
 
@@ -346,6 +375,8 @@
     rate: function () { return fetchEndpoint('rate', '/api/rate'); },
     validators: function () { return fetchEndpoint('validators', '/api/validators'); },
     treasury: function (params) { return fetchEndpoint('treasury', '/api/treasury', params); },
+    // 决策 #29c：桥的每一次升级 / 紧急提取 / 换 owner / 暂停，外加节点基金的提取（索引器从部署块起全量摄取）
+    bridgeTimeline: function (params) { return fetchEndpoint('bridgeTimeline', '/api/bridge/timeline', params); },
     // 决策 #17 的 gas 费分账（03 §3.7）。单位是层内 BAC，渲染时必须显示单位，
     // 并且不许和 BSC 侧的 BNB 税收（treasury）合成一个总额。
     fees: function () { return fetchEndpoint('fees', '/api/fees'); },
@@ -386,6 +417,14 @@
         validatorBalances: (j.reconcile.validatorBalances || []).map(function (v) {
           return { addr: str(v.addr), balance: big(v.balance) };
         }),
+        // 创世分配项（公式里的 genesisAlloc）：创世时就不在 L2Bridge 里的余额。不把它和它由哪些账户组成
+        // 一起交给页面，页面上就只剩一个 diff = 0，看不出那 1e24 从哪来（演练链上是 Hardhat 公开测试私钥的账户）
+        genesisSupply: big(j.reconcile.genesisSupply),
+        genesisAlloc: big(j.reconcile.genesisAlloc),
+        genesisAllocAccounts: (Array.isArray(j.reconcile.genesisAllocAccounts) ? j.reconcile.genesisAllocAccounts : [])
+          .map(function (x) { return { addr: str(x && x.addr), balance: big(x && x.balance) }; }),
+        genesisSource: str(j.reconcile.genesisSource),     // 索引器读的创世文件路径；null = 没读到（按设计值算）
+        note: str(j.reconcile.note),
         formula: str(j.reconcile.formula),
         diff: big(j.reconcile.diff),
         ok: j.reconcile.ok === undefined ? null : !!j.reconcile.ok,
@@ -539,6 +578,8 @@
     var G = BAC.state.agentList;
     var p = Object.assign({ page: 1, pageSize: CFG.agentsPageSize, sort: 'newest' }, params || {});
     return api.agents(p).then(function (j) {
+      // 视图只认 bac/agents/2：/1 数的是已经删掉的 AgentRegistry（#31），编号也不是 ERC-8004 身份号
+      G.schema = typeof j.schema === 'string' ? j.schema : null;
       G.items = (j.items || []).map(agentItem);
       G.total = num(j.total);
       G.page = num(j.page) || 1;
@@ -570,18 +611,91 @@
     }).catch(function (e) { failSection(E, e); return E.items; });
   }
 
+  /** 兑付率。两版都认：
+        v2（bac/rate/2）bacPerCredit（BAC / 积分，1e18 定点）+ buybackBac（回购桶，BAC）+ unit
+        v1（bac/rate/1）weiPerCredit + poolBalance（那时兑付的是 BNB）
+      weiPerCredit / poolBalance 保留为旧键名，值与 bacPerCredit / buybackBac 相同，单位一律看 unit。
+      没有在外的积分时合约 currentRate() 返回 0 —— 那是「没有汇率」，这里记成 null。 */
   function pullRate() {
     var R = BAC.state.rate;
     return api.rate().then(function (j) {
-      R.weiPerCredit = big(j.weiPerCredit);
-      R.poolBalance = big(j.poolBalance);
+      var v2 = j.bacPerCredit !== undefined || j.buybackBac !== undefined;
+      var rate = big(pickFirst(j, 'bacPerCredit', 'weiPerCredit'));
+      var outstanding = big(j.creditsOutstanding);
+      if (outstanding === 0n) rate = null;
+      R.bacPerCredit = rate;
+      R.weiPerCredit = rate;
+      R.buybackBac = big(j.buybackBac);
+      R.poolBalance = big(pickFirst(j, 'buybackBac', 'poolBalance'));
+      R.unit = typeof j.unit === 'string' && j.unit ? j.unit : (v2 ? 'BAC' : (j.weiPerCredit !== undefined ? 'BNB' : null));
+      R.rateSource = str(j.source);
       R.owedTotal = big(j.owedTotal);
-      R.creditsOutstanding = big(j.creditsOutstanding);
+      R.creditsOutstanding = outstanding;
       R.lastPot = big(j.lastPot);
       R.note = str(j.note) || '估算 · 不承诺任何金额';
       okSection(R);
       return R;
     }).catch(function (e) { failSection(R, e); return R; });
+  }
+
+  /** 决策 #29c 的完整时间线：索引器 /api/bridge/timeline。条目整形成和 BSC 日志时间线同一个形状
+      （bac-chain.js 的 shapeEvent），视图层按 tx:logIndex 与日志窗口合并去重。
+      旧版索引器没有这个端点（404）→ 这一段报错，但不算索引器挂了（见 fetchEndpoint）。 */
+  function pullBridgeTimeline() {
+    var O = BAC.state.ownerTimeline;
+    if (!BAC.chain || typeof BAC.chain.shapeEvent !== 'function') return Promise.resolve(O);
+    var limit = CFG.timelineMax;
+    /* 索引器的 BSC 摄取游标：取**发请求之前**最近一次 /api/health 给的值（只会比这次应答实际覆盖到的更小 →
+       拿它判断「索引器的历史 + 浏览器的日志窗口有没有接上」只会偏保守，不会多说）。 */
+    var H = BAC.state.health;
+    var cursorBefore = H && H.indexer && H.indexer.bscCursor !== undefined && H.indexer.bscCursor !== null
+      ? Number(H.indexer.bscCursor) : null;
+    if (cursorBefore !== null && !isFinite(cursorBefore)) cursorBefore = null;
+    return api.bridgeTimeline({ scope: 'all', limit: limit }).then(function (j) {
+      var owner = [], nodeFund = [];
+      O.bscCursor = cursorBefore;
+      // 索引器盯的必须就是本站配置里的那两个合约：对不上（比如它还指着演练用的地址）就一条都不用
+      var A = CFG.addresses;
+      function sameAs(got, want) {
+        return !got || !BAC.isAddr(want) || String(got).toLowerCase() === String(want).toLowerCase();
+      }
+      var okBridge = sameAs(j.bridge, A.bridge), okFund = sameAs(j.nodeFund, A.nodeFund);
+      O.addressMismatch = !(okBridge && okFund);
+      (Array.isArray(j.items) ? j.items : []).forEach(function (r) {
+        if (!r || typeof r !== 'object') return;
+        var which = r.contract === 'BacBridge' ? 'bridge' : (r.contract === 'BacNodeFund' ? 'nodeFund' : null);
+        if (!which || typeof r.event !== 'string') return;
+        if ((which === 'bridge' && !okBridge) || (which === 'nodeFund' && !okFund)) return;
+        var d = BAC.chain.shapeEvent(which, r.event, r.args && typeof r.args === 'object' ? r.args : {}, {
+          block: num(r.block), tx: str(r.tx), logIndex: num(r.logIndex), ts: num(r.ts), source: 'indexer'
+        });
+        if (!d) return;
+        d.item.textZh = str(r.textZh);   // 索引器渲染好的一句话（纯文本，绑定层只能当文本用）
+        if (d.list === 'owner') owner.push(d.item);
+        else if (d.list === 'nodeFund') nodeFund.push(d.item);
+      });
+      var t = j.totals || null;
+      O.owner = BAC.chain.mergeTimeline([owner], true);
+      O.nodeFund = BAC.chain.mergeTimeline([nodeFund], false);
+      O.totals = t ? {
+        upgrades: num(t.upgrades), emergencyWithdrawals: num(t.emergencyWithdrawals),
+        emergencyBnb: big(t.emergencyBnb), emergencyBac: big(t.emergencyBac),
+        emergencyOtherTokens: num(t.emergencyOtherTokens), ownerChanges: num(t.ownerChanges),
+        nodeFundWithdrawals: num(t.nodeFundWithdrawals), nodeFundWithdrawn: big(t.nodeFundWithdrawn)
+      } : null;
+      O.limit = limit;
+      // 返回满了 limit 条 = 可能还有更早的没给，不能拿它说「全了」
+      O.truncated = (Array.isArray(j.items) ? j.items.length : 0) >= limit;
+      O.bridgeAddress = str(j.bridge);
+      O.nodeFundAddress = str(j.nodeFund);
+      if (O.addressMismatch) {
+        O.totals = null;   // 别的合约的累计数，不能拿来和本站的计数器对
+        BAC.pushWarning('indexer_address_mismatch');
+      } else BAC.clearWarning('indexer_address_mismatch');
+      okSection(O);
+      BAC.emit('timeline', BAC.state.timeline);
+      return O;
+    }).catch(function (e) { failSection(O, e); return O; });
   }
 
   /* ══════════════════════════════════════════════════════
@@ -610,9 +724,15 @@
     if (!API_EPS.length) return Promise.resolve();
     var first = tick === 0;
     tick++;
-    var jobs = [pullHealth(), pullFeed({ initial: first }), pullBlocks()];
+    var health = pullHealth();              // 不会 reject（失败时自己退到层内 RPC）
+    var jobs = [health, pullFeed({ initial: first }), pullBlocks()];
     // 慢速的几段每 5 轮拉一次，别把索引器打满
-    if (first || tick % 5 === 0) jobs.push(pullSummary(), pullValidators(), pullEpochs(), pullAgents(), pullRate());
+    if (first || tick % 5 === 0) {
+      jobs.push(pullSummary(), pullValidators(), pullEpochs(), pullAgents(), pullRate());
+      // owner 权力的完整历史：配置里有桥合约才问（阶段 a 什么都没部署，问了也是空）。
+      // 排在 health 之后发：它要拿 health 里的摄取游标当「这份历史至少覆盖到哪」（先拿到的游标只会更小，偏保守）
+      if (BAC.CONTRACTS_CONFIGURED) jobs.push(health.then(function () { return pullBridgeTimeline(); }));
+    }
     inFlight = Promise.all(jobs)
       .then(function () { return pullTxs(); })
       .then(function () {
@@ -641,7 +761,8 @@
     },
     pull: {
       health: pullHealth, summary: pullSummary, feed: pullFeed, blocks: pullBlocks,
-      txs: pullTxs, agents: pullAgents, validators: pullValidators, epochs: pullEpochs, rate: pullRate
+      txs: pullTxs, agents: pullAgents, validators: pullValidators, epochs: pullEpochs, rate: pullRate,
+      bridgeTimeline: pullBridgeTimeline
     },
     layerRpcFallback: layerRpcFallback,
     run: run,

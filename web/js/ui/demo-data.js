@@ -38,10 +38,10 @@
     function hash32(r) { return '0x' + hex(64, r); }
 
     var NOW = Math.floor(Date.now() / 1000);
-    var EPOCH = Math.floor(NOW / 86400);
+    var EPOCH_LEN = 600;                        // 决策 #20：纪元 10 分钟，与合约和数据层 BAC.C.EPOCH 一致
+    var EPOCH = Math.floor(NOW / EPOCH_LEN);
 
     /* ── agent ─────────────────────────────────────────────── */
-    var DORMANT = [9, 14, 27, 33], BANNED = [5], CHALLENGED = [41, 42];
     var SUMS = [
       '进场后先部署了一个最小 AMM，再把自己的池子挂出来，现在别的 agent 在用它的合约。',
       '建了一个池子并持续做市，最近在跟别的 agent 就滑点参数互相发消息。',
@@ -54,31 +54,24 @@
       '刚进场，还在读别人部署了什么，没有动作。',
       '给别的 agent 估算滑点，按次收费。'
     ];
-    // 决策 #18（术语）：取值名 CHALLENGED 不改（它对齐合约），显示名一律「入场验证中」
-    var STATUS_ZH = { ACTIVE: '活跃', DORMANT: '休眠', BANNED: '封禁', CHALLENGED: '入场验证中', RETIRED: '退役' };
-    var STATUS_CLS = { ACTIVE: 'ok', DORMANT: 'warn', BANNED: 'bad', CHALLENGED: 'wait', RETIRED: 'dim' };
-
+    /* v2（决策 #31）没有状态机：名录里每一条都是锁进过桥的 ERC-8004 身份，一律「已进场」，
+       没有休眠、封禁、入场验证中（和 bind.js 的 mapAgent 同一个口径） */
     var agents = [], agentById = {};
     for (var id = 1; id <= 42; id++) {
-      var st = 'ACTIVE';
-      if (DORMANT.indexOf(id) >= 0) st = 'DORMANT';
-      if (BANNED.indexOf(id) >= 0) st = 'BANNED';
-      if (CHALLENGED.indexOf(id) >= 0) st = 'CHALLENGED';
       var credited = BigInt(ri(3, 52) * 10000) * E18;
       var exited = R() < 0.12 ? BigInt(ri(1, 20) * 1000) * E18 : 0n;
       var spent = BigInt(ri(60, 9400)) * E18;
       if (exited + spent > credited) { exited = 0n; spent = credited / 2n; }
-      var deploys = st === 'CHALLENGED' ? 0 : (R() < 0.45 ? ri(1, 4) : 0);
+      var deploys = R() < 0.45 ? ri(1, 4) : 0;
       var hb = [];
       for (var k = 0; k < 30; k++) hb.push(R() < 0.04 ? 0 : 1);
-      if (st === 'DORMANT') { hb[27] = hb[28] = hb[29] = 0; }
       var a = {
-        id: id, status: st, statusZh: STATUS_ZH[st], statusCls: STATUS_CLS[st],
+        id: id, status: 'ENTERED', statusZh: '已进场', statusCls: 'ok',
         wallet: addr(), controller: addr(),
         joinedTs: NOW - ri(0, 9) * 86400 - ri(0, 80000),
         credited: credited, exited: exited, spent: spent, balance: credited - exited - spent,
-        deploys: deploys, announces: st === 'CHALLENGED' ? 0 : ri(0, 63), actions: 0,
-        hbEpoch: st === 'DORMANT' ? EPOCH - 3 : EPOCH, missed: st === 'DORMANT' ? 3 : 0,
+        deploys: deploys, announces: ri(0, 63), actions: 0,
+        hbEpoch: hb[29] ? EPOCH : EPOCH - 1, missed: hb.filter(function (v) { return !v; }).length,
         /* ERC-8004：agent #N 就是身份 #N；持有人与注册文件（tokenURI）都是演示值 */
         identityId: id, holder: null, uriOk: R() < 0.86,
         uri: 'https://a' + id + '.example/agent.json',
@@ -93,7 +86,7 @@
       }
       agents.push(a); agentById[id] = a;
     }
-    var LIVE_IDS = agents.filter(function (x) { return x.status === 'ACTIVE'; }).map(function (x) { return x.id; });
+    var LIVE_IDS = agents.map(function (x) { return x.id; });
 
     var contractMap = {}, contracts = [];
     agents.forEach(function (x) {
@@ -166,7 +159,7 @@
       var b = {
         number: n, hash: hash32(), parent: '', ts: ts, txCount: cnt,
         gasUsed: gas, gasLimit: GASLIMIT, fee: BigInt(gas) * GWEI,
-        proposer: OFFICIAL, proposerKind: 'official', epoch: EPOCH,
+        proposer: OFFICIAL, proposerKind: 'official', epoch: Math.floor(ts / EPOCH_LEN),
         size: 540 + cnt * ri(180, 900), stateRoot: hash32(), extra: '0x' + hex(64),
         txs: list, anchored: false
       };
@@ -197,7 +190,7 @@
         exitRoot: sEn === 'OPEN' ? null : hash32(er),
         proposerIncomeRoot: sEn === 'OPEN' ? null : hash32(er),
         anchorTx: sEn === 'OPEN' ? null : hash32(er),
-        postedAt: NOW - (EPOCH - n2) * 86400 + ri(0, 40000, er),
+        postedAt: NOW - (EPOCH - n2) * EPOCH_LEN + ri(0, 120, er),
         agreeing: agree, members: 2,
         weightTotal: BigInt(5000000) * E18, agreeWt: BigInt(agree === 2 ? 5000000 : 3000000) * E18,
         releaseBps: agree === 2 ? 350 : 200,
@@ -307,15 +300,16 @@
         head: head, headTs: NOW, headHash: null, miner: null, blockLagSec: 0,
         blockTimeSec: 3, blockIntervalSec: 3, targetBlockTimeSec: 3,
         gasLimit: GASLIMIT, baseFee: 0n, gasPrice: BigInt(1e9), minGasPriceGwei: 1,
-        epochLenSec: 86400,
+        epochLenSec: EPOCH_LEN,
         peers: 5, txPool: 3, txPoolQueued: 0,
         txTotal: 48213, contractsTotal: contracts.length,
         circulating: BigInt(4880000) * E18, burnedTotal: BigInt(9125) * BigInt(1e14),
         totalSupply: BigInt('1000000000') * E18,
-        epoch: EPOCH, epochLeftSec: 86400 - (NOW % 86400),
+        epoch: EPOCH, epochLeftSec: EPOCH_LEN - (NOW % EPOCH_LEN),
         lastPostedEpoch: EPOCH - 1, lastFinalEpoch: EPOCH - 2,
         tps: last20 / 60, tx24h: tx24, blocks24h: 28800,
-        agentCounts: { total: 42, active: 35, dormant: 4, banned: 1, challenged: 2, retired: 0 },
+        // 和数据层同一个形状：v2 只有 total 是真的，状态机的几个计数一律 null
+        agentCounts: { total: 42, challenged: null, active: null, dormant: null, banned: null, retired: null },
         nodeCount: 2, nodeSlots: 64, totalStaked: BigInt(5000000) * E18,
         bridgePool: BigInt(914) * BigInt(1e16)
       },
@@ -355,7 +349,8 @@
         stuckBridge: 0n, stuckNodeFund: 0n,
         poolBalance: BigInt(914) * BigInt(1e16), nodeFundBalance: BigInt(4) * BigInt(1e17),
         nodeFundWithdrawn: BigInt(12) * E18,
-        releaseBps: 350, releasable: BigInt(3199) * BigInt(1e14), owedTotal: BigInt(12044) * BigInt(1e14),
+        // 退出兑付的是桥回购来的 BAC（BacBridge.buybackBac），单位 BAC，不是 BNB
+        releaseBps: 350, releasable: BigInt(3199) * E18, owedTotal: BigInt(96352) * E18,
         /* 决策 #29a 的那句，逐字（与 bind.js 同一份） */
         disclosure: '项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。'
           + '节点基金这一半（税后 BNB 的 50%）由 BacNodeFund 的 owner 随时提取，用于服务器与节点搭建。',
@@ -376,8 +371,8 @@
       bridge: {
         totalLocked: BigInt(4880000) * E18, totalIssued: BigInt(4880000) * E18,
         totalExited: BigInt(120000) * E18, creditsOutstanding: BigInt(4760000) * E18,
-        poolBalance: BigInt(914) * BigInt(1e16), owedTotal: BigInt(12044) * BigInt(1e14),
-        weiPerCredit: BigInt(1900000000), lastPot: BigInt(3199) * BigInt(1e14),
+        poolBalance: BigInt(914) * BigInt(1e16), owedTotal: BigInt(96352) * E18,
+        weiPerCredit: BigInt(1900000000), lastPot: BigInt(3199) * E18,
         releaseBps: 350, paused: false, halted: false
       },
       daily: daily,
@@ -419,7 +414,7 @@
     var b = {
       number: n, hash: '0x' + hex(64), parent: top.hash, ts: ts, txCount: cnt,
       gasUsed: gas, gasLimit: GASLIMIT, fee: BigInt(gas) * GWEI,
-      proposer: OFFICIAL, proposerKind: 'official', epoch: Math.floor(ts / 86400),
+      proposer: OFFICIAL, proposerKind: 'official', epoch: Math.floor(ts / (vm.chain.epochLenSec || 600)),
       size: 540 + cnt * 600, stateRoot: '0x' + hex(64), extra: '0x' + hex(64), txs: list, anchored: false
     };
     vm.blocks.unshift(b); vm.blockByNum[n] = b;
@@ -430,7 +425,7 @@
     vm.chain.tx24h = (vm.chain.tx24h || 0) + cnt;
     var last20 = vm.blocks.slice(0, 20).reduce(function (s, x) { return s + x.txCount; }, 0);
     vm.chain.tps = last20 / 60;
-    vm.chain.epochLeftSec = 86400 - (ts % 86400);
+    vm.chain.epochLeftSec = (vm.chain.epochLenSec || 600) - (ts % (vm.chain.epochLenSec || 600));
     return b;
   };
 })(typeof window !== 'undefined' ? window : globalThis);

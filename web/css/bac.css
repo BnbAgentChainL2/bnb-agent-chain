@@ -378,6 +378,15 @@ body:has(#v-overview[hidden]) .hero{display:none}
   padding:0 7px;border-radius:var(--r-xs);color:var(--gold);background:var(--gold-08);border:1px solid rgba(240,185,11,.3);
 }
 .hero-disc li.own{color:var(--gold-lt);font-weight:600}
+/* CA 那一行（决策 #35）：地址 + 复制 + BscScan 一行，括号里的提醒可以折到下一行；地址本身不许被截断 */
+.hero-disc li.ca{flex-wrap:wrap}
+.ca-v{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;min-width:0}
+.ca-v code{font-family:var(--mono);font-size:var(--t-micro);color:var(--text);overflow-wrap:anywhere;min-width:0}
+.ca-scan{font-size:var(--t-micro);color:var(--gold-lt);border-bottom:1px solid rgba(240,185,11,.35);white-space:nowrap}
+.ca-scan:hover{border-bottom-color:currentColor}
+.ca-n{flex-basis:100%;font-size:var(--t-micro);line-height:1.6;color:var(--text-3)}
+/* 首屏定位句：静态，没有 JS 也看得到 */
+.hero-pos{font-size:var(--t-label);line-height:1.8;color:var(--text-2);max-width:60ch;margin:calc(-1 * var(--sp-2)) 0 var(--sp-4)}
 
 /* 自己验证这条链：纯静态的核对入口，关掉 JS 也完整可读。
    在首屏网格里占满一整行；文档顺序在链头卡片之前（不执行 JS 的抓取工具先读到端点和 curl），
@@ -415,6 +424,10 @@ body:has(#v-overview[hidden]) .hero{display:none}
 /* 自己跑只读节点：和钱包参数一样占满一整行 */
 .vfy-sync{grid-column:1 / -1;padding-top:var(--sp-3);border-top:1px dashed var(--line-soft)}
 .vfy-sync .vfy-exp{margin-top:0}
+.vfy-sync .vfy-exp+.vfy-exp,.vfy-sync .vfy-code+.vfy-exp{margin-top:8px}
+.vfy-sync .vfy-l{margin-top:10px}
+.vfy-st{font-size:var(--t-label);font-weight:650;color:var(--text);margin:0 0 6px}
+.vfy-ok{color:var(--text-2)}
 .vfy-a{min-width:0}
 .vfy-a code{text-decoration:underline;text-decoration-color:rgba(240,185,11,.35);text-underline-offset:3px}
 .vfy-a:hover code{text-decoration-color:currentColor}
@@ -523,6 +536,8 @@ body:has(#v-overview[hidden]) .hero{display:none}
 }
 .ph-fill{flex:1;min-width:8px;height:1px;background:transparent}
 .ph-m{font-size:var(--t-micro);color:var(--text-4);white-space:nowrap;font-family:var(--mono)}
+/* 事件名清单比面板还宽：允许折行，不许把页面撑宽（390px 下曾把页面撑到 551px） */
+.ph-m.ph-ev{white-space:normal;min-width:0;flex:1 1 16em;text-align:right;overflow-wrap:anywhere;line-height:1.5}
 .ph.sub{border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
   background:var(--bg-2);border-radius:0;min-height:36px;padding:7px 16px}
 .pf{
@@ -676,6 +691,11 @@ body:has(#v-overview[hidden]) .hero{display:none}
   color:var(--text-3);text-align:left;font-size:var(--t-label);padding:18px 16px;line-height:1.8;
   white-space:normal;background:repeating-linear-gradient(135deg,rgba(255,255,255,.012) 0 6px,transparent 6px 12px);
 }
+/* 空表说明（rows.js missRow / emptyRow）：表格在窄屏上能横向滚动（.tw），整行 colspan 跟着表格一样宽，
+   说明文字会伸出视口、要横着滚才读得完。把说明钉在滚动框左边，宽度不超过视口。 */
+.tbl .empty .em-t{position:sticky;left:16px;max-width:calc(100vw - 72px)}
+.tbl .empty .em-st{display:block;font-weight:600;color:var(--text-2)}
+.tbl .empty .em-x{display:block;margin-top:2px}
 .tbl td.oneline{max-width:230px;overflow:hidden;text-overflow:ellipsis}
 .tbl td.oneline .sub{display:inline;margin-left:7px}
 .tbl td.hx,.tbl th.hx{max-width:260px;overflow:hidden;text-overflow:ellipsis}
@@ -1267,6 +1287,9 @@ td.n.amb,span.n.amb{color:var(--gold-lt)}
 .cpy:hover:not(:disabled){color:var(--gold-lt);border-color:var(--gold-dk);background:var(--gold-08)}
 .cpy:disabled{opacity:.4;cursor:not-allowed}
 .a-warn{margin-top:6px;font-size:var(--t-micro);color:var(--gold-dk)}
+.addr.ca-row{grid-template-columns:110px minmax(0,1fr) auto auto}
+.addr.ca-row code{color:var(--text)}
+.addr.ca-row .ca-n{grid-column:1 / -1}
 
 .disclaimer{
   margin-top:var(--sp-5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
@@ -1364,6 +1387,12 @@ td.n.amb,span.n.amb{color:var(--gold-lt)}
   .kvt,.kv2{table-layout:fixed;width:100%}
   .kvt td,.kv2 td{word-break:break-all;white-space:normal;padding:10px 14px}
   .kvt td:first-child,.kv2 td:first-child{width:118px}
+  /* 标签是文字，只在词与词之间折行（break-all 会把 "the" 拆成 "th e"）；单个词放不下时才拆词 */
+  .kvt td:first-child,.kv2 td:first-child{word-break:normal;overflow-wrap:break-word}
+  /* 金库读数表：标签和数值各占一半；数值在「数」与单位之间折行，单位（<u>BNB</u>）本身不拆 */
+  .kv2 td:first-child{width:48%}
+  .kv2 td:last-child{word-break:normal;overflow-wrap:anywhere}
+  .kv2 td u{white-space:nowrap}
   .pf{flex-wrap:wrap}
   .pf-r{margin-left:0;white-space:normal}
   .gbar .track{width:78px}
@@ -1397,6 +1426,8 @@ td.n.amb,span.n.amb{color:var(--gold-lt)}
   .fl-box.fee{padding:9px 2px;font-size:10px}
   .fl-box u{font-size:9px}
   .addr{grid-template-columns:86px minmax(0,1fr) auto;gap:8px}
+  .addr.ca-row{grid-template-columns:86px minmax(0,1fr) auto auto}
+  .ph-m.ph-ev{text-align:left;flex-basis:100%}
   .sres a,.sres .sr-none{grid-template-columns:56px minmax(0,1fr)}
   .sres em{display:none}
   .logrow dl{grid-template-columns:86px minmax(0,1fr)}
@@ -1451,7 +1482,7 @@ td.n.amb,span.n.amb{color:var(--gold-lt)}
 }
 
 /* 「这个数字是谁给的」：面板小标上的来源标记。
-   索引器没上线的时候这里写「直读层内 RPC · 索引器未上线」，必须一眼看得见，
+   索引器读不到的时候这里写「直读层内 RPC · 索引器读不到」，必须一眼看得见，
    又不能抢走面板主数据 —— 所以是一枚安静的小徽标，不是彩色警示。 */
 .ph-m[data-src]{
   display:inline-flex;align-items:center;gap:6px;
@@ -1467,7 +1498,7 @@ td.n.amb,span.n.amb{color:var(--gold-lt)}
 /* 直读层内节点 = 数字是真的，只是没有历史：金点。 */
 .ph-m[data-src="layer"]::before,
 .ph-m[data-src="endpoint"]::before{background:var(--gold-dk)}
-/* BSC 侧合约还没部署 / 索引器还没上线：灰点，不点亮。 */
+/* BSC 侧合约还没部署 / 只跟索引器有关的小标：灰点，不点亮。 */
 .ph-m[data-src="bsc"]::before,
 .ph-m[data-src="idx"]::before{background:var(--text-4)}
 

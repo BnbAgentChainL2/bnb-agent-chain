@@ -18,8 +18,9 @@ import {IChainAnchor} from "./interfaces/IChainAnchor.sol";
 /// @dev Why two contracts at all: with the owner powers of decision #29, the UUPS machinery and
 ///      the bilingual revert strings, a single bridge compiles to about 29 KB of runtime code —
 ///      over the 24,576-byte EIP-170 limit. The rarely-called paths (owner withdrawals, watchdog
-///      tools, the halt / escape machinery) therefore live in `BacBridgeExtension`, which the
-///      implementation deploys from its own constructor and reaches by DELEGATECALL. Both inherit
+///      tools, the halt / escape machinery) and the keeper's once-per-epoch `settleEpoch`
+///      therefore live in `BacBridgeExtension`, which the implementation deploys from its own
+///      constructor and reaches by DELEGATECALL. Both inherit
 ///      this contract and nothing else declares storage, so the two can never disagree on a slot.
 abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, ReentrancyGuardUpgradeable, UUPSUpgradeable {
     // ------------------------------------------------------------------ constants
@@ -40,6 +41,12 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
     uint64 public constant ANCHOR_WAIT = 120;
 
     uint64 public constant SETTLE_GRACE = 7 days;
+    /// @notice Per-address speed limit of `collect`: 10% of what the daily release rate lets the
+    ///         whole bucket release in one epoch, i.e. `buybackBac * lastPotBps / (10000 * 144)`.
+    /// @dev    Measured against the RATE, not against the last pot. A pot is clamped to the owed
+    ///         that no pot has reached yet, so it drops to 0 as soon as everything owed has been
+    ///         released — and a cap of "10% of the last pot" would then lock every address out of
+    ///         BAC that is already reserved for it (review finding, 2026-09-23).
     uint16 public constant MAX_EXIT_SHARE_BPS = 1000;
     /// @notice How many epochs of the per-address speed limit one `collect` may claim at once.
     ///         Without it an honest exiter would have to call `collect` 144 times a day to be paid
@@ -87,7 +94,13 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
         bytes4(keccak256("swapExactETHForTokensSupportingFeeOnTransferTokens(uint256,address[],address,uint256)"));
 
     uint256 public constant LAYER_CHAIN_ID = 56777;
-    uint256 public constant ACC_PRECISION = 1e27;
+    /// @notice The release index (`ReleasePoint.p`) restarts at this value and is kept in
+    ///         [RELEASE_FLOOR, RELEASE_ONE] by multiplying it by `RELEASE_RESCALE` (and counting
+    ///         that in `scale`) whenever it falls below the floor. 36 digits of headroom make the
+    ///         rounding of one pot worth far less than 1 wei on any BAC-sized debt.
+    uint256 public constant RELEASE_ONE = 1e45;
+    uint256 public constant RELEASE_FLOOR = 1e36;
+    uint256 public constant RELEASE_RESCALE = 1e9;
     bytes32 public constant EXIT_TYPEHASH = keccak256(
         "Exit(uint256 exitId,uint256 agentId,address to,uint256 credits,uint256 layerChainId,address bridge)"
     );
@@ -161,13 +174,35 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
 
     // ------------------------------------------------------------------ exit-side accounting (BAC)
 
+    /// @dev A point of the release index. Every pot releases the SAME fraction
+    ///      `pot / (owedTotal - reservedTotal)` of every address's still-unreleased owed, so what
+    ///      an address has left unreleased is `unreleased_then * p_now / p_then`:
+    ///        - `p`      the running product of `(1 - that fraction)` over every pot, rescaled;
+    ///        - `scale`  how often `p` was multiplied by `RELEASE_RESCALE` to stay above the floor;
+    ///        - `gen`    how many FULL releases (a pot equal to everything unreleased) there have
+    ///                   been. A full release sets `p` back to `RELEASE_ONE`; a snapshot from an
+    ///                   older generation has nothing unreleased left.
+    ///      This replaced a MasterChef accumulator over the whole `owedTotal`, which kept handing
+    ///      part of every pot to owed that was already released — BAC that `collect` could then
+    ///      never pay, sitting in `reservedTotal` while later exiters were starved (review finding
+    ///      and the B3 invariant failure of 2026-09-23).
+    struct ReleasePoint {
+        uint160 p;
+        uint48 scale;
+        uint48 gen;
+    }
+
     uint256 public owedTotal;
+    /// @notice Released-but-not-yet-collected BAC. `owedTotal - reservedTotal` is the owed that no
+    ///         pot has reached yet, and it is what a pot is shared out over.
     uint256 public reservedTotal;
-    uint256 public accPerOwed;
+    ReleasePoint public releaseIndex;
 
     mapping(address => uint256) public owed;
+    /// @notice Released to `who` and not yet collected, as of `who`'s last harvest. Never above `owed`.
     mapping(address => uint256) public unclaimed;
-    mapping(address => uint256) public owedDebt;
+    /// @notice `releaseIndex` as of `who`'s last harvest.
+    mapping(address => ReleasePoint) public releaseSnap;
     mapping(address => uint64) public lastClaimAt;
     mapping(address => uint64) public lastCollectEpoch;
     mapping(uint256 => bool) public exitClaimed;
@@ -322,13 +357,50 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
         }
     }
 
-    /// @dev Credits everything released since this address's debt basis, then re-bases it.
+    /// @dev What of `who`'s owed no pot has reached yet. At `who`'s last harvest that was exactly
+    ///      `owed - unclaimed` (every path that changes either of them harvests first); every pot
+    ///      since then kept the fraction `p_now / p_then` of it. Rounds DOWN, so an address is
+    ///      never shown less released than it really is by more than 1 wei.
+    function _unreleased(address who) internal view returns (uint256 u) {
+        u = owed[who] - unclaimed[who];
+        if (u == 0) return 0;
+        ReleasePoint memory g = releaseIndex;
+        ReleasePoint memory s = releaseSnap[who];
+        // generation first: a snapshot from before a full release may carry a larger `scale`
+        if (g.gen != s.gen) return 0;
+        uint256 d = g.scale - s.scale;
+        // four rescales shrink the ratio below 1e-27: under 1 wei of any BAC-sized debt
+        if (d > 3) return 0;
+        return (u * g.p) / s.p / (RELEASE_RESCALE ** d);
+    }
+
+    /// @dev Releases `pot` out of `headroom` (= `owedTotal - reservedTotal`, the owed no pot has
+    ///      reached yet, `0 < pot <= headroom`): every address's unreleased part shrinks by the
+    ///      same fraction `pot / headroom`. A pot equal to the headroom is a full release: a new
+    ///      generation, so every older snapshot reads as fully released, and `p` starts over.
+    function _advanceRelease(uint256 pot, uint256 headroom) internal {
+        ReleasePoint memory g = releaseIndex;
+        if (pot == headroom) {
+            g = ReleasePoint(uint160(RELEASE_ONE), 0, g.gen + 1);
+        } else {
+            uint256 p = (uint256(g.p) * (headroom - pot)) / headroom;
+            // p >= RELEASE_FLOOR / headroom, far above 0 for any BAC-sized debt; the guard only
+            // keeps the loop below finite if that were ever false
+            if (p == 0) p = 1;
+            while (p < RELEASE_FLOOR) {
+                p *= RELEASE_RESCALE;
+                ++g.scale;
+            }
+            g.p = uint160(p);
+        }
+        releaseIndex = g;
+    }
+
+    /// @dev Moves everything released since `who`'s last harvest into `unclaimed`, then re-bases.
     function _harvest(address who) internal {
-        uint256 acc = accPerOwed;
-        uint256 scaled = (owed[who] * acc) / ACC_PRECISION;
-        uint256 debt = owedDebt[who];
-        if (scaled > debt) unclaimed[who] += scaled - debt;
-        owedDebt[who] = scaled;
+        uint256 u = owed[who] - unclaimed[who];
+        if (u != 0) unclaimed[who] += u - _unreleased(who);
+        releaseSnap[who] = releaseIndex;
     }
 
     /// @dev Time of the current (or last, expired-but-unsettled) pause that is not yet counted.
@@ -395,13 +467,15 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
 ///         out of `lockedBac`. Owner withdrawals are exempt by design and counted on their own.
 ///
 ///         MONEY MODEL (model A = STOCK of the buyback simulation, artifacts/sim/RESULTS-buyback.md):
-///         BNB arrives from the vault's tax split, is spent on a bounded, permissionless, scheduled
-///         buyback, and the BAC it buys piles up in `buybackBac`. An exit locks a BAC-denominated
-///         share of that stock at claim time (M1) — `lockedBacAmt = credits * free / outstanding`
-///         with `free = buybackBac - owedTotal` — and that debt is paid down through a single
-///         MasterChef-style accumulator (M4). Because the debt and the asset are the same unit,
-///         `owedTotal <= buybackBac` holds by construction: the bridge cannot become insolvent by
-///         a price move. An exit never touches the market, so its price impact is exactly zero.
+///         BNB arrives from `BacTaxRouter`'s tax split, is spent on a bounded, permissionless,
+///         scheduled buyback, and the BAC it buys piles up in `buybackBac`. An exit locks a
+///         BAC-denominated share of that stock at claim time (M1) — `lockedBacAmt = credits *
+///         free / outstanding` with `free = buybackBac - owedTotal` — and that debt is released
+///         through a single O(1) release index (M4, `ReleasePoint`): each pot releases the same
+///         fraction of every address's not-yet-released owed. Because the debt and the asset are
+///         the same unit, `owedTotal <= buybackBac` holds by construction: the bridge cannot
+///         become insolvent by a price move. An exit never touches the market, so its price
+///         impact is exactly zero.
 ///
 ///         HONEST COST (decision #24b): taking BAC out instead of BNB costs roughly 4% more in
 ///         total — the buyback pays ~2% buy tax plus slippage, and an exiter who then wants BNB
@@ -435,6 +509,11 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
 ///         cautionary example, and upgradeability alone would have addressed the stated fear
 ///         better — and chose immediate anyway.
 ///
+///         The power reaches beyond the pool: the code behind this proxy can be anything, so it
+///         can also spend every BAC allowance users have left standing on this address. Hence
+///         the allowance sentence in `description()` and on `lock`: approve exactly the amount,
+///         right before locking, never a standing or unlimited approval.
+///
 ///         Everything the earlier design promised here is withdrawn. These four statements are
 ///         FALSE and must not appear in any contract string, page, document or post:
 ///         「桥池只用于 agent 退出兑付，项目方和 Flap Guardian 都动不了」「进桥的 BAC 永久锁死」
@@ -455,8 +534,9 @@ abstract contract BacBridgeCore is Initializable, Ownable2StepUpgradeable, Reent
 ///         `shortfall()` says how much of that is no longer physically here. The consequences are
 ///         deliberate and every path is written for them: the sweeps return 0 instead of
 ///         underflowing, `buyback` spends only BNB that is actually present and otherwise skips,
-///         and an exit payout fails on its transfer — first come, first served — exactly when the
-///         money it would be paid from is gone. Sending the asset back refills the hole: BAC by
+///         and an exit payout fails — first come, first served — exactly when the money it would
+///         be paid from is gone (`escapeCollect` settles its BAC and BNB legs separately, so a hole
+///         in one asset never strands the other). Sending the asset back refills the hole: BAC by
 ///         plain transfer, BNB by force-send (there is no `receive`, and `acceptRelease` books its
 ///         value as new revenue) or by an upgrade.
 contract BacBridge is BacBridgeCore {
@@ -605,6 +685,7 @@ contract BacBridge is BacBridgeCore {
         router = router_;
         lastSettledEpoch = uint64(block.timestamp / EPOCH);
         lastBuybackEpoch = uint64(block.timestamp / EPOCH);
+        releaseIndex.p = uint160(RELEASE_ONE);
         __ReentrancyGuard_init();
         // Straight to `owner_`: `__Ownable_init` would first make the deployer (or the proxy's
         // creator) owner for one line, which is one more `OwnershipTransferred` for the public
@@ -632,17 +713,31 @@ contract BacBridge is BacBridgeCore {
     ///      Measured by balance difference, so a fee-on-transfer BAC can never over-credit.
     ///
     ///      The FIRST successful lock for an `agentId` makes the caller its `agentController`,
-    ///      the one address that may `escapeCollect` for it after a halt. Later locks — by the
-    ///      identity's `agentWallet`, or by a later buyer of the identity — never overwrite it, and
-    ///      every later deposit adds to the SAME escape claim. A buyer of an identity that has
-    ///      already entered should read `agentController` first, or have the seller hand the claim
-    ///      over with `setAgentController`.
+    ///      the one address that may `escapeCollect` for it after a halt, and from then on only
+    ///      that controller may lock more under the id. Every deposit under an id adds to ONE
+    ///      escape claim, so letting anybody else deposit would hand their money's escape share
+    ///      to the controller: a seller who entered with 1 wei and then sold the identity would
+    ///      collect the buyer's whole deposit after a halt, and an `agentWallet` that locked 1 wei
+    ///      first would capture its owner's (review finding, 2026-09-23). A buyer, or the owner
+    ///      behind an `agentWallet`, therefore has the current controller hand the claim over with
+    ///      `setAgentController` first; the refusal below says so.
+    ///
+    ///      ALLOWANCES: the BAC is pulled with `transferFrom`, so the caller approves this
+    ///      address first. This address is an upgradeable proxy (decision #29), and whatever code
+    ///      the owner puts behind it can spend every allowance still standing on it, BAC that
+    ///      never entered the pool included. Approve exactly `amount`, immediately before `lock`,
+    ///      and set the allowance back to 0 if `lock` fails; `description()` says the same.
     function lock(uint256 agentId, uint256 amount) external nonReentrant returns (uint256 id) {
         require(!isHalted(), unicode"Bridge halted / 桥已停机");
         require(agentId != 0, unicode"Zero agent id / agent 身份编号为零");
         require(
             Erc8004Gate.holds(identityRegistry, msg.sender, agentId),
             unicode"Not the ERC-8004 identity holder / 不是该 ERC-8004 身份的持有人"
+        );
+        address ctrl = agentController[agentId];
+        require(
+            ctrl == address(0) || ctrl == msg.sender,
+            unicode"Another address controls this agent id, see setAgentController / 该身份已由其他地址控制，见 setAgentController"
         );
         address layerWallet = msg.sender;
 
@@ -655,7 +750,7 @@ contract BacBridge is BacBridgeCore {
         lockedBac += measured;
         totalCreditsIssued += credits;
         credited[agentId] += credits;
-        if (agentController[agentId] == address(0)) {
+        if (ctrl == address(0)) {
             agentController[agentId] = msg.sender;
             emit AgentControllerSet(agentId, address(0), msg.sender);
         }
@@ -665,7 +760,7 @@ contract BacBridge is BacBridgeCore {
         emit Locked(id, agentId, msg.sender, layerWallet, measured, credits, totalCreditsIssued);
     }
 
-    /// @notice Permissionless: the vault pushes the bridge half here; anyone may donate.
+    /// @notice Permissionless: `BacTaxRouter` pushes the bridge half here; anyone may donate.
     function acceptRelease() external payable {
         _accept(msg.value);
         emit ReleaseReceived(msg.sender, msg.value, bnbBalance);
@@ -888,11 +983,12 @@ contract BacBridge is BacBridgeCore {
             unicode"Rate too low, exit not worth claiming / 当前兑付率过低，本次退出不值得领取"
         );
 
+        // Harvest first: the new debt joins `to`'s unreleased part at the CURRENT index, so it gets
+        // no share of any pot settled before it existed (B15).
         _harvest(to);
         owed[to] += lockedBacAmt;
         owedTotal += lockedBacAmt;
         epochOwed[anchorEpoch][to] += lockedBacAmt;
-        owedDebt[to] = (owed[to] * accPerOwed) / ACC_PRECISION;
         lastClaimAt[to] = uint64(block.timestamp);
         exitClaimed[exitId] = true;
 
@@ -907,78 +1003,12 @@ contract BacBridge is BacBridgeCore {
         emit ExitClaimed(anchorEpoch, exitId, agentId, to, credits, lockedBacAmt, (free * 1e18) / outstanding, attr);
     }
 
-    /// @notice Permissionless, strictly sequential. Non-FINAL epochs advance the cursor with pot 0.
-    /// @dev The release rate is written PER DAY and divided down to the epoch here. The old
-    ///      per-epoch reading of 200/350/500 bps would be 288%/day at 144 epochs/day and would
-    ///      empty the bucket the same day.
-    function settleEpoch(uint64 epoch) external {
-        require(!isHalted(), unicode"Bridge halted / 桥已停机");
-        require(epoch == lastSettledEpoch + 1, unicode"Settle epochs in order / 纪元必须按序结算");
-
-        IChainAnchor.Anchor memory an = IChainAnchor(anchor).getAnchor(epoch);
-        IChainAnchor.State st = an.state;
-
-        if (st == IChainAnchor.State.VETOED || st == IChainAnchor.State.DISPUTED) {
-            lastSettledEpoch = epoch;
-            skippedEpochs += 1;
-            emit EpochSettled(epoch, 0, owedTotal, 0, true);
-            return;
-        }
-        if (st != IChainAnchor.State.FINAL) {
-            require(
-                block.timestamp >= (uint256(epoch) + 1) * EPOCH + SETTLE_GRACE,
-                unicode"Epoch not resolved yet / 该纪元尚未定案"
-            );
-            lastSettledEpoch = epoch;
-            skippedEpochs += 1;
-            emit EpochSettled(epoch, 0, owedTotal, 0, true);
-            return;
-        }
-
-        uint16 bps = IChainAnchor(anchor).releaseBpsFor(epoch);
-        if (owedTotal == 0) {
-            reservedTotal = 0; // rounding dust can never ratchet (I2)
-            lastSettledEpoch = epoch;
-            emit EpochSettled(epoch, 0, 0, bps, false);
-            return;
-        }
-
-        uint256 pot = ((buybackBac - reservedTotal) * bps) / (10000 * uint256(EPOCHS_PER_DAY));
-        uint256 headroom = owedTotal - reservedTotal;
-        if (pot > headroom) pot = headroom;
-
-        // Zero-witness ceiling: with nobody independently checking `exitRoot`, the loss from a
-        // stolen relayer key must be a number written in the contract (attack-gate #14). The
-        // window is 30 DAY buckets, not 30 epochs — 30 epochs is 5 hours and no ceiling at all.
-        uint64 day = epoch / EPOCHS_PER_DAY;
-        DayPot storage dp = potRing[day % NO_ATTEST_WINDOW];
-        if (dp.day != day) {
-            releasedInWindow -= dp.amount;
-            dp.amount = 0;
-            dp.day = day;
-        }
-        if (an.agreeingCount == 0) {
-            uint256 capLeft = (buybackBac * NO_ATTEST_WINDOW_BPS) / 10000;
-            capLeft = capLeft > releasedInWindow ? capLeft - releasedInWindow : 0;
-            if (pot > capLeft) pot = capLeft;
-        }
-        require(uint256(dp.amount) + pot <= type(uint128).max, unicode"Pot too large / 释放额过大");
-        dp.amount += uint128(pot);
-        releasedInWindow += pot;
-
-        if (pot != 0) accPerOwed += (pot * ACC_PRECISION) / owedTotal;
-        reservedTotal += pot;
-        lastPot = pot;
-        lastPotSettledAt = uint64(block.timestamp);
-        lastPotBps = bps;
-        lastSettledEpoch = epoch;
-        emit EpochSettled(epoch, pot, owedTotal, bps, false);
-    }
-
-    /// @notice Permissionless, once per address per epoch, capped at `lastPot * 10%` for each
-    ///         epoch that has passed since this address last collected (up to 144, i.e. one day).
+    /// @notice Permissionless, once per address per epoch, capped at `MAX_EXIT_SHARE_BPS` (10%) of
+    ///         the release rate's per-epoch amount for each epoch that has passed since this
+    ///         address last collected (up to 144, i.e. one day) — see `_collectCap`.
     /// @dev Pays BAC out of `buybackBac`. `lockedBac` is not readable from here at all.
-    ///      Truncated wei stays in `unclaimed` forever; it is never forfeited. After an owner
+    ///      Truncated wei stays in `unclaimed` and is collectable in a later epoch; it is never
+    ///      forfeited, and the cap never falls to 0 while BAC is reserved. After an owner
     ///      emergency withdrawal (#29) the payout fails when the bought-back BAC it is owed from
     ///      is physically gone — never by dipping into the deposits (`_payExitBac`).
     function collect(address to) external nonReentrant returns (uint256 paid) {
@@ -995,26 +1025,34 @@ contract BacBridge is BacBridgeCore {
         lastCollectEpoch[msg.sender] = e;
 
         _harvest(msg.sender);
-        paid = unclaimed[msg.sender];
-        uint256 cap = (lastPot * MAX_EXIT_SHARE_BPS * span) / 10000;
+        paid = unclaimed[msg.sender]; // never above `owed[msg.sender]`
+        uint256 cap = _collectCap(span);
         if (paid > cap) paid = cap;
-        if (paid > owed[msg.sender]) paid = owed[msg.sender];
-        // Dust guard: `unclaimed` is a difference of two floors, so it can exceed one address's
-        // exact share of `reservedTotal` by up to 1 wei per harvest. Without this clamp that dust
-        // would make `reservedTotal -= paid` underflow and permanently brick `collect` for the
-        // last claimant. The clamped wei stays in `unclaimed`, exactly like cap dust.
+        // Dust guard: `unclaimed` rounds in the address's favour by up to 1 wei per harvest, so
+        // it can exceed its exact share of `reservedTotal` by that much. Without this clamp that
+        // dust would make `reservedTotal -= paid` underflow and permanently brick `collect` for
+        // the last claimant. The clamped wei stays in `unclaimed`, exactly like cap dust.
         if (paid > reservedTotal) paid = reservedTotal;
         require(paid > 0, unicode"Nothing to collect / 没有可领取的金额");
 
+        // `owed - unclaimed` (the unreleased part) does not change, so the snapshot stays valid
         unclaimed[msg.sender] -= paid;
         owed[msg.sender] -= paid;
-        owedDebt[msg.sender] = (owed[msg.sender] * accPerOwed) / ACC_PRECISION;
         owedTotal -= paid;
         reservedTotal -= paid;
         buybackBac -= paid;
 
         emit Collected(msg.sender, to, paid, owed[msg.sender]);
         _payExitBac(to, paid);
+    }
+
+    /// @dev The per-address cap for `span` epochs: 10% of what the last settled daily release
+    ///      rate (`lastPotBps`) lets the whole bucket release in one epoch, times `span`. It never
+    ///      reads the pot itself, which is 0 whenever every owed wei is already released: with a
+    ///      "10% of the last pot" cap the last exiters could never collect what is reserved for
+    ///      them. It is 0 only before the first release, when there is nothing to collect anyway.
+    function _collectCap(uint64 span) internal view returns (uint256) {
+        return (buybackBac * lastPotBps * MAX_EXIT_SHARE_BPS * span) / (1e8 * uint256(EPOCHS_PER_DAY));
     }
 
     // ==================================================================
@@ -1061,20 +1099,23 @@ contract BacBridge is BacBridgeCore {
         return Erc8004Gate.walletOrZero(identityRegistry, agentId);
     }
 
-    /// @notice What `collect` would pay right now, both caps already applied.
-    function pendingCollect(address who) external view returns (uint256) {
-        uint256 scaled = (owed[who] * accPerOwed) / ACC_PRECISION;
-        uint256 debt = owedDebt[who];
-        uint256 amount = unclaimed[who] + (scaled > debt ? scaled - debt : 0);
+    /// @notice What `collect` would pay right now, every clamp already applied.
+    function pendingCollect(address who) external view returns (uint256 amount) {
         uint64 e = uint64(block.timestamp / EPOCH);
         uint64 last = lastCollectEpoch[who];
         if (last >= e) return 0;
         uint64 span = e - last;
         if (span > MAX_CATCHUP_EPOCHS) span = MAX_CATCHUP_EPOCHS;
-        uint256 cap = (lastPot * MAX_EXIT_SHARE_BPS * span) / 10000;
+        amount = owed[who] - _unreleased(who);
+        uint256 cap = _collectCap(span);
         if (amount > cap) amount = cap;
-        if (amount > owed[who]) amount = owed[who];
-        return amount;
+        if (amount > reservedTotal) amount = reservedTotal;
+    }
+
+    /// @notice The part of `who`'s owed that no pot has reached yet. `owed(who)` minus this is
+    ///         what has been released to `who` and not yet collected, before the speed limit.
+    function unreleasedOwed(address who) external view returns (uint256) {
+        return _unreleased(who);
     }
 
     /// @notice 1e18-fixed BAC per credit. A view only — nothing is ever promised.
@@ -1099,15 +1140,20 @@ contract BacBridge is BacBridgeCore {
     /// @notice The bridge's own one-paragraph account of itself. It carries `OWNER_POWER_NOTICE`
     ///         (decision #29a) and `IDENTITY_LIMIT_NOTICE` (decision #31a) word for word, so the
     ///         site and the X copy can be diffed against the chain.
+    /// @dev The allowance sentence is there because the #29a sentence bounds the owner's taking
+    ///      power at the pool, and an upgrade reaches further: new code behind this proxy can spend
+    ///      every BAC allowance a user has left standing on it (review finding, 2026-09-23).
     function description() external pure returns (string memory) {
         return string.concat(
             OWNER_POWER_NOTICE,
             IDENTITY_LIMIT_NOTICE,
             unicode"锁入 BAC 进层，层内得到等量原生币付 gas；出层销毁原生币，按份额领取用税收 BNB 回购的 BAC，"
-            unicode"每日释放有上限，不承诺任何金额，比拿 BNB 多损耗约 4%。第一版出块、中继、索引由项目方中心化运行。 "
+            unicode"每日释放有上限，不承诺任何金额，比拿 BNB 多损耗约 4%。第一版出块、中继、索引由项目方中心化运行。"
+            unicode"只按本次锁入的数量授权 BAC，不要给桥留授权额度：升级后的合约能花掉任何剩余授权。 "
             unicode"Owner can upgrade this contract and withdraw all funds at any time. Entry needs an ERC-8004 agent "
             unicode"identity, which does not prove the holder is an AI. Exits pay bought-back BAC at a capped daily rate; "
-            unicode"no amount is promised. v1 is run centrally by the project."
+            unicode"no amount is promised. v1 is run centrally by the project. Approve only the exact amount you lock: "
+            unicode"an upgraded contract can spend any allowance left on the bridge."
         );
     }
 
@@ -1162,6 +1208,11 @@ contract BacBridge is BacBridgeCore {
     //   `msg.sender` unchanged. Full documentation is on
     //   `BacBridgeExtension`; the one-liners below say who may call.
     // ==================================================================
+
+    /// @notice Permissionless, strictly sequential: settle the next epoch's release.
+    function settleEpoch(uint64 /* epoch */) external {
+        _delegate();
+    }
 
     /// @notice Owner-only. Send BNB out (0 = everything). Books are not written down (#29).
     function emergencyWithdrawBnb(address payable /* to */, uint256 /* amount */) external {
@@ -1245,8 +1296,9 @@ contract BacBridge is BacBridgeCore {
 }
 
 /// @title BacBridgeExtension
-/// @notice The rarely-called half of `BacBridge`: the owner's emergency withdrawals, the agent
-///         controller hand-over, the watchdog's tools and the whole halt / escape machinery.
+/// @notice The rarely-called half of `BacBridge`: the keeper's `settleEpoch`, the owner's
+///         emergency withdrawals, the agent controller hand-over, the watchdog's tools and the
+///         whole halt / escape machinery.
 /// @dev Deployed by the `BacBridge` implementation's constructor and only ever executed by
 ///      DELEGATECALL from it, i.e. in the bridge proxy's storage, with the bridge's balance and
 ///      the original `msg.sender`. Every entry point refuses a direct call (`onlyDelegated`):
@@ -1260,6 +1312,7 @@ contract BacBridgeExtension is BacBridgeCore {
     // live on `BacBridge` so that `BacBridge.EventName` works for every consumer; the copies
     // here only let this code emit them. `BacBridgeUpgradeTest` checks every selector matches.
 
+    event EpochSettled(uint64 indexed epoch, uint256 pot, uint256 owedTotalAfter, uint16 releaseBps, bool skipped);
     event EpochOwedRevoked(uint64 indexed epoch, address indexed by, uint256 revoked);
     event EscapeArmed(address indexed by, uint8 cause, uint64 effectiveAt);
     event EscapeArmCancelled(address indexed by);
@@ -1345,6 +1398,82 @@ contract BacBridgeExtension is BacBridgeCore {
     }
 
     // ==================================================================
+    //                    SETTLEMENT
+    // ==================================================================
+
+    /// @notice Permissionless, strictly sequential. Non-FINAL epochs advance the cursor with pot 0.
+    /// @dev The release rate is written PER DAY and divided down to the epoch here. The old
+    ///      per-epoch reading of 200/350/500 bps would be 288%/day at 144 epochs/day and would
+    ///      empty the bucket the same day. `lastPot` records the pot as released, 0 included
+    ///      (0 whenever every owed wei is already released); `collect`'s speed limit reads the
+    ///      rate `lastPotBps`, never the pot, so a 0 pot cannot lock anyone out of reserved BAC.
+    function settleEpoch(uint64 epoch) external onlyDelegated {
+        require(!isHalted(), unicode"Bridge halted / 桥已停机");
+        require(epoch == lastSettledEpoch + 1, unicode"Settle epochs in order / 纪元必须按序结算");
+
+        IChainAnchor.Anchor memory an = IChainAnchor(anchor).getAnchor(epoch);
+        IChainAnchor.State st = an.state;
+
+        if (st == IChainAnchor.State.VETOED || st == IChainAnchor.State.DISPUTED) {
+            lastSettledEpoch = epoch;
+            skippedEpochs += 1;
+            emit EpochSettled(epoch, 0, owedTotal, 0, true);
+            return;
+        }
+        if (st != IChainAnchor.State.FINAL) {
+            require(
+                block.timestamp >= (uint256(epoch) + 1) * EPOCH + SETTLE_GRACE,
+                unicode"Epoch not resolved yet / 该纪元尚未定案"
+            );
+            lastSettledEpoch = epoch;
+            skippedEpochs += 1;
+            emit EpochSettled(epoch, 0, owedTotal, 0, true);
+            return;
+        }
+
+        uint16 bps = IChainAnchor(anchor).releaseBpsFor(epoch);
+        if (owedTotal == 0) {
+            reservedTotal = 0; // rounding dust can never ratchet (I2)
+            lastSettledEpoch = epoch;
+            emit EpochSettled(epoch, 0, 0, bps, false);
+            return;
+        }
+
+        uint256 pot = ((buybackBac - reservedTotal) * bps) / (10000 * uint256(EPOCHS_PER_DAY));
+        uint256 headroom = owedTotal - reservedTotal;
+        if (pot > headroom) pot = headroom;
+
+        // Zero-witness ceiling: with nobody independently checking `exitRoot`, the loss from a
+        // stolen relayer key must be a number written in the contract (attack-gate #14). The
+        // window is 30 DAY buckets, not 30 epochs — 30 epochs is 5 hours and no ceiling at all.
+        uint64 day = epoch / EPOCHS_PER_DAY;
+        DayPot storage dp = potRing[day % NO_ATTEST_WINDOW];
+        if (dp.day != day) {
+            releasedInWindow -= dp.amount;
+            dp.amount = 0;
+            dp.day = day;
+        }
+        if (an.agreeingCount == 0) {
+            uint256 capLeft = (buybackBac * NO_ATTEST_WINDOW_BPS) / 10000;
+            capLeft = capLeft > releasedInWindow ? capLeft - releasedInWindow : 0;
+            if (pot > capLeft) pot = capLeft;
+        }
+        require(uint256(dp.amount) + pot <= type(uint128).max, unicode"Pot too large / 释放额过大");
+        dp.amount += uint128(pot);
+        releasedInWindow += pot;
+
+        // The pot is shared out over the owed it has NOT reached yet (`headroom`), as one equal
+        // fraction of every address's unreleased part — never over owed already released.
+        if (pot != 0) _advanceRelease(pot, headroom);
+        reservedTotal += pot;
+        lastPot = pot;
+        lastPotSettledAt = uint64(block.timestamp);
+        lastPotBps = bps;
+        lastSettledEpoch = epoch;
+        emit EpochSettled(epoch, pot, owedTotal, bps, false);
+    }
+
+    // ==================================================================
     //                    AGENT CONTROLLER  (decision #31)
     // ==================================================================
 
@@ -1389,6 +1518,8 @@ contract BacBridgeExtension is BacBridgeCore {
             // part of `reservedTotal` that was standing behind the revoked debt can be handed
             // back exactly. Clamping `reservedTotal` to `owedTotal` instead would cut into the
             // backing of OTHER addresses' claims and break B3.
+            // The revoke takes the unreleased part first (it simply leaves the headroom) and only
+            // then the released one, whose reservation is handed back to the bucket.
             _harvest(who);
             owed[who] -= amount;
             owedTotal -= amount;
@@ -1398,11 +1529,10 @@ contract BacBridgeExtension is BacBridgeCore {
                 unclaimed[who] = owed[who];
                 reservedTotal = reservedTotal > drop ? reservedTotal - drop : 0;
             }
-            owedDebt[who] = (owed[who] * accPerOwed) / ACC_PRECISION;
             revoked += amount;
         }
         // Belt and braces: `settleEpoch` computes `owedTotal - reservedTotal` and must never
-        // underflow. After the per-address hand-back above this is already true.
+        // underflow. After the per-address hand-back above this is already true (up to dust).
         if (reservedTotal > owedTotal) reservedTotal = owedTotal;
         emit EpochOwedRevoked(epoch, msg.sender, revoked);
     }
@@ -1510,7 +1640,6 @@ contract BacBridgeExtension is BacBridgeCore {
 
         owed[msg.sender] = 0;
         unclaimed[msg.sender] = 0;
-        owedDebt[msg.sender] = 0;
         owedTotal -= paid;
         buybackBac -= paid;
 
@@ -1531,7 +1660,6 @@ contract BacBridgeExtension is BacBridgeCore {
 
         owed[who] = 0;
         unclaimed[who] = 0;
-        owedDebt[who] = 0;
         owedTotal -= amount;
         if (escapeTotalWeight > 0) accPerWeightBac += (amount * 1e18) / escapeTotalWeight;
         emit OwedDemoted(who, amount);
@@ -1547,8 +1675,12 @@ contract BacBridgeExtension is BacBridgeCore {
     ///      (`setAgentController`). There is no status to be "banned" out of here and no role
     ///      that can block this call.
     ///
-    ///      After an owner emergency withdrawal (#29) this can fail on its transfer: the books
-    ///      still promise the share, the asset is simply not here. First come, first served.
+    ///      After an owner emergency withdrawal (#29) the books still promise the share while the
+    ///      asset may simply not be here. The two legs are therefore settled ONE BY ONE: a leg is
+    ///      paid (and its debt advanced) only if its asset is physically here — BAC only out of
+    ///      what stays above the unburned deposits, BNB only out of the actual balance — and a leg
+    ///      that is not payable keeps its debt untouched, collectable after a refill. A hole in
+    ///      one asset therefore never strands the other. First come, first served per asset.
     function escapeCollect(uint256 agentId, address to)
         external
         onlyDelegated
@@ -1563,6 +1695,9 @@ contract BacBridgeExtension is BacBridgeCore {
         bacPaid = (weight * accPerWeightBac) / 1e18 - escapeDebtBac[agentId];
         bnbPaid = (weight * accPerWeightBnb) / 1e18 - escapeDebtBnb[agentId];
         require(bacPaid > 0 || bnbPaid > 0, unicode"Nothing to collect / 没有可领取的金额");
+        if (IERC20(bacToken).balanceOf(address(this)) < lockedBac - totalBurned + bacPaid) bacPaid = 0;
+        if (address(this).balance < bnbPaid) bnbPaid = 0;
+        require(bacPaid > 0 || bnbPaid > 0, unicode"Bridge short of funds / 桥内资金不足");
 
         if (bacPaid > 0) {
             escapeDebtBac[agentId] += bacPaid;

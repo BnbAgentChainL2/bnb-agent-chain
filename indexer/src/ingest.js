@@ -5,7 +5,7 @@
 //   - 游标每处理完一片就落盘，重启从游标接着跑，且所有写入是 upsert —— 重启不会重复行。
 import { Rpc, getLogsChunked, sleep } from "./rpc.js";
 import { getCursor, setCursor } from "./db.js";
-import { ingestLogs, ingestLayerBlock, markAnchored, anchoredThrough } from "./store.js";
+import { ingestLogs, ingestLayerBlock, markAnchored, anchoredThroughBlock } from "./store.js";
 import { addressBook, bscLogAddresses } from "./config.js";
 import { warn, clearWarning } from "./warnings.js";
 import { LAYER_SYSTEM_ADDRESSES } from "./abi.js";
@@ -50,9 +50,20 @@ export async function bscTick(db, cfg, rpc) {
   }
   clearWarning("bsc_addresses_unset");
 
+  const cur = getCursor(db, "bsc");
+  // 配了合约地址却没配起始块：从 0 块扫 BSC 既没有意义（合约是最近才部署的），公共节点也根本不给这么老的日志
+  // （-32602，见 rpc.js 的 isHistoryUnavailableError）—— 结果是永远卡在第一片上。宁可不摄，也要把原因喊出来。
+  if (cur === null && !(Number(cfg.bscStartBlock) > 0)) {
+    warn(
+      "bsc_start_block_unset",
+      "配置了 BSC 合约地址，但 BAC_BSC_START_BLOCK 是 0：拒绝从第 0 块开始扫。把它设成部署交易所在的块（或略早几块）。"
+    );
+    return null;
+  }
+  clearWarning("bsc_start_block_unset");
+
   const head = await rpc.blockNumber();
   const safeHead = head - cfg.bscConfirmations;
-  const cur = getCursor(db, "bsc");
   const from = cur === null ? cfg.bscStartBlock : cur + 1;
   if (from > safeHead) return cur;
 
@@ -78,8 +89,10 @@ export async function bscTick(db, cfg, rpc) {
       setCursor(db, "bsc", chunkTo);
     },
   });
-  const through = anchoredThrough(db);
-  if (through > 0) markAnchored(db, through);
+  clearWarning("bsc_log_history_unavailable");
+  // 已锚定按块高算：层内块 ≤ 最新 FINAL 锚点的 l2Block（不比纪元号，见 store.js 的 isBlockAnchored）。
+  const through = anchoredThroughBlock(db);
+  if (through !== null) markAnchored(db, through);
   return safeHead;
 }
 

@@ -6,7 +6,8 @@ import { identityOf, IDENTITY_NOTE } from "../identity.js";
 import { renderEvent } from "../render.js";
 import { listWarnings } from "../warnings.js";
 import { root as exitRootOf, leafHash, proof as proofOf, ZERO_ROOT } from "../exit-tree.js";
-import { anchoredThrough } from "../store.js";
+import { anchoredThrough, anchoredThroughBlock } from "../store.js";
+import { epochOf } from "../decode.js";
 import * as B from "./built.js";
 import { classifiedZh } from "../economy/constants.js";
 
@@ -35,16 +36,23 @@ const n = (v) => (v === null || v === undefined ? null : Number(v));
 
 // ===================== §3.1 /api/health =====================
 
-/** reconcile.howToCheck 必须原样返回：任何人用这八条命令就能自己复算 diff（03 §3.1 + 创世分配项）。 */
+/**
+ * reconcile.howToCheck 必须原样返回：任何人照这几条命令就能自己复算每一项（03 §3.1 + 创世分配项 + L2Bridge 计数）。
+ * 第一条指向 /api/genesis —— 索引器实际读的就是这份文件（响应头 X-Genesis-Hash = reconcile.genesisFileHash）。
+ */
 export function howToCheck(cfg) {
   const bridge = (cfg.addresses && cfg.addresses.BacBridge) || "<BacBridge>";
   const rpc = cfg.bscRpc;
   const layerRpc = `${cfg.apiBase}/rpc`;
+  const l2 = LAYER_SYSTEM_ADDRESSES.L2Bridge;
   return [
-    `curl -s ${cfg.apiBase}/genesis.json   # genesisSupply = Σ alloc.balance；genesisAlloc = 其中 L2Bridge（0x…0101）以外的部分`,
+    `curl -s ${cfg.apiBase}/api/genesis   # 索引器用的那份创世文件（X-Genesis-Hash 即 genesisFileHash）；genesisSupply = Σ alloc.balance；bridgeAlloc = L2Bridge（0x…0101）那一项；genesisAlloc = 其余`,
     `cast call ${bridge} "totalCreditsIssued()(uint256)" --rpc-url ${rpc}`,
     `cast call ${bridge} "totalCreditsExited()(uint256)" --rpc-url ${rpc}`,
-    `cast balance ${LAYER_SYSTEM_ADDRESSES.L2Bridge} --rpc-url ${layerRpc}`,
+    `cast balance ${l2} --block <l2Bridge.block> --rpc-url ${layerRpc}`,
+    `cast call ${l2} "totalCredited()(uint256)" --block <l2Bridge.block> --rpc-url ${layerRpc}`,
+    `cast call ${l2} "totalExited()(uint256)" --block <l2Bridge.block> --rpc-url ${layerRpc}`,
+    `cast call ${l2} "totalBurnedFloat()(uint256)" --block <l2Bridge.block> --rpc-url ${layerRpc}`,
     `cast balance ${FEE_SINK} --rpc-url ${layerRpc}`,
     `cast balance ${FEE_SPLITTER} --rpc-url ${layerRpc}`,
     `cast rpc qbft_getValidatorsByBlockNumber latest --rpc-url ${layerRpc}`,
@@ -52,57 +60,204 @@ export function howToCheck(cfg) {
   ];
 }
 
+/**
+ * 公式（2026-09-23 复核后重写）。旧的 diff 只有一行：
+ *   (bscTotalIssued − bscTotalExited + genesisAlloc) − (layerCirculating + FeeSink + FeeSplitter + Σ validator)
+ * 把 layerCirculating = genesisSupply − B(L2Bridge) − FeeSink − FeeSplitter − Σ validator 代进去，FeeSink / FeeSplitter /
+ * 验证者余额两边相消，剩下的是 bscTotalIssued − bscTotalExited − bridgeAlloc + B(L2Bridge) —— 它在正常运行里就不是 0：
+ * 中继 credit() 之后、agent withdrawCredits() 之前（PULL 模式）、层内 exit() 之后、BSC claimExit() 之前、
+ * burnFloat() 之后、以及任何人往 L2Bridge 直接转 1 wei，都会让它变正，而且可以被任何人永久地弄成非 0。
+ * 一个正常运行时也响的告警会被运维关掉，而它是发现中继超发的手段。
+ *
+ * 所以现在按 L2Bridge **自己的计数**拆开（它们都是链上 public 变量，任何人都能读）：
+ *   rawDiff = creditsPendingRelay + exitsPendingClaim + burnedFloat + creditableAndDonations
+ *   creditsPendingRelay    = bscTotalIssued − L2Bridge.totalCredited            BSC 已发行、层内还没入账（中继延迟）
+ *   exitsPendingClaim      = L2Bridge.totalExited − bscTotalExited              层内已销毁、BSC 还没兑付
+ *   burnedFloat            = L2Bridge.totalBurnedFloat                          自愿销毁的浮存
+ *   creditableAndDonations = B(L2Bridge) − (bridgeAlloc − totalCredited + totalExited + totalBurnedFloat)
+ *                                                                               已入账未提走 + 直接转进来的币
+ * 四项在正常运行里都 ≥ 0。告警只看**负的方向**：
+ *   creditsPendingRelay < 0     层内入账超过 BSC 发行 —— 中继超发（reconcile_overmint）；
+ *   exitsPendingClaim < 0       BSC 兑付超过层内销毁 —— 锚点 / 兑付出错（reconcile_overclaim）；
+ *   creditableAndDonations < 0  L2Bridge 余额少于它的计数推出来的 —— 有币离开了 L2Bridge 而计数解释不了，
+ *                               或创世文件与这条链对不上（reconcile_unexplained_outflow）。
+ * diff = 负数项之和（正常是 0），ok = (diff == 0)。有输入读不到、又没有负数项时 diff / ok 是 null（不知道），不是 0 / true。
+ * 已知局限（照实写在 note 里）：直接转进 L2Bridge 的币和未提走的积分合在一项，一笔等额的转入能盖住等额的来历不明流出 ——
+ * 但那要真金白银地转进去；中继超发（creditsPendingRelay）两边都是计数，盖不住。
+ */
 export const RECONCILE_FORMULA =
-  "diff = (bscTotalIssued - bscTotalExited + genesisAlloc) - (layerCirculating + feeSinkBalance + feeSplitterBalance + sum(validatorBalances))";
+  "rawDiff = (bscTotalIssued - bscTotalExited + genesisAlloc) - (layerCirculating + feeSinkBalance + feeSplitterBalance + sum(validatorBalances))" +
+  " = bscTotalIssued - bscTotalExited - bridgeAlloc + l2Bridge.balance" +
+  " = creditsPendingRelay + exitsPendingClaim + burnedFloat + creditableAndDonations;" +
+  " creditsPendingRelay = bscTotalIssued - l2Bridge.totalCredited;" +
+  " exitsPendingClaim = l2Bridge.totalExited - bscTotalExited;" +
+  " burnedFloat = l2Bridge.totalBurnedFloat;" +
+  " creditableAndDonations = l2Bridge.balance - (bridgeAlloc - l2Bridge.totalCredited + l2Bridge.totalExited + l2Bridge.totalBurnedFloat);" +
+  " diff = sum of the negative terms (all four are >= 0 in normal operation); ok = (diff == 0)";
+
+/** 每一项的含义与「变负意味着什么」，原样放进 reconcile.terms。 */
+export const RECONCILE_TERMS = {
+  creditsPendingRelay: {
+    meaning: "BSC 上已经发行、层内还没入账的积分。中继要等 BSC 确认（约 1 分钟）才 credit()，所以锁仓之后短时间内为正是正常的。",
+    ifNegative: "层内入账超过了 BSC 上的发行：中继超发。",
+    warning: "reconcile_overmint",
+  },
+  exitsPendingClaim: {
+    meaning: "层内已经 exit() 销毁、BSC 上还没 claimExit() 兑付的积分。退出的人不来领，它就一直为正。",
+    ifNegative: "BSC 兑付的退出超过了层内销毁的：锚点或兑付出了问题（也可能是索引器接的层内链不是这座桥服务的那条）。",
+    warning: "reconcile_overclaim",
+  },
+  burnedFloat: {
+    meaning: "burnFloat() 自愿销毁回 L2Bridge 的浮存（运营方烧掉用不完的中继浮存）。它不产生退出，永远不能在 BSC 上兑付。",
+    ifNegative: null,
+    warning: null,
+  },
+  creditableAndDonations: {
+    meaning:
+      "已经 credit() 入账、还没被 withdrawCredits() 提走的积分（L2Bridge 是 PULL 模式），加上任何人直接转进 L2Bridge 的币" +
+      "（receive() 谁都能转；演练链上那把公开的 Hardhat 测试私钥也能转）。两者都只会让它变大。",
+    ifNegative: "L2Bridge 的余额比它自己的计数推出来的少：有币离开了 L2Bridge 而计数解释不了，或者创世文件与这条链对不上。",
+    warning: "reconcile_unexplained_outflow",
+  },
+};
+
+/** 负数项 -> 告警键（snapshot.js 用它打 / 清告警）。 */
+export const RECONCILE_TERM_WARNINGS = Object.fromEntries(
+  Object.entries(RECONCILE_TERMS)
+    .filter(([, t]) => t.warning)
+    .map(([k, t]) => [k, t.warning])
+);
 
 export const GENESIS_ALLOC_NOTE =
   "genesisAlloc 是创世文件里预置给 L2Bridge 以外地址的余额：这部分币从来没有经过 BSC 的桥，" +
-  "所以必须单独加进公式，否则 diff 永远等于它的相反数。它由哪些地址组成逐个列在 genesisAllocAccounts 里，" +
-  "任何人拿公开的 genesis.json 都能复核。演练链上它是唯一的预置测试账户（Hardhat 公开测试私钥，币没有任何价值）；" +
-  "正式链上它应当只有中继的运营浮存。";
+  "所以必须单独加进公式，否则 rawDiff 永远等于它的相反数。它由哪些地址组成逐个列在 genesisAllocAccounts 里；" +
+  "genesisSource 是索引器用的那份创世文件的公开下载地址（genesisFileHash 是它的 keccak256，与响应头 X-Genesis-Hash 相同），任何人都能下载复核。" +
+  "演练链上它是唯一的预置测试账户（Hardhat 公开测试私钥，币没有任何价值）；正式链上它应当只有中继的运营浮存。";
+
+export const RECONCILE_NOTE =
+  "rawDiff 在正常运行里就不是 0：锁仓后中继还没入账、入账后 agent 还没提走（PULL 模式）、层内退出后还没在 BSC 领取、" +
+  "运营方 burnFloat()、有人直接往 L2Bridge 转币，都会让它变大。所以它按 L2Bridge 自己的计数拆成 terms 里的四项逐项公开，" +
+  "只有某一项变负（超发 / 超兑 / 来历不明的流出）才算对账不平：diff 是负数项之和，ok = (diff == 0)。" +
+  "直接转进 L2Bridge 的币与未提走的积分合在 creditableAndDonations 一项里，一笔等额的转入能盖住等额的来历不明流出（但要真的转钱进去）；" +
+  "中继超发看的是两边的计数，盖不住。FeeSink / FeeSplitter / 验证者余额在 rawDiff 里两边相消，它们只用来算 layerCirculating。";
+
+const bigOrNull = (v) => (v === null || v === undefined || v === "" ? null : BigInt(v));
 
 /**
- * diff 的公式只有这一个（03 §3.1，加上创世分配项）：
- *   diff = (bscTotalIssued − bscTotalExited + genesisAlloc)
- *        − (layerCirculating + balance(FeeSink) + balance(FeeSplitter) + Σ balance(everValidator))
- * 少掉后面几项它会从第一笔交易 / 第一笔归集起单调发散，那条 5 分钟告警就会被运维关掉，
- * 而那条告警是发现中继超发的唯一手段。
- * 决策 #17 之后：FeeSplitter（0x…0104）必须减；QBFT 下出块者可变，所以单个 signerBalance
- * 已换成 validatorBalances[] 数组，按 everValidator 累积表逐个读。
- * genesisAlloc（2026-09-23）：创世时就不在 L2Bridge 里的余额。不加它，演练链上 diff 恒为 −1e24、
- * 正式链上恒为 −1,000 BAC（中继浮存）—— 这正是线上 ok:false 的原因。它是公开的一项，不是被吸收掉的常量。
+ * 对账块。输入是快照里的 reconcile（字段见 snapshot.js），输出原样进 /api/health.reconcile。
+ * 「合约地址上没有代码」时它的计数按 0 参与计算（合约不存在，不可能发生过入账 / 兑付），
+ * 但发出去的读数仍是 null（什么也没读到），并把「按 0 计」的项逐个列在 structuralZeros 里。
  */
 export function computeReconcile(r) {
-  const issued = BigInt(r.bscTotalIssued ?? "0");
-  const exited = BigInt(r.bscTotalExited ?? "0");
-  const circ = BigInt(r.layerCirculating ?? "0");
-  const sink = BigInt(r.feeSinkBalance ?? "0");
-  const splitter = BigInt(r.feeSplitterBalance ?? "0");
+  const structuralZeros = [];
+  const bscAbsent = r.bscBridgeDeployed === false;
+  const l2 = r.l2Bridge || {};
+  const l2Absent = l2.hasCode === false;
+  if (bscAbsent) structuralZeros.push("bscTotalIssued", "bscTotalExited");
+  if (l2Absent) structuralZeros.push("l2Bridge.totalCredited", "l2Bridge.totalExited", "l2Bridge.totalBurnedFloat");
+
+  const issued = bscAbsent ? 0n : bigOrNull(r.bscTotalIssued);
+  const exited = bscAbsent ? 0n : bigOrNull(r.bscTotalExited);
+  const circ = bigOrNull(r.layerCirculating);
+  const sink = bigOrNull(r.feeSinkBalance);
+  const splitter = bigOrNull(r.feeSplitterBalance);
+  const genSupply = BigInt(r.genesisSupply ?? GENESIS_SUPPLY.toString());
   const genAlloc = BigInt(r.genesisAlloc ?? "0");
+  const bridgeAlloc = r.bridgeAlloc === undefined || r.bridgeAlloc === null ? genSupply - genAlloc : BigInt(r.bridgeAlloc);
   const vals = (r.validatorBalances ?? []).map((v) => ({
     addr: v.addr,
     balance: BigInt(v.balance ?? "0").toString(),
   }));
   const vSum = vals.reduce((a, v) => a + BigInt(v.balance), 0n);
-  const diff = issued - exited + genAlloc - (circ + sink + splitter + vSum);
+
+  const credited = l2Absent ? 0n : bigOrNull(l2.totalCredited);
+  const l2Exited = l2Absent ? 0n : bigOrNull(l2.totalExited);
+  const floatBurned = l2Absent ? 0n : bigOrNull(l2.totalBurnedFloat);
+  const l2Balance = bigOrNull(l2.balance);
+
+  const all = (...xs) => xs.every((x) => x !== null);
+  const rawDiff =
+    all(issued, exited, circ, sink, splitter) ? issued - exited + genAlloc - (circ + sink + splitter + vSum) : null;
+  const termValues = {
+    creditsPendingRelay: all(issued, credited) ? issued - credited : null,
+    exitsPendingClaim: all(l2Exited, exited) ? l2Exited - exited : null,
+    burnedFloat: floatBurned,
+    creditableAndDonations:
+      all(l2Balance, credited, l2Exited, floatBurned) ? l2Balance - (bridgeAlloc - credited + l2Exited + floatBurned) : null,
+  };
+  const values = Object.values(termValues);
+  const negatives = values.filter((v) => v !== null && v < 0n);
+  let diff;
+  let ok;
+  if (negatives.length) {
+    diff = negatives.reduce((a, v) => a + v, 0n);
+    ok = false;
+  } else if (values.some((v) => v === null)) {
+    diff = null;
+    ok = null;
+  } else {
+    diff = 0n;
+    ok = true;
+  }
+  const terms = {};
+  for (const [k, t] of Object.entries(RECONCILE_TERMS)) {
+    const v = termValues[k];
+    terms[k] = {
+      value: v === null ? null : v.toString(),
+      alarm: v !== null && v < 0n,
+      meaning: t.meaning,
+      ifNegative: t.ifNegative,
+    };
+  }
+  const missing = [];
+  if (issued === null) missing.push("bscTotalIssued");
+  if (exited === null) missing.push("bscTotalExited");
+  if (l2Balance === null) missing.push("l2Bridge.balance");
+  if (credited === null) missing.push("l2Bridge.totalCredited");
+  if (l2Exited === null) missing.push("l2Bridge.totalExited");
+  if (floatBurned === null) missing.push("l2Bridge.totalBurnedFloat");
+
+  const str = (v) => (v === null || v === undefined ? null : String(v));
+  const genesisRead = r.genesisSource !== null && r.genesisSource !== undefined;
   return {
-    bscTotalIssued: issued.toString(),
-    bscTotalExited: exited.toString(),
-    layerCirculating: circ.toString(),
-    feeSinkBalance: sink.toString(),
-    feeSplitterBalance: splitter.toString(),
+    bscTotalIssued: bscAbsent ? null : str(r.bscTotalIssued),
+    bscTotalExited: bscAbsent ? null : str(r.bscTotalExited),
+    bscSource: r.bscSource ?? null,
+    layerCirculating: circ === null ? null : circ.toString(),
+    feeSinkBalance: sink === null ? null : sink.toString(),
+    feeSplitterBalance: splitter === null ? null : splitter.toString(),
     validatorBalances: vals,
-    genesisSupply: String(r.genesisSupply ?? GENESIS_SUPPLY.toString()),
+    genesisSupply: genSupply.toString(),
     genesisAlloc: genAlloc.toString(),
+    bridgeAlloc: bridgeAlloc.toString(),
     genesisAllocAccounts: (r.genesisAllocAccounts ?? []).map((x) => ({ addr: x.addr, balance: String(x.balance) })),
+    // 公开的下载地址（${apiBase}/api/genesis），不是服务器上的文件路径（决策 #6：运维细节不公开）
     genesisSource: r.genesisSource ?? null,
+    genesisFileHash: r.genesisFileHash ?? null,
+    l2Bridge: {
+      address: l2.address ?? LAYER_SYSTEM_ADDRESSES.L2Bridge,
+      block: l2.block === undefined || l2.block === null ? null : Number(l2.block),
+      hasCode: l2.hasCode === undefined ? null : l2.hasCode,
+      balance: str(l2.balance),
+      totalCredited: l2Absent ? null : str(l2.totalCredited),
+      totalExited: l2Absent ? null : str(l2.totalExited),
+      totalBurnedFloat: l2Absent ? null : str(l2.totalBurnedFloat),
+    },
+    structuralZeros,
+    missing,
+    rawDiff: rawDiff === null ? null : rawDiff.toString(),
+    terms,
     note:
-      r.genesisSource === null || r.genesisSource === undefined
-        ? GENESIS_ALLOC_NOTE + "（当前读不到创世文件：按设计值 1e27 全在 L2Bridge 计算，genesisAlloc 记 0。）"
-        : GENESIS_ALLOC_NOTE,
+      RECONCILE_NOTE +
+      GENESIS_ALLOC_NOTE +
+      (genesisRead ? "" : "（当前读不到创世文件：按设计值 1e27 全在 L2Bridge 计算，genesisAlloc 记 0。）") +
+      (structuralZeros.length
+        ? `（${structuralZeros.join("、")} 所在的合约地址上没有代码：合约不存在，不可能发生过入账或兑付，这几项按 0 计，读数本身是 null。）`
+        : "") +
+      (missing.length ? `（这一轮没读到：${missing.join("、")}，相关的项是 null。）` : ""),
     formula: RECONCILE_FORMULA,
-    diff: diff.toString(),
-    ok: diff === 0n,
+    diff: diff === null ? null : diff.toString(),
+    ok,
   };
 }
 
@@ -130,8 +285,27 @@ export function layerCirculating({
 // ===================== BSC 侧 v2 的几个块（/api/health）=====================
 // 形状固定：没部署 / 读不到的时候每个字段都在，值是 null —— 不是 0，也不是缺字段。
 
-const OWNER_POWER_NOTICE =
+/** 决策 #29a 逐字定下的那句话。snapshot.js 拿它核对链上的 OWNER_POWER_NOTICE()，不一致就告警。 */
+export const OWNER_POWER_NOTICE =
   "项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。";
+
+/**
+ * BSC 侧的数（treasury 行、桥的账）只在我们的合约部署之后才存在。stage = 'none'（链上没有我们的合约）时
+ * 一律 null / 空：那时库里如果还有 treasury 行，只可能是旧版在合约不存在时写的一串 0（004 已经丢掉，这里再挡一道）。
+ * stage = null（还没跑过快照 / 这一轮读不到 BSC）时照常给库里最后一次读数：v2 只在合约部署之后才写行。
+ */
+function bscMeasured(snapshot) {
+  return !snapshot || snapshot.stage !== "none";
+}
+
+/**
+ * treasury 最新一行。配了 BAC_BSC_START_BLOCK（部署块）时，比它更早的行一律不认 ——
+ * 部署之前不可能有测量值。
+ */
+function latestTreasury(db, cfg) {
+  const start = Number((cfg && cfg.bscStartBlock) || 0);
+  return db.prepare("SELECT * FROM treasury WHERE bsc_block >= ? ORDER BY ts DESC LIMIT 1").get(start) || null;
+}
 
 /** health.bridge：桥代理的全部公开状态，外加 owner 的两项权力（决策 #29 / #29c / #33）。 */
 export function bridgeBlock(cfg, snap = {}) {
@@ -142,6 +316,9 @@ export function bridgeBlock(cfg, snap = {}) {
     address: (cfg.addresses && cfg.addresses.BacBridge) || null,
     deployed,
     proxy: "ERC1967 / UUPS",
+    // 配置的地址是不是真的 ERC1967 代理（实现槽非空）。false = 多半把实现合约地址填成了桥：
+    // 下面的读数一律是 null（实现合约自己的存储是空的，不是桥的真状态），并告警 bridge_not_proxy。
+    isProxy: snap.bsc ? snap.bsc.bridgeIsProxy ?? null : null,
     owner: v("owner"),
     pendingOwner: v("pendingOwner"),
     implementation: v("implementation"),
@@ -155,6 +332,8 @@ export function bridgeBlock(cfg, snap = {}) {
     // 链上 OWNER_POWER_NOTICE 常量的原文（读不到是 null）；expected 是决策 #29a 逐字定下的那句，两者应当一致
     ownerPowerNotice: v("ownerPowerNotice"),
     ownerPowerNoticeExpected: OWNER_POWER_NOTICE,
+    // 链上 description() 原文（桥对自己的一段说明，包含上面那句话；读不到是 null）
+    description: v("description"),
     bacToken: v("bacToken"),
     identityRegistry: v("identityRegistry"),
     // 账（决策 #24：进桥的是 BAC，桥池收的是税收 BNB，退出兑付的是回购来的 BAC）
@@ -281,8 +460,10 @@ export function health(ctx) {
   const now = nowSec();
 
   const body = {
-    schema: "bac/health/1",
-    ok: rec.ok && listWarnings().length === 0,
+    // /2：v2 删掉了 vault 块，加了 stage / token / bridge / router / nodeFund / identityRegistry
+    schema: "bac/health/2",
+    // rec.ok 是 null（有输入没读到）时也不算 ok：没法担保的事不说成没事
+    ok: rec.ok === true && listWarnings().length === 0,
     now,
     layer: {
       chainId: n(layer.chainId) ?? cfg.layerChainId,
@@ -301,7 +482,7 @@ export function health(ctx) {
     },
     relayer: {
       lastPostedEpoch: n(relayer.lastPostedEpoch),
-      currentEpoch: n(relayer.currentEpoch) ?? Math.floor(now / 86400),
+      currentEpoch: n(relayer.currentEpoch) ?? epochOf(now),
       epochLag: n(relayer.epochLag),
       bscCursor: n(relayer.bscCursor),
       bscLagBlocks: n(relayer.bscLagBlocks),
@@ -384,11 +565,13 @@ export function gasBlock(ctx, snap = {}) {
     remitted: remitted.toString(),
     gap: gap.toString(),
     gapBps: received === 0n ? 0 : Number((gap * 10000n) / received),
-    operatorFloatReserve: s(sp.operatorFloatReserve) ?? "0",
-    remitOverdueEpochs: n(sp.remitOverdueEpochs) ?? 0,
-    poolPending: s(sp.poolPending) ?? "0",
-    carryPool: s(sp.carryPool) ?? "0",
-    foundationBalance: s(sp.foundationBalance) ?? "0",
+    // 这五项要读层内 FeeSplitter，而快照还没有读它的代码（snap.splitter 从来没被赋值）：
+    // 照实给 null（「没读」），不给 "0"（「读到了 0」）。
+    operatorFloatReserve: s(sp.operatorFloatReserve),
+    remitOverdueEpochs: n(sp.remitOverdueEpochs),
+    poolPending: s(sp.poolPending),
+    carryPool: s(sp.carryPool),
+    foundationBalance: s(sp.foundationBalance),
     shortfalls: shortfalls.map((r) => ({
       validator: r.validator,
       proposer: r.proposer,
@@ -411,8 +594,12 @@ function cursorOf(db, chain) {
 // ===================== §3.2 /api/summary =====================
 
 export function summary(ctx) {
-  const { db, snapshot = {} } = ctx;
-  const t = latestTreasury(db);
+  const { db, cfg } = ctx;
+  const snapshot = ctx.snapshot || {};
+  // stage = 'none'：链上没有我们的合约，BSC 侧的每一个数都不存在（null），库里残留的行一律不认。
+  const measured = bscMeasured(snapshot);
+  const t = measured ? latestTreasury(db, cfg) : null;
+  const sb = (measured && snapshot.bridge) || {};
   const head = db.prepare("SELECT MAX(number) AS h FROM blocks").get();
   const txTotal = db.prepare("SELECT COUNT(*) AS c FROM txs").get();
   const contractsTotal = db.prepare("SELECT COUNT(*) AS c FROM contracts").get();
@@ -438,7 +625,8 @@ export function summary(ctx) {
   }
 
   const body = {
-    schema: "bac/summary/1",
+    // /2：agents 块没有状态机分档了（challenged / active …），treasury 的 vault* 换成 router*
+    schema: "bac/summary/2",
     layer: {
       head: head && head.h != null ? Number(head.h) : 0,
       blockTimeSec,
@@ -455,36 +643,37 @@ export function summary(ctx) {
       identityMissing: Number(idRead.c || 0) - Number(idRead.live || 0),
       note: IDENTITY_NOTE,
     },
+    // 形状固定：合约没部署 / 没读到时每个字段都在，值是 null —— 不是 "0"。
     treasury: {
       taxFeeRateBps: n((snapshot.treasury || {}).taxFeeRateBps),
-      routerBalance: t ? t.router_balance : null,
-      routerAccounted: t ? t.router_accounted : null,
-      lifetimeToBridge: t ? t.lifetime_to_bridge : null,
-      lifetimeToNodeFund: t ? t.lifetime_to_node : null,
-      poolBalance: t ? t.pool_balance : null,
-      nodeFundBalance: t ? t.node_fund_balance : null,
-      nodeFundWithdrawn: t ? t.node_fund_withdrawn : null,
+      routerBalance: t ? s(t.router_balance) : null,
+      routerAccounted: t ? s(t.router_accounted) : null,
+      lifetimeToBridge: t ? s(t.lifetime_to_bridge) : null,
+      lifetimeToNodeFund: t ? s(t.lifetime_to_node) : null,
+      poolBalance: t ? s(t.pool_balance) : null,
+      nodeFundBalance: t ? s(t.node_fund_balance) : null,
+      nodeFundWithdrawn: t ? s(t.node_fund_withdrawn) : null,
     },
     bridge: {
-      totalLocked: t ? t.total_locked : null,
-      totalIssued: t ? t.total_issued : null,
-      totalExited: t ? t.total_exited : null,
+      totalLocked: t ? s(t.total_locked) : null,
+      totalIssued: t ? s(t.total_issued) : null,
+      totalExited: t ? s(t.total_exited) : null,
       buybackBac: t ? s(t.buyback_bac) : null,
       owedTotal: t ? s(t.owed_total) : null,
       emergencyBnbWithdrawn: t ? s(t.emergency_bnb_withdrawn) : null,
       emergencyBacWithdrawn: t ? s(t.emergency_bac_withdrawn) : null,
-      lastSettledEpoch: n((snapshot.bridge || {}).lastSettledEpoch),
-      currentReleaseBps: n((snapshot.bridge || {}).currentReleaseBps),
-      paused: (snapshot.bridge || {}).paused ?? null,
-      halted: (snapshot.bridge || {}).halted ?? null,
+      lastSettledEpoch: n(sb.lastSettledEpoch),
+      currentReleaseBps: n(sb.currentReleaseBps),
+      paused: sb.paused ?? null,
+      halted: sb.halted ?? null,
     },
     stage: snapshot.stage ?? null,
     validators: {
       nodes: validatorRows(db).length,
       totalStaked: validatorRows(db).reduce((a, v) => a + BigInt(v.staked || "0"), 0n).toString(),
-      rewardBalance: t ? t.reward_balance : null,
-      lifetimeFunded: t ? t.reward_funded : null,
-      lifetimePaid: t ? t.reward_paid : null,
+      rewardBalance: t ? s(t.reward_balance) : null,
+      lifetimeFunded: t ? s(t.reward_funded) : null,
+      lifetimePaid: t ? s(t.reward_paid) : null,
     },
     // 决策 #17：层内 BAC 的 gas 费分账。**与上面的 treasury（BSC 上的 BNB 税收）单位不同、链不同、
     // 分法不同，网站上绝不允许相加成一个「总收入」**（03 §3.2 明令禁止）。
@@ -493,7 +682,8 @@ export function summary(ctx) {
     // 和 treasury / gasFees 一样，不得与任何 BAC / BNB 金额合并成一个「总量」。
     built: B.builtSummary(ctx),
     epoch: {
-      current: Math.floor(nowSec() / 86400),
+      // 与 lastPosted / lastFinal 同一个单位：600 秒的结算纪元（决策 #20）
+      current: epochOf(nowSec()),
       lastPosted,
       lastFinal: epFinal && epFinal.e != null ? Number(epFinal.e) : null,
       state: lastState ? lastState.state : "NONE",
@@ -531,14 +721,11 @@ export function gasFeesSummary(db, t) {
     lifetimeToPool: sum("pool_accrued").toString(),
     lifetimePoolClaimed: sum("pool_claimed").toString(),
     lifetimeToFoundation: sum("foundation_accrued").toString(),
-    foundationWithdrawn: t ? s(t.lifetime_foundation_withdrawn) ?? "0" : "0",
-    carryPool: t ? s(t.splitter_pool_pending) ?? "0" : "0",
+    // FeeSplitter 的这两列还没有任何代码去读（treasury 里一直是 NULL）：照实给 null
+    foundationWithdrawn: t ? s(t.lifetime_foundation_withdrawn) : null,
+    carryPool: t ? s(t.splitter_pool_pending) : null,
     proposers: { official: byOfficial[1] || 0, validators: byOfficial[0] || 0 },
   };
-}
-
-function latestTreasury(db) {
-  return db.prepare("SELECT * FROM treasury ORDER BY ts DESC LIMIT 1").get() || null;
 }
 
 // ===================== §3.3 /api/feed =====================
@@ -595,7 +782,10 @@ export function feed(ctx, q = {}) {
         epoch: n(r.epoch),
       })),
       head: headRow && headRow.h != null ? Number(headRow.h) : 0,
+      // 最新 FINAL 锚点的纪元号（600 秒纪元）与它承诺到的层内块高。
+      // 条目的 anchored 按块高判断：block ≤ anchoredThroughBlock 才是 true（还没有 FINAL 锚点时是 null）。
       anchoredThrough: anchoredThrough(db),
+      anchoredThroughBlock: anchoredThroughBlock(db),
       updatedAt: nowSec(),
     },
   };
@@ -607,9 +797,11 @@ const AGENT_SORTS = {
   newest: "agent_id DESC",
   actions: "announces DESC, agent_id DESC",
   deploys: "deploys DESC, agent_id DESC",
-  // credited 是旧名字，与 locked 同义（都按锁入的积分排）
-  locked: "CAST(credited AS INTEGER) DESC, agent_id DESC",
-  credited: "CAST(credited AS INTEGER) DESC, agent_id DESC",
+  // credited 是旧名字，与 locked 同义（都按锁入的积分排）。
+  // credited 是规范的十进制 wei 字符串（BigInt.toString，没有前导 0）：先按位数、再按字典序，就是按数值排。
+  // 不许 CAST(... AS INTEGER)：SQLite 在 INT64_MAX（约 9.22 BAC 的 wei）处饱和，超过的全部并列，名次就乱了。
+  locked: "length(credited) DESC, credited DESC, agent_id DESC",
+  credited: "length(credited) DESC, credited DESC, agent_id DESC",
   // 决策 #19（§7.7）：按「发了多少币」「做了多少笔成交」排。
   // 这两个数不在 agents 表里，所以用子查询排 —— agents 表的列一个字都不动。
   tokens:
@@ -719,7 +911,9 @@ export function agent(ctx, id) {
       claimedTx: s(e.claimed_tx),
       // v2（决策 #24）：claimExit 锁定的是回购来的 BAC，不是 BNB。单位 BAC 的 wei。
       lockedBac: s(e.locked_wei),
-      collectedBac: e.collected_wei,
+      // 按退出单领了多少：Collected 事件只带 (who, to, amount, owedLeft)，没有 exitId，
+      // 索引器没法把一笔领取归到某一笔退出上（collected_wei 从来没人写）。照实给 null，不给 "0"。
+      collectedBac: null,
     }));
   const contracts = db
     .prepare("SELECT * FROM contracts WHERE agent_id = ? ORDER BY block DESC")
@@ -1112,33 +1306,61 @@ export function epochProof(ctx, num, exitIdRaw) {
 
 /**
  * 决策 #24：退出兑付的是桥用 BNB 回购来的 BAC，所以汇率是「每 1 积分约多少 BAC」，不是 BNB。
- * 与 BacBridge.currentRate() 同一个口径：(buybackBac − owedTotal) × 1e18 / (issued − exited)。
- * 能读到链上 currentRate() 就用链上的；否则按同一公式用 treasury 最新一行现算。
+ * 与 BacBridge.currentRate() 同一个口径：(buybackBac − owedTotal) × 1e18 / (issued − exited)，outstanding 为 0 时是 0。
+ * 能读到链上 currentRate() 就用链上的；否则按同一公式现算 —— 四个输入必须来自同一次读数
+ * （本轮快照读到的桥，或 treasury 最新一行），缺一个就不算。
+ * 合约没部署（stage = 'none'）、或者既没有链上值也没有部署后的读数：一律 null，不给 "0"。
  */
 export function rate(ctx) {
-  const { db, snapshot = {} } = ctx;
-  const t = latestTreasury(db);
-  const br = snapshot.bridge || {};
-  const buyback = BigInt((t && t.buyback_bac) || br.buybackBac || "0");
-  const owed = BigInt((t && t.owed_total) || br.owedTotal || "0");
-  const issued = BigInt((t && t.total_issued) || "0");
-  const exited = BigInt((t && t.total_exited) || "0");
-  const outstanding = issued > exited ? issued - exited : 0n;
-  const free = buyback > owed ? buyback - owed : 0n;
-  const computed = outstanding > 0n ? ((free * 10n ** 18n) / outstanding).toString() : "0";
-  const onChain = br.currentRate ?? null;
-  const lastPot = db.prepare("SELECT pot FROM epochs WHERE pot IS NOT NULL ORDER BY epoch DESC LIMIT 1").get();
+  const { db, cfg } = ctx;
+  const snapshot = ctx.snapshot || {};
+  const measured = bscMeasured(snapshot);
+  const t = measured ? latestTreasury(db, cfg) : null;
+  const br = (measured && snapshot.bridge) || {};
+  const live = (measured && snapshot.bsc && snapshot.bsc.bridge) || {};
+  const has = (...xs) => xs.every((x) => x !== null && x !== undefined);
+
+  let basis = null;
+  if (has(live.buybackBac, live.owedTotal, live.totalCreditsIssued, live.totalCreditsExited)) {
+    basis = { buyback: live.buybackBac, owed: live.owedTotal, issued: live.totalCreditsIssued, exited: live.totalCreditsExited, from: "本轮快照读到的桥" };
+  } else if (t && has(t.buyback_bac, t.owed_total, t.total_issued, t.total_exited)) {
+    basis = { buyback: t.buyback_bac, owed: t.owed_total, issued: t.total_issued, exited: t.total_exited, from: "treasury 最新一行" };
+  }
+  let buyback = null;
+  let owed = null;
+  let outstanding = null;
+  let computed = null;
+  if (basis) {
+    const bb = BigInt(basis.buyback);
+    const ow = BigInt(basis.owed);
+    const is = BigInt(basis.issued);
+    const ex = BigInt(basis.exited);
+    const out = is > ex ? is - ex : 0n;
+    const free = bb > ow ? bb - ow : 0n;
+    buyback = bb.toString();
+    owed = ow.toString();
+    outstanding = out.toString();
+    computed = out > 0n ? ((free * 10n ** 18n) / out).toString() : "0";
+  }
+  const onChain = s(br.currentRate);
+  const potRow = db.prepare("SELECT pot FROM epochs WHERE pot IS NOT NULL ORDER BY epoch DESC LIMIT 1").get();
+  const lastPot = measured ? s(live.lastPot) ?? (potRow ? s(potRow.pot) : null) : null;
   return {
     status: 200,
     body: {
       schema: "bac/rate/2",
       unit: "BAC",
       bacPerCredit: onChain ?? computed,
-      source: onChain !== null ? "BacBridge.currentRate()" : "treasury 最新一行按 currentRate() 的公式现算",
-      buybackBac: buyback.toString(),
-      owedTotal: owed.toString(),
-      creditsOutstanding: outstanding.toString(),
-      lastPot: lastPot ? lastPot.pot : "0",
+      source:
+        onChain !== null
+          ? "BacBridge.currentRate()"
+          : computed !== null
+            ? `${basis.from}按 currentRate() 的公式现算`
+            : null,
+      buybackBac: buyback,
+      owedTotal: owed,
+      creditsOutstanding: outstanding,
+      lastPot,
       note: "估算 · 不承诺任何金额 · 兑付的是回购来的 BAC，比直接拿 BNB 多损耗约 4%",
     },
   };
@@ -1222,16 +1444,17 @@ export function validatorRows(db) {
 }
 
 export function validators(ctx) {
-  const { db } = ctx;
+  const { db, cfg } = ctx;
   const items = validatorRows(db);
-  const t = latestTreasury(db);
+  const t = bscMeasured(ctx.snapshot) ? latestTreasury(db, cfg) : null;
   return {
     status: 200,
     body: {
       schema: "bac/validators/1",
       items,
       totalStaked: items.reduce((a, v) => a + BigInt(v.staked || "0"), 0n).toString(),
-      rewardBalance: t ? t.reward_balance : "0",
+      // ValidatorStaking.rewardBalance()；没部署 / 没读到是 null，不是 "0"
+      rewardBalance: t ? s(t.reward_balance) : null,
     },
   };
 }
@@ -1239,44 +1462,50 @@ export function validators(ctx) {
 // ===================== /api/treasury =====================
 
 export function treasury(ctx, q = {}) {
-  const { db } = ctx;
+  const { db, cfg } = ctx;
   const from = intParam(q.from, 0, { name: "from" });
   const to = intParam(q.to, 9999999999, { name: "to" });
   if (to < from) throw badRequest("to 不能小于 from");
-  const rows = db
-    .prepare("SELECT * FROM treasury WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 2000")
-    .all(from, to);
+  // stage = 'none'：链上没有我们的合约，不可能有任何测量值 —— 空数组，不把残留行当读数发出去。
+  // 配了 BAC_BSC_START_BLOCK 时，比部署块更早的行一律不认。
+  const start = Number((cfg && cfg.bscStartBlock) || 0);
+  const rows = bscMeasured(ctx.snapshot)
+    ? db
+        .prepare("SELECT * FROM treasury WHERE ts >= ? AND ts <= ? AND bsc_block >= ? ORDER BY ts DESC LIMIT 2000")
+        .all(from, to, start)
+    : [];
   return {
     status: 200,
     body: {
-      schema: "bac/treasury/1",
+      // /2：vault* 换成 router*，加了桥 v2 的几列；某一轮没读到的值是 null（004 起列可空），不是 "0"
+      schema: "bac/treasury/2",
       items: rows.map((r) => ({
         ts: Number(r.ts),
         bscBlock: Number(r.bsc_block),
-        routerBalance: r.router_balance,
-        routerAccounted: r.router_accounted,
-        routerUnsplit: r.router_unsplit,
-        routerStuckBridge: r.router_stuck_bridge,
-        routerStuckNodeFund: r.router_stuck_node,
-        lifetimeToBridge: r.lifetime_to_bridge,
-        lifetimeToNode: r.lifetime_to_node,
+        routerBalance: s(r.router_balance),
+        routerAccounted: s(r.router_accounted),
+        routerUnsplit: s(r.router_unsplit),
+        routerStuckBridge: s(r.router_stuck_bridge),
+        routerStuckNodeFund: s(r.router_stuck_node),
+        lifetimeToBridge: s(r.lifetime_to_bridge),
+        lifetimeToNode: s(r.lifetime_to_node),
         // 004 起：BacBridge.bnbBalance()（账上为回购留着的税收 BNB）；bridgeBnbHeld 是合约地址上实际的 BNB
-        poolBalance: r.pool_balance,
-        bridgeBnbHeld: r.bridge_bnb_held,
-        buybackBac: r.buyback_bac,
-        owedTotal: r.owed_total,
-        emergencyBnbWithdrawn: r.emergency_bnb_withdrawn,
-        emergencyBacWithdrawn: r.emergency_bac_withdrawn,
-        nodeFundBalance: r.node_fund_balance,
-        nodeFundWithdrawn: r.node_fund_withdrawn,
-        totalLocked: r.total_locked,
-        totalIssued: r.total_issued,
-        totalExited: r.total_exited,
-        rewardBalance: r.reward_balance,
-        rewardFunded: r.reward_funded,
-        rewardPaid: r.reward_paid,
+        poolBalance: s(r.pool_balance),
+        bridgeBnbHeld: s(r.bridge_bnb_held),
+        buybackBac: s(r.buyback_bac),
+        owedTotal: s(r.owed_total),
+        emergencyBnbWithdrawn: s(r.emergency_bnb_withdrawn),
+        emergencyBacWithdrawn: s(r.emergency_bac_withdrawn),
+        nodeFundBalance: s(r.node_fund_balance),
+        nodeFundWithdrawn: s(r.node_fund_withdrawn),
+        totalLocked: s(r.total_locked),
+        totalIssued: s(r.total_issued),
+        totalExited: s(r.total_exited),
+        rewardBalance: s(r.reward_balance),
+        rewardFunded: s(r.reward_funded),
+        rewardPaid: s(r.reward_paid),
         // 发射前没法核对：null，不是 false
-        marketAddressOk: Number(r.market_checked) === 1 ? !!r.market_address_ok : null,
+        marketAddressOk: Number(r.market_checked) === 1 && r.market_address_ok !== null ? Number(r.market_address_ok) === 1 : null,
       })),
     },
   };
@@ -1355,7 +1584,10 @@ export function bridgeTimeline(ctx, q = {}) {
         emergencyBnb: sum(ew.filter(isBnb)),
         emergencyBac: sum(ew.filter(isBac)),
         emergencyOtherTokens: ew.filter((a) => !isBnb(a) && !isBac(a)).length,
-        ownerChanges: all("BacBridge", "OwnershipTransferred").length,
+        // initialize() 里 OZ 发的 OwnershipTransferred(0x0 → owner) 是「第一次设 owner」，不是变更：
+        // 新部署的桥这里必须是 0。那一条照样在 items 里。
+        ownerChanges: all("BacBridge", "OwnershipTransferred").filter((a) => !/^0x0{40}$/i.test(String(a.previousOwner)))
+          .length,
         nodeFundWithdrawals: nfw.length,
         nodeFundWithdrawn: sum(nfw),
       },
@@ -1380,9 +1612,10 @@ const FEE_RULES_NOTE =
 
 /** GET /api/fees —— 全局的「已收 / 已转入 / 差额」三联 + 分账合约的存量。 */
 export function fees(ctx) {
-  const { db, cfg, snapshot = {} } = ctx;
+  const { db, cfg } = ctx;
+  const snapshot = ctx.snapshot || {};
   const g = gasBlock(ctx, snapshot);
-  const t = latestTreasury(db);
+  const t = latestTreasury(db, cfg);
   const sum = gasFeesSummary(db, t);
   const sp = snapshot.splitter || {};
   return {
@@ -1407,13 +1640,15 @@ export function fees(ctx) {
       },
       splitter: {
         address: FEE_SPLITTER,
-        balance: s((snapshot.reconcile || {}).feeSplitterBalance) ?? "0",
+        // 层内 FeeSplitter 地址上的余额（快照读到的）；还没有快照时是 null
+        balance: s((snapshot.reconcile || {}).feeSplitterBalance),
         poolPending: g.poolPending,
         carryPool: g.carryPool,
         foundationBalance: g.foundationBalance,
         foundationPayout: s(sp.foundationPayout),
-        lifetimeOfficialGross: t ? s(t.lifetime_official_gross) ?? "0" : "0",
-        lifetimeValidatorRemitted: t ? s(t.lifetime_validator_remitted) ?? "0" : "0",
+        // 这两列要读 FeeSplitter，还没有代码写它们：照实给 null
+        lifetimeOfficialGross: t ? s(t.lifetime_official_gross) : null,
+        lifetimeValidatorRemitted: t ? s(t.lifetime_validator_remitted) : null,
         lifetimePool: sum.lifetimeToPool,
         lifetimePoolClaimed: sum.lifetimePoolClaimed,
         lifetimeFoundationAccrued: sum.lifetimeToFoundation,

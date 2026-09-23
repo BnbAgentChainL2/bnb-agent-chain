@@ -24,27 +24,40 @@
 document.addEventListener('visibilitychange', function () { BAC.setHidden(document.hidden); });
 ```
 
-## 两个开关，两半数据（**最容易搞错的一条**）
+## BSC 侧三阶段 + 层内开关（**最容易搞错的一条**）
+
+v2（决策 #29 / #30 / #31 / #35）：没有 factory / vault / registry / vaultPortal 了。地址簿是
+`token / router / bridge / nodeFund / anchor / staking`（`router` = BacTaxRouter，`bridge` = BacBridge 的 **ERC1967 代理**地址）。
+旧配置（有 `vault` 没 `router`）照样能加载：`vault` 顶上 `router`，`factory` / `registry` / `guardian` / `vaultPortal`
+只记进 `CFG.legacyKeys`，不参与任何判断。
+
+代币地址已锁定（#35）但发射前**地址上没有代码**；BSC 合约会**先于**代币部署。所以 BSC 侧有三个阶段，
+全部由 `bac-chain.js` 的 `eth_getCode` 探针决定（结果缓存、只从 false 翻到 true；没翻完之前每 `codeProbeMs`
+= 2 分钟复探一次 → **发射当天不用改配置、不用重新部署网站**，开着的页面自己翻过来）：
 
 ```
-BAC.LIVE        = isAddr(cfg.vault)   // BSC 上的代币发射了没有
-BAC.LAYER_LIVE  = 层内那条链的 RPC 现在答不答话
+BAC.STAGE = 'none'      (a) 什么都没部署（配置里只有代币地址，或全是 0x0）
+          = 'deployed'  (b) router + bridge 有代码，代币没发射
+          = 'launched'  (c) 代币地址上有代码
+BAC.CONTRACTS_CONFIGURED  配置里 router + bridge 都填了（同步，加载时就定）
+BAC.CONTRACTS_LIVE        router + bridge 地址上都有代码
+BAC.TOKEN_LIVE            代币地址上有代码
+BAC.LIVE                  兼容别名 = CONTRACTS_LIVE || TOKEN_LIVE（探针回来之前 = CONTRACTS_CONFIGURED）
+BAC.LAYER_LIVE            层内那条链的 RPC 现在答不答话（和上面几个完全独立）
 ```
 
-**这两个开关完全独立，谁也不许管谁。**
-
-- `BAC.LIVE` 只挡 **BSC 侧**：金库 / 桥 / 验证者质押 / 纪元锚点 / agent 注册表。
-  这些合约现在**真的还不存在**，所以它们显示「发射后公布」是对的。
-- 层内那条链**现在就在出块**（Besu QBFT，3 秒一块，chainId 56777）。
-  它的块高、区块、交易、gasLimit、baseFee **不许经过 `BAC.LIVE`**，
-  否则页面会把真实存在的链上数据写成「发射后公布」—— 这是骗人。
-  层内那一半走 `bac-view.js` 里的 `layerStatus()`，只看「读到没有」。
+- 阶段 (b) 里合约自己的状态（0 余额、owner、升级 0 次、空时间线、0 个 agent）**是真的**，要照实显示，
+  不许写「发射后公布」；只有价格 / 税率 / 内盘进度 / 待分发税 / 桥里的 BAC 这些**真的还不存在**的数才是 `'pre'`。
+- 视图里两个状态函数：`contractStatus()`（合约那一半）和 `tokenStatus()`（代币那一半）。
+  `statusOf()` 保留为 `contractStatus()` 的旧名。
+- 层内的块高、区块、交易、gasLimit、baseFee **不许经过这几个开关**，走 `layerStatus()`，只看「读到没有」。
 
 | 这一半 | 首选来源 | 退路 | 都挂了会怎样 |
 |---|---|---|---|
-| 金库 50/50、桥、验证者质押、纪元锚点、agent 计数 | **BSC 公共 RPC 直接读合约**（`bac-chain.js`） | 换一个公共 RPC | 整段显示「读取失败 · 重试中」 |
+| 税收路由 50/50、桥（含 owner 权力计数器）、验证者质押、纪元锚点、agent 名录（`deposits()` + ERC-8004） | **BSC 公共 RPC 直接读合约**（`bac-chain.js`，eth_call 走 `rpcs`，bsc-dataseed 在前） | 换一个公共 RPC | 整段显示「读取失败 · 重试中」 |
+| owner 权力 / 税收流向 / 节点基金时间线 | **BSC 日志**（`logRpcs` = publicnode，只给最近约 6000 块）+ owner / 节点基金那两条再合并**索引器** `GET /api/bridge/timeline`（从部署块起的全量历史） | 索引器读不到：只剩日志窗口（更早的去 BscScan 事件页） | 时间线 `'error'`，**上面那些读数照常** |
 | **层内块高 / 区块 / 交易** | 索引器（有历史与聚合） | **`bac-layer.js` 直接打层内 JSON-RPC** | 三段各自 `status='error'`，显示「读取失败 · 重试中」，数字保持 `null` |
-| agent 名录 / 实时动态 / 纪元历史 / 兑付率 / 搜索 | **索引器 HTTP API**（`bac-api.js`，`docs/03-INTERFACES.md` §3） | 没有退路（RPC 给不出这些） | 显示「读取失败 · 重试中」，**BSC 那半照常刷新** |
+| 实时动态 / 纪元历史 / 兑付率 / 搜索 / agent 的层内数据 | **索引器 HTTP API**（`bac-api.js`，`docs/03-INTERFACES.md` §3） | 没有退路（RPC 给不出这些） | 显示「读取失败 · 重试中」，**BSC 那半照常刷新** |
 
 每一段都带一个 `source`：`'indexer'`（有历史与聚合）| `'rpc'`（本站直接读层内节点）| `null`（都读不到）。
 绑定层要如实显示这个来源，`state.layer.endpoint` 是现在实际在用的那个地址。
@@ -118,7 +131,9 @@ CFG.indexerBase  → CFG.fallbackApi      （bac-api.js）
 ## 必须逐字的文案
 
 ```
-BAC.TEXT.PRE           = '发射后公布'                    // 发射前
+BAC.TEXT.PRE           = '发射后公布'                    // 这个数还不存在（合约没部署 / 代币没发射）
+BAC.TEXT.OWNER_POWER   = '项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。'   // 决策 #29a
+BAC.TEXT.IDENTITY_LIMIT= '我们要求持有 agent 身份，我们不能证明它是 AI。'                      // 决策 #31a
 BAC.TEXT.ERR           = '读取失败 · 重试中'              // 读取失败
 BAC.TEXT.NOT_ANCHORED  = '未锚定 · 仅来自官方节点'        // feed 里 anchored === false 的条目
 BAC.TEXT.NO_INDEXER    = '索引器读不到：层内数据暂时不可用，BSC 侧数字仍然是实时的'
@@ -132,28 +147,104 @@ BAC.TEXT.RPC_DIRECT    = '索引器读不到：区块与交易改由本站直接
 **永远不显示演示值。** `null` = 不知道，绑定层不许把它当 0 渲染。
 金额一律是 `BigInt`（wei），只经 `BAC.fmt.*` 格式化；时间一律是秒，显示一律转北京时间（`BAC.fmt.beijing`）。
 
+### 合约里的占位值（阶段 b 最容易被当成真数显示）
+
+合约刚部署时有几处**不是 0 就是占位**的值，数据层一律翻成 `null`（「还没有过」），不交给页面当真数：
+
+| 读数 | 合约里的初值 | 视图里 |
+|---|---|---|
+| `ChainAnchor.lastPostedEpoch` | 构造函数写 `firstEpoch − 1`（让第一个锚点能过「纪元连续」检查） | `< firstEpoch` → `null`；`firstEpoch` 没读到时只有那个纪元的锚点记录 `postedAt > 0` 才信；那个空锚点不去读 |
+| `ChainAnchor.lastFinalEpoch` / `lastFinalAt` | `0` / **部署时间**（停机计时的起点） | 没有定案过 → 两个都是 `null`；部署时间另放 `epoch().haltClockFrom` |
+| `BacBridge.lastUpgradeAt` / `lastEmergencyAt` | `0` | 次数是 0（或时间是 0）→ `null`，不许显示成 1970-01-01 |
+| `isPaused().until_` / `escapeArmedAt` / `lastEpochRelease().settledAt` | `0` | `null`；`settledAt` 是 0 时 `lastPot` / `lastPotBps` 也一起 `null`（从来没释放过） |
+| `currentRate()` | `creditsOutstanding = 0` 时直接 `return 0` | `bacPerCredit` / `weiPerCredit` = `null`（没有汇率，不是「每积分 0 BAC」） |
+
+`pausedCumulativeSec`、升级 / 提取**次数**、余额这些 0 是**真的 0**，照实显示。
+（`BacBridge.lastSettledEpoch` 初值是部署纪元：它是「结算游标」，语义上就是「之前的纪元都不用结算了」，原样给出。）
+
+### 读不到 / 读不全时的硬规矩
+
+- **接线参数逐条累积**（`state.bsc.params`）：某一条这一轮没读到，只把它留到下一轮补读（读到的不重读）。
+  `params.missing` 列出还缺的 key；`loaded` = 接线核对与 #29a 那句要用的都读到了；`complete` = 全部读到（之后不再读）。
+  没读到的那一项记进 `wiring.unchecked`，`wiring.ok = null` —— **没核对过绝不算通过**；读回零地址算对不上。
+  升级过（`upgradeCount` 变了）或实现槽变了 → 清空重读。代币参数同理：`taxProcessor` / `marketAddress` /
+  `feeConfigV2` 任何一条没读到，`tokenParams.loaded = false`，`marketAddressOk` 保持 `null` 并每轮补读。
+- **地址上有代码、合约却一条核心读数都没返回**（ABI 对不上 / 代理地址填错 / 节点全挂）：记进
+  `state.bsc.failedContracts`（`overview().failedContracts`）。路由和桥**都**读不出 → 走错误路径：
+  `bsc.error = TEXT.NO_VAULT`（全是网络失败时是 `TEXT.ERR`），`status = 'error'`，上一轮的真数保留并标 `stale`，
+  不拿 `null` 盖掉；只有一个读不出 → 那一段（`treasury()` 看路由、`bridge()` / `ownerPowers()` 看桥、
+  `epoch()` 看锚点、`validators()` 看质押）是 `'error'`。非网络原因时告警 `contract_reads_failed`。
+- **ERC1967 实现槽每轮都读**（一条 `eth_getStorageAt`）：`upgradeCount` 是实现合约自己写的，owner 能装任何实现（#29），
+  所以不能拿它当「要不要重读」的信号。槽变了而同一轮的计数器没变 → `bridge().unloggedImplementationChanges` 记一条、
+  告警 `implementation_changed_unlogged`。时间线里单独的 `Upgraded` 只有和 `Initialized(1)` 同一笔交易才是初始实现
+  （`initial: true`），别的都是没留 `BridgeUpgraded` 的换实现（`unlogged: true`，同样告警）。
+  `ownerPowers().implementationMatchesLog`：时间线全了时，日志里最后一次换到的实现必须就是槽里那个（不全时 `null`）。
+- **时间线每条列表最多 `timelineMax` 条**：超了丢最旧的，`state.timeline.truncated[list]` 记下（这一页里补不回来），
+  `droppedThrough[list]` 是丢掉的最新那一块。`treasury().timelineComplete` 在流向或节点基金那条丢过时是 `false`
+  （另给 `timelineTruncated`）；`ownerPowers().complete` 在 owner 那条丢过时只能走索引器那条路，且要索引器游标 ≥ `droppedThrough`。
+- **Multicall3 探针只在 getCode 真的答了才下结论**（`'0x'` = 没有）；探针本身没答上 → 这一轮逐条读，退避到期再探。
+  逐条模式下 agent 名录每轮最多读 `plainDepositsPerTick`（40）笔存入（新的优先，没读全 `total = null`），
+  身份的定时整批复读停掉、只给新身份读几个（`agents().identityPaused = true`）；
+  推导的 BNB 缺口只在 `bnbBalance()` 与 `getEthBalance(bridge)` 出自同一块 `aggregate3`（同一区块）时才算，否则 `null`。
+- **总质押 / 奖励余额链上直读优先**：索引器的 `totalStaked` 是它已索引行的求和（摄取落后、没配 staking 时就是 `"0"`），
+  只在链上那条没读到、且本站配了 `staking` 时才顶上（`totalStakedSource` / `rewardBalanceSource` 标来源）。
+- **agent 名录只认索引器 v2**（`bac/agents/2`、`bac/summary/2`）：v1 数的是已删掉的 AgentRegistry，编号也不是 ERC-8004 身份号，
+  条目、总数、同号补数据一律不用。`status` 不是 `'ok'` 时 `total` / `totalAtLeast` / `counts` 一律 `null`。
+- **验证者奖池按「天」记**：`ValidatorStaking.epochReward(epoch)` 其实是 `dayReward(epoch / 144)`。数据层直接读
+  `dayReward(day)`，给 `validators().rewardDay / dayPot / dayWeight / daySettled`（最近一个上报纪元所在的那一天）；
+  合约里没有「每纪元的奖池」，`epochPot` / `epochSettled` 恒为 `null`。
+
 ## 视图模型（绑定层直接用这几个）
 
 每个都返回一个 `status`：`'pre' | 'loading' | 'error' | 'ok'`。
 
-`chainStats()` / `blocks()` / `txs()` 走 `layerStatus()`（**不看 `BAC.LIVE`**），
-其余都走 `statusOf()`（发射前一律 `'pre'`）。
+`chainStats()` / `blocks()` / `txs()` 走 `layerStatus()`（**不看 BSC 阶段**）；
+合约那一半走 `contractStatus()`，代币那一半走 `tokenStatus()`。
 
 ```js
 BAC.view.chainStats()   // 块高、实测出块间隔、gasLimit、baseFee、gasPrice、peers、txpool、source、endpoint、纪元、对账三件套
 BAC.view.feed(limit)    // 实时动态；每条自带 anchorNote 与 untrusted 标记
 BAC.view.blocks(limit)  // 最新区块
 BAC.view.txs(limit)     // 最新交易
-BAC.view.agents(opts)   // agent 名录 + 各状态计数；totalFromChain 是 BSC 上直接读的兜底
-BAC.view.treasury()     // 金库：50/50 两桶、金库真实余额、决策 #10 的披露原文
-BAC.view.bridge()       // 桥：锁仓/发行/退出/桥池/兑付率/暂停停机
-BAC.view.validators()   // 验证者 + 层内 gas 归集的「已收 / 已转入 / 差额」三元组
-BAC.view.epoch()        // 当前纪元、上报/定案进度、锚点详情、纪元历史
-BAC.view.overview()     // 整页横幅、警告、地址表
+BAC.view.stage()        // 三阶段 + 每个地址的代码探针结果 + 旧配置残留键
+BAC.view.token()        // 代币：CA（发射前就有）+ 发射后才有的名字 / 税率 / Portal 状态 / 价格 / 待分发税
+BAC.view.treasury()     // BacTaxRouter：50/50 两桶、路由余额与三桶、卡住的份额、流向时间线、节点基金时间线、#29a 披露原文
+BAC.view.bridge()       // 桥：锁仓 / 发行 / 退出 / BNB 账与实物 / 回购桶 / owner / 实现合约 / 升级与提取计数 / shortfall
+BAC.view.ownerPowers()  // 决策 #29c：owner 权力时间线（日志窗口 + 索引器全量历史合并；升级 / 初始化 / 紧急提取 / 换 owner / 暂停 / 逃生武装）+ 计数器对账
+BAC.view.agents(opts)   // ERC-8004 agent 名录：身份持有人 / agentWallet / tokenURI 自述 / 桥上积分；没有状态机
+BAC.view.validators()   // 验证者 + 层内 gas 归集的「已收 / 已转入 / 差额」三元组（来源：索引器 /api/health 的 gas 块）
+BAC.view.epoch()        // 当前纪元（600 秒）、firstEpoch、上报/定案进度（占位值已滤掉）、停机计时起点、锚点详情、纪元历史
+BAC.view.overview()     // 整页横幅、阶段、警告、地址表（带 vault 旧名别名 + ERC-8004 注册表 + Flap Portal）
 ```
 
+### 时间线为什么可能不全（照实说）
+
+公共节点只给最近一个窗口的日志（publicnode 实测约 6000 块 ≈ 45 分钟，之外报
+`Archive requests require a personal token`；bsc-dataseed 的 `eth_getLogs` 一律 `-32005`）。所以：
+
+- 首轮只扫最近 `logWindowBlocks`（5000）块；配置了 `deployBlock` 且它还在窗口里 → 从部署块扫起；
+  **只有真的从部署块扫到了链头**（`syncedTo ≥ head`，窗口比两块大时首轮追不上）、中间没有缺口，`complete` 才是 `true`；
+  日志 RPC 失败（一条都没看过）绝不算全；
+- 之后每轮只扫新块；标签页睡过头超过窗口 → 记进 `gaps`，`complete = false`；
+- owner 权力与节点基金那两条再合并**索引器** `GET /api/bridge/timeline`（`state.ownerTimeline`，形状与日志条目一致，
+  按 `tx:logIndex` 去重，日志窗口那条优先）。`ownerPowers().complete` 走索引器这条路时要**同时**满足：
+  历史里看得到部署那一刻（`Initialized`，或 owner 从零地址给出）、应答没被 `limit` 截断、
+  索引器的摄取游标（取发请求**之前**那次 `/api/health` 的值，偏保守）接得上日志窗口的起点、日志窗口这一轮扫到了链头；
+  `completeVia` 说是哪条路。索引器盯的桥 / 节点基金地址和配置对不上 → 一条都不用，告警 `indexer_address_mismatch`；
+  旧版索引器没有这个端点（404）→ `historyStatus = 'error'`，**不算索引器挂了**（4xx 一律不拉降级横幅）；
+- **升级与紧急提取**另有全量的合约计数器（`upgradeCount` / `emergencyCount` / 累计提取额 / 最近一次时间），
+  `ownerPowers().missing` 给出「计数器说 N 次、时间线里看到 M 次」的差，差不为 0 时页面必须写明并链到 `eventsUrl`（BscScan 事件页）。
+
+### agent 名录（决策 #31 / #31a）
+
+一个 agent = 一个锁进过桥的 ERC-8004 身份编号。来源是 `BacBridge.deposits(i)`（全量的链上记录，不靠日志；
+只读最近 `depositsMax` 笔并缓存），再对每个身份读注册表：`ownerOf`（没铸过的编号会 revert → `identityExists: false`）、
+`getMetadata(id, "agentWallet")`（**20 个裸字节**，别的长度一律 `null`）、`tokenURI`（持有人自述，只从 data: URI 里取
+`name` / `description`，`image` 只记有没有，**绝不把 URL 交给页面**；ipfs / https 的注册文件不去拉；gzip 的不解压）。
+v1 的 `status` / `statusName` / `statusZh` / 心跳 / 挑战这些字段一律 `null`。
+
 开关：`BAC.start()` / `BAC.stop()` / `BAC.refresh()`（三个都会带上 `BAC.layer`）；
-事件：`BAC.on('state'|'feed'|'blocks'|'layer'|'health'|'agents'|'validators'|'epochs'|'summary', fn)`，
+事件：`BAC.on('state'|'stage'|'timeline'|'feed'|'blocks'|'layer'|'health'|'agents'|'validators'|'epochs'|'summary', fn)`，
 `state` / `feed` / `blocks` / `layer` / `health` 会重放给迟到的监听者。
 
 ## RPC 层（逐字照抄 `docs/research/04-website-conventions.md` §1.3）
@@ -163,28 +254,44 @@ BAC.view.overview()     // 整页横幅、警告、地址表
 - 每个 URL 独立指数退避：`min(120000, 15000 × 2^(fails−1))`，退避中的排到健康节点后面，但**不彻底放弃**；
 - **revert 不换 RPC**（同一个 revert 在每个节点上都一样）；超时 / 限速 / HTML 响应才换；
 - Multicall3 `aggregate3`，分块 **80**，逐条判 `success`（失败那条的 key 是 `undefined`，不影响同批其它条）；
-  首次用 `getCode(0xcA11…CA11)` 探针，探不到就退回 6 并发的逐条 `eth_call`；整块失败也会退回逐条。
+  首次用 `getCode(0xcA11…CA11)` 探针：返回 `'0x'` 才判定没有、改 6 并发的逐条 `eth_call`；探针本身没答上（网络）
+  只影响这一轮，退避（5 秒起翻倍）到期再探；整块失败也会退回逐条。
 - 索引器用同一条退避公式，基数 5 秒（它是我们自己的服务，重试可以积极一点）；连续 **2** 次失败才宣布降级。
 
-## 与文档的已知分歧（按规矩：以 SPEC 为准，在这里记一笔）
+## 与文档的已知分歧（按规矩：以合约源码为准，在这里记一笔）
 
-1. **`ChainAnchor.Anchor` 结构**：本层按 `docs/01-CONTRACT-SPEC.md` §11.4 的 **15 字段**版本解码
-   （多了 `proposerIncomeRoot` / `gasFeesInEpoch` / `remittedInEpoch` / `proposerCount`）。
-   `contracts/src/ChainAnchor.sol` 目前仍是决策 #17 之前的 12 字段版本。
-   合约按 SPEC 改完之前，`getAnchor()` 这一条会解码失败 —— 它在 Multicall3 里是**单独一条**，
-   失败只会让锚点详情为空，不会拖垮同批其它读数。
-2. **`ValidatorStaking` 的 §11.5 增补**（`proposerRights` / `remitStatus` / `withheldOf` / `lastRemitEpoch`）
-   在 `contracts/src/ValidatorStaking.sol` 里还不存在，同理：单条失败 → 对应字段为 `null`。
-3. **`docs/03-INTERFACES.md` §3.7**（决策 #17 点名的「验证者 gas 对账」API 章节）**还没写**。
-   本层对 `/api/validators` 的每个条目按 `01 §11.5` 的字段名读 `cumOwed` / `cumRemitted` / `arrears` /
-   `shortfall` / `proposerRights` / `proposerAddr` / `qualifyStreak` / `withheld`：
-   **索引器没给就是 `null`，绝不猜、绝不用 0 顶替**。§3.7 定稿后如果字段名不同，改这一处 + 测试。
+1. **`ChainAnchor.Anchor` 结构**：本层按 `contracts/src/interfaces/IChainAnchor.sol` 的 **12 字段**解码。
+   SPEC §11.4 的 `proposerIncomeRoot` / `gasFeesInEpoch` / `remittedInEpoch` / `proposerCount` 合约里没有 → `null`；
+   SPEC 的 `cumulativeGasFees()` / `cumulativeRemitted()` 合约里也没有 → **不读**（以前每轮都 revert）。
+2. **`ValidatorStaking` 的 §11.5 增补**（`proposerRights` / `proposerAddressOf` / `qualifyStreak` / `remitStatus` /
+   `withheldOf` / `lastRemitEpoch`）在 `contracts/src/ValidatorStaking.sol` 里不存在 → **不读**，`lastRemitEpoch` 恒为 `null`。
+   决策 #17 的「已收 / 已转入 / 差额」因此只有一个真实来源：索引器 `/api/health` 的 `gas` 块（来自 FINAL 锚点，
+   单位层内 BAC）。索引器读不到、或一个 FINAL 锚点都还没有（`lastAnchoredEpoch = null`，那时的 `"0"` 是占位）→ `validators().gas = null`。
+   `unit.mjs` 的 `abi` 组用网站自带的真 ethers 把数据层每一条 ABI 和 `contracts/out` 逐条核对，再漂移就会红。
+3. **`docs/03-INTERFACES.md` §3.7** 还没写：`/api/validators` 的归集字段按 `01 §11.5` 的名字读，索引器没给就是 `null`。
+4. **索引器 v2 的字段名**（`indexer/src/api/handlers.js`）两版都认：
+   `/api/agents`（`bac/agents/2`）`creditsLocked` / `creditsExited` / `layerWallets[]` / `holder` / `identityExists` /
+   `registrationName`（→ `selfReported.name`，持有人自述）/ `lockCount`，旧名 `credited` / `exited` / `wallet` 兜底；
+   `/api/rate`（`bac/rate/2`）`bacPerCredit` / `buybackBac` / `unit`，旧名 `weiPerCredit` / `poolBalance` 兜底
+   （`state.rate` 两套键名都给，单位看 `unit`）；`/api/health` 的 `reconcile` 连同 `genesisSupply` / `genesisAlloc` /
+   `genesisAllocAccounts` / `genesisSource` / `note` 一起转交（公式里有 `genesisAlloc`，不给就看不出 diff = 0 是怎么来的）；
+   `GET /api/bridge/timeline` 见上面「时间线为什么可能不全」。v1 的状态字段一律作废成 `null`。
+5. `BacBridge.shortfall()` 在代币发射前会 revert（它要读代币余额）：此时 BNB 缺口由 `bnbBalance()` 与
+   `Multicall3.getEthBalance(bridge)` 两个真实读数推出（`shortfall.source = 'derived'`），BAC 缺口只在账面为 0 时确定为 0。
+6. **配置防御**：`rpcs` / `logRpcs` 写成字符串当一个的数组，乱写当空数组（以前字符串会让 `withRead` 同步抛出、整个 BSC 刷新停摆）；
+   没写 `logRpcs` 时从 `rpcs` 里挑、但**排除 bsc-dataseed**（它的 `eth_getLogs` 一律 `-32005`）。
+   接线核对里配置还没填的地址（`'0x0'`）算「没法核对」，不算对不上；`marketAddressOk` 在 router 没填时是 `null`。
+7. **`BacBridge.router()` 是 PancakeSwap V2 Router**（毕业后回购走外盘，`DeployBac.s.sol` 的 `BAC_PANCAKE_ROUTER`），
+   **不是** BacTaxRouter。数据层把它叫 `bridge.dexRouter`，接线核对拿它和 `C.PANCAKE_V2_ROUTER`
+   （`0x10ED43C718714eb63d5aA57B78B54704E256024E`，配置 `pancakeRouter` 可覆盖）比，报错名是 `bridge.dexRouter`；
+   税收那一侧照旧核对 `router.bridge` / `router.nodeFund`。
 
 ## 测试
 
 ```bash
-node artifacts/data-check/unit.mjs               # 全部（486 条）
-node artifacts/data-check/unit.mjs --only=layer  # shape|fmt|rpc|multicall|bsc|api|layer|degraded
+node artifacts/data-check/unit.mjs               # 全部（1238 条）
+node artifacts/data-check/unit.mjs --only=layer  # shape|fmt|rpc|multicall|config|stages|router|owner|agents|bsc|api|layer|degraded|review|release|abi
+node artifacts/data-check/unit.mjs --release     # 上线前：web/site.config.js 没有已锁定的代币地址（#35）或还有 v1 键就算失败
 ```
 
 `layer` 这一组用一个假的 Besu 节点（字段照真节点实测：`miner` 有值、`baseFeePerGas` 是 `0x0`、

@@ -1,7 +1,10 @@
 /* BNB Agent Chain · 站点配置（同步加载，必须排在 vendor/ethers 与 js/data/* 之前）
-   发射前所有合约地址都是 "0x0"：BAC.LIVE = isAddr(addresses.vault) 为 false，
-   页面上每一个链上数字都显示「发射后公布」，不许出现任何演示值。
-   发射当天只改这一个文件（写入 token / vault / 各合约地址 + flapUrl），然后重新部署。 */
+   v2（决策 #29 / #30 / #31）：没有 factory / vault / registry / vaultPortal 了。
+   税收先被 Flap 抽走 10% 协议费，剩下的进 BacTaxRouter（router），它按 50/50 推给 BacBridge 与 BacNodeFund。
+   发射前 BSC 侧所有合约地址都是 "0x0"：数据层（js/data/bac-core.js）判定合约没配，
+   页面上每一个 BSC 侧的数字都显示「发射后公布」，不许出现任何演示值。
+   合约部署当天只改 addresses 里的地址（+ deployBlock），然后重新部署网站。
+   artifacts/data-check/site.config.proposed.js 是数据层负责人拟换上的下一版（含已锁定的代币地址），换不换由他定。 */
 window.BAC_CONFIG = Object.assign({
   /* ── BSC 侧 ─────────────────────────────────────────── */
   chainId: 56,
@@ -22,9 +25,11 @@ window.BAC_CONFIG = Object.assign({
   fallbackRpc: 'https://95-179-183-132.sslip.io/rpc',
   fallbackApi: 'https://95-179-183-132.sslip.io',
   // 索引器 HTTP API（docs/03-INTERFACES.md §3）：历史、搜索、聚合从这里读。
-  // 索引器还没部署时，层内的块与交易由 js/data/bac-layer.js 直接读 layerRpc / fallbackRpc，
+  // 索引器读不到时，层内的块与交易由 js/data/bac-layer.js 直接读 layerRpc / fallbackRpc，
   // 照样是真数据 —— 「发射后公布」只留给 BSC 侧那些还不存在的合约。
   indexerBase: 'https://bnbagentchain-rpc.xyz',
+  // 现在出块的是演练链（HANDOFF §2）：创世预置测试 BAC、发射时用新创世重建。正式链上线那天改成 false。
+  rehearsal: true,
 
   /* ── 层内直读的节奏（链 3 秒一块，不许比它更快）───────── */
   layerPollMs: 6000,          // 索引器不在时：本站直接读 RPC 的轮询间隔
@@ -32,24 +37,25 @@ window.BAC_CONFIG = Object.assign({
   layerHiddenPollMs: 60000,   // 标签页切到后台：退到慢档
   layerTimeoutMs: 8000,
 
-  /* ── 合约地址（发射后填）────────────────────────────── */
+  /* ── 合约地址（部署后填）────────────────────────────── */
   addresses: {
-    factory: '0x0',   // BacVaultFactory
-    vault: '0x0',     // BacTreasuryVault（税收 BNB 的落点，50/50 分账）
     token: '0x0',     // BAC（Flap Tax Token V3）
-    bridge: '0x0',    // BacBridge
+    router: '0x0',    // BacTaxRouter（Flap 的 beneficiary，税收 BNB 的落点，50/50 推给桥与节点基金；无 owner、不可升级）
+    bridge: '0x0',    // BacBridge 的 ERC1967 代理地址（不是实现合约地址）：可升级，owner 可紧急提取全部桥池（决策 #29）
     nodeFund: '0x0',  // BacNodeFund（官方节点基金，owner 可提）
-    registry: '0x0',  // AgentRegistry
     anchor: '0x0',    // ChainAnchor
     staking: '0x0'    // ValidatorStaking
   },
+  // 上面这批合约部署所在的 BSC 块号；0 = 不知道
+  deployBlock: 0,
 
-  // Flap 官方地址（主网常量，不是我们的合约）
-  guardian: '0x9e27098dcD8844bcc6287a557E0b4D09C86B8a4b',
-  vaultPortal: '0x90497450f2a706f1951b5bdda52B4E5d16f34C06',
+  // BNB Chain / Flap 的主网常量（不是我们的合约；不写也行，数据层默认就是这两个）
+  identityRegistry: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432', // ERC-8004 身份注册表（决策 #31）
+  flapPortal: '0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0',       // Flap Portal（决策 #30）
 
   /* ── 站点链接（发射后填）────────────────────────────── */
   flapUrl: '',
-  x: '',
+  x: 'https://x.com/Bnbagentchain',
+  github: 'https://github.com/BnbAgentChainL2/bnb-agent-chain',
   siteUrl: 'https://bnbagentchain-scan.com'
 }, window.BAC_CONFIG || {});

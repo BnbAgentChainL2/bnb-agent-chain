@@ -52,12 +52,15 @@ window.BAC_CONFIG = Object.assign({
   // 0 = 不知道（时间线只标「最近窗口」）。部署脚本的回执里有。
   deployBlock: 0,
 
-  // BNB Chain / Flap 的主网常量（不是我们的合约；不写也行，数据层默认就是这两个）
+  // BNB Chain / Flap / PancakeSwap 的主网常量（不是我们的合约；不写也行，数据层默认就是这三个）
   identityRegistry: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432', // ERC-8004 Identity Registry（决策 #31）
   flapPortal: '0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0',       // Flap Portal v5.24.0（决策 #30）
+  // BacBridge.router()：毕业后回购走的 PancakeSwap V2 Router（DeployBac.s.sol 的 BAC_PANCAKE_ROUTER），不是 BacTaxRouter
+  pancakeRouter: '0x10ED43C718714eb63d5aA57B78B54704E256024E',
 
   /* ── 站点链接（发射后填）────────────────────────────── */
   flapUrl: '',
-  x: '',
+  x: 'https://x.com/Bnbagentchain',
+  github: 'https://github.com/BnbAgentChainL2/bnb-agent-chain',
   siteUrl: 'https://bnbagentchain-scan.com'
 }, window.BAC_CONFIG || {});

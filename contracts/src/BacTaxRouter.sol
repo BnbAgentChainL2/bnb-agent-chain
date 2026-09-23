@@ -34,8 +34,13 @@ import {ReentrancyGuard} from "@openzeppelin/security/ReentrancyGuard.sol";
 ///         rescue function, no setter of any kind — there is not one function here that checks
 ///         `msg.sender`. The only two addresses it can ever pay are the two immutables fixed at
 ///         construction. That is not true of what it pays INTO: the project can upgrade the bridge
-///         contract, change the rules, and take the entire bridge pool at any time (decision #29),
-///         and `description()` says so in the words the site and the X posts have to repeat.
+///         contract, change the rules, and take the entire bridge pool at any time (decision #29).
+///         `BacBridge.description()` says so in the words the site and the X posts have to repeat.
+///
+///         NO `description()` HERE (decision #32, "不写"). This contract is immutable and ownerless,
+///         so any text in it would be frozen forever; the mandatory disclosure of decision #29a
+///         lives in the upgradeable `BacBridge.description()` instead. The deploy script refuses a
+///         router that answers `description()`.
 ///
 ///         FAILURE IS BOOKED, NEVER SWALLOWED. If a push fails (a paused or reverting target) the
 ///         amount goes back into the book and into `stuckBridge` / `stuckNodeFund`, and anyone can
@@ -86,10 +91,12 @@ contract BacTaxRouter is ReentrancyGuard {
     /// @param bridge_   a deployed and initialised `BacBridge` proxy
     /// @param nodeFund_ a deployed `BacNodeFund`
     /// @dev Both downstreams must already exist and must already be bound to the same `bacToken_`.
-    ///      This constructor is the only place that check can be made. Flap's Portal accepts any
-    ///      `beneficiary` without looking at it (it even accepts address(0) — measured, research 12
-    ///      §2.4), and once BAC is launched this project has no way to change the beneficiary, so a
-    ///      router wired to the wrong pair would mean launching the token again.
+    ///      This constructor is the only place that check can be made. Flap's Portal does not
+    ///      check the `beneficiary` — any non-zero address is accepted, a wrong contract included;
+    ///      only the TaxProcessor's initializer refuses address(0) ("zero wallet1 address",
+    ///      measured on a mainnet fork) — and once BAC is launched this project has no way to
+    ///      change the beneficiary, so a router wired to the wrong pair would mean launching the
+    ///      token again.
     constructor(address bacToken_, address bridge_, address nodeFund_) {
         require(bacToken_ != address(0), unicode"Zero BAC token / BAC 代币地址为零");
         require(bridge_ != address(0) && nodeFund_ != address(0), unicode"Zero address / 地址为零");
@@ -199,30 +206,6 @@ contract BacTaxRouter is ReentrancyGuard {
         balance = address(this).balance;
         accounted = uint128(rev);
         buckets = (rev >> 128) + _stuckBridge + _stuckNodeFund;
-    }
-
-    /// @notice The on-chain disclosure (decisions #10, #24b, #29a, #31a). The bare Portal path gives
-    ///         the token itself no `description()`, so this is where the sentence that decision #29a
-    ///         makes mandatory lives. The site's first screen, the footer and the first reply under
-    ///         every X post must carry it word for word identical to the string below.
-    function description() external pure returns (string memory) {
-        return unicode"BNB Agent Chain (BAC) 交易税路由 BacTaxRouter。\n"
-        unicode"本合约是 BAC 代币在 flap 上填写的收款地址（beneficiary / marketingAddress）。"
-        unicode"Flap 协议先抽走 10% 协议费，到这里的是税后的约 0.90 倍；"
-        unicode"到账后按 50/50 分成两半：一半推给桥合约 BacBridge 的桥池，一半推给官方节点基金 BacNodeFund。"
-        unicode"分账比例写死在代码里，没有 setter。\n"
-        unicode"项目方可以随时升级桥合约、修改规则，并可随时取走桥池中的全部资金。\n"
-        unicode"官方节点基金这一半由 BacNodeFund 的 owner 随时提取，用于服务器与节点搭建。\n"
-        unicode"本路由合约自己没有 owner、没有管理员、没有升级入口、没有紧急提取，任何人都可以触发它的分账。\n"
-        unicode"入场要求持有 ERC-8004 agent 身份（我们读的是 ERC-8004 官方仓库列出的 BSC 注册表 "
-        unicode"0x8004A169FB4a3325136EB29fA0ceB6D2e539a432）。我们要求持有 agent 身份，我们不能证明它是 AI。\n"
-        unicode"退出拿到的是桥用 BNB 在市场上回购来的 BAC，比直接拿 BNB 多烧掉约 4%，退出者严格更亏。\n"
-        unicode"不承诺任何收益。\n"
-        unicode"EN: BacTaxRouter is the Flap tax beneficiary of BAC. It splits every BNB it receives "
-        unicode"50/50 between the bridge pool and the official node fund, holds nothing at rest and "
-        unicode"has no owner. The project can upgrade the bridge contract, change its rules, and "
-        unicode"withdraw the entire bridge pool at any time. Entry requires holding an ERC-8004 agent "
-        unicode"identity; that identity does not prove the holder is an AI.";
     }
 
     /* ------------------------------------------------------------------ */

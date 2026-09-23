@@ -345,8 +345,11 @@ export function applyEvent(ctx, ev) {
       break;
   }
 
-  // 渲染 feed。锚定与否：层内事件在它所属纪元被 FINAL 之前一律 anchored = 0。
-  const evEpoch = ev.epoch !== null ? ev.epoch : epochOf(ts);
+  // 渲染 feed。feed.epoch 一律是 600 秒的结算纪元（与 epochs 表同一个编号）：
+  //   层内按块时间算 —— AgentBook 事件自带的 epoch 是**天序号**（AgentBook.EPOCH = 86400），只进 actions.epoch；
+  //   BSC 事件自带的 epoch（ChainAnchor / BacBridge / ValidatorStaking 的 600 秒纪元）照用，没有就按块时间算。
+  // 锚定与否按**块高**判断，不比纪元号：层内这一块 ≤ 最新 FINAL 锚点承诺的 l2Block 才算已锚定。
+  const evEpoch = chain === "layer" ? epochOf(ts) : ev.epoch !== null ? ev.epoch : epochOf(ts);
   const { kind, textZh } = renderEvent({ ...ev, agentId: ev.agentId }, { bacToken: cfg && cfg.addresses && cfg.addresses.BacToken });
   feedPush(db, {
     uniq,
@@ -357,7 +360,7 @@ export function applyEvent(ctx, ev) {
     agentId: ev.agentId,
     textZh,
     tx: txh,
-    anchored: chain === "layer" ? isEpochFinal(db, evEpoch) : 1,
+    anchored: chain === "layer" ? isBlockAnchored(db, block) : 1,
     epoch: evEpoch,
   });
 
@@ -382,10 +385,14 @@ export function applyEvent(ctx, ev) {
   );
 }
 
-function isEpochFinal(db, epoch) {
-  if (epoch === null || epoch === undefined) return 0;
-  const row = db.prepare("SELECT state FROM epochs WHERE epoch = ?").get(Number(epoch));
-  return row && row.state === "FINAL" ? 1 : 0;
+/**
+ * 层内第 block 块是否已被 FINAL 锚点覆盖。锚点承诺的是 (l2Block, l2BlockHash)：块哈希链把它之前的每一块都钉死了，
+ * 所以「≤ 最新 FINAL 锚点的 l2Block」就是已锚定。**不许拿纪元号比**：两边的纪元单位一旦不一致
+ * （AgentBook 的天序号 vs ChainAnchor 的 600 秒纪元），第一个 FINAL 锚点就会把整条 feed 标成已锚定。
+ */
+export function isBlockAnchored(db, block) {
+  const through = anchoredThroughBlock(db);
+  return through !== null && Number(block) <= through ? 1 : 0;
 }
 
 /**
@@ -550,7 +557,7 @@ export function ingestLayerBlock(db, { block, receipts, cfg }) {
           agentId,
           textZh: renderDeploy({ agentId, address: created, codeSize }),
           tx: txh,
-          anchored: isEpochFinal(db, epochOf(ts)),
+          anchored: isBlockAnchored(db, number),
           epoch: epochOf(ts),
         });
       }
@@ -575,7 +582,7 @@ export function ingestLayerBlock(db, { block, receipts, cfg }) {
             agentId,
             textZh: renderCall({ agentId, address: to, deployerId: c.agent_id }),
             tx: txh,
-            anchored: isEpochFinal(db, epochOf(ts)),
+            anchored: isBlockAnchored(db, number),
             epoch: epochOf(ts),
           });
         }
@@ -600,12 +607,22 @@ export function agentIdOfWallet(db, wallet) {
   return row ? Number(row.agent_id) : null;
 }
 
-/** 纪元定案之后，把该纪元及更早的层内 feed 条目翻成 anchored = 1。 */
-export function markAnchored(db, throughEpoch) {
+/**
+ * 锚点定案之后，把层内块高 ≤ throughBlock（最新 FINAL 锚点的 l2Block）的 feed 条目翻成 anchored = 1。
+ * 按块高、不按纪元号（见 isBlockAnchored）。
+ */
+export function markAnchored(db, throughBlock) {
+  if (throughBlock === null || throughBlock === undefined) return 0;
   const info = db
-    .prepare("UPDATE feed SET anchored = 1 WHERE chain = 'layer' AND anchored = 0 AND epoch IS NOT NULL AND epoch <= ?")
-    .run(Number(throughEpoch));
+    .prepare("UPDATE feed SET anchored = 1 WHERE chain = 'layer' AND anchored = 0 AND block <= ?")
+    .run(Number(throughBlock));
   return Number(info.changes ?? 0);
+}
+
+/** 最新 FINAL 锚点承诺到的层内块高；还没有任何 FINAL 锚点时是 null。 */
+export function anchoredThroughBlock(db) {
+  const row = db.prepare("SELECT MAX(l2_block) AS b FROM epochs WHERE state = 'FINAL' AND l2_block IS NOT NULL").get();
+  return row && row.b != null ? Number(row.b) : null;
 }
 
 /** 已锚定到哪个纪元（/api/feed 的 anchoredThrough）。 */

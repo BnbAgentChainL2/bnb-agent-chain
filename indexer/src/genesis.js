@@ -12,7 +12,7 @@
 //   genesisAlloc   = Σ 创世 alloc 里 L2Bridge 以外的余额 （从来没有经过 BSC 桥的那部分）
 // 这两个数、以及 genesisAlloc 由哪些地址组成，全部原样返回；任何人拿公开的 genesis.json 就能复核。
 import { readFileSync, statSync } from "node:fs";
-import { getAddress } from "ethers";
+import { getAddress, keccak256, toUtf8Bytes } from "ethers";
 import { LAYER_SYSTEM_ADDRESSES, GENESIS_SUPPLY } from "./abi.js";
 
 let cache = { key: null, value: null };
@@ -60,6 +60,8 @@ export function parseGenesisAlloc(genesis) {
 /**
  * 读 cfg.genesisPath。文件没变就用缓存（按 mtime + size）。
  * 读不到 / 解析不了返回 null —— 调用方必须把「读不到」照实写出来，不许悄悄当成 0。
+ * hash 与 GET /api/genesis 的 X-Genesis-Hash 同一个算法（keccak256(utf8 文本)），对外公布的是它和 /api/genesis 这个地址；
+ * source（本机路径）只给进程内部用，**不许发到 API 里**（决策 #6：服务器上的路径含登录用户名）。
  */
 export function readGenesisAlloc(path) {
   if (!path) return null;
@@ -73,7 +75,8 @@ export function readGenesisAlloc(path) {
   if (cache.key === key) return cache.value;
   let value = null;
   try {
-    value = { ...parseGenesisAlloc(JSON.parse(readFileSync(path, "utf8"))), source: path };
+    const text = readFileSync(path, "utf8");
+    value = { ...parseGenesisAlloc(JSON.parse(text)), source: path, hash: keccak256(toUtf8Bytes(text)) };
   } catch {
     value = null;
   }
@@ -89,6 +92,7 @@ export function fallbackGenesis() {
     genesisAlloc: "0",
     accounts: [],
     source: null,
+    hash: null,
   };
 }
 

@@ -17,13 +17,17 @@
 
   /* ── 通用小件 ─────────────────────────────────────────── */
 
-  /** 整行占位：列表读不到时不留空表，明说为什么。 */
+  /** 整行占位：列表读不到时不留空表，明说为什么。
+      状态（「发射后公布」）和说明分成两段各自成行：两段各有各的译文，
+      拼成一个文本节点时英文里只剩一个空格，读起来是一句没标点的长句。
+      说明文字包在 .em-t 里：表格在手机上能横向滚动，说明不能跟着滚出视口（见 bac.css .tbl .empty）。 */
   function missRow(cols, status, extra) {
-    return '<tr class="empty"><td class="l" colspan="' + cols + '">' + esc(miss(status)) +
-      (extra ? '　' + esc(extra) : '') + '</td></tr>';
+    return '<tr class="empty"><td class="l" colspan="' + cols + '"><div class="em-t">' +
+      '<b class="em-st">' + esc(miss(status)) + '</b>' +
+      (extra ? '<span class="em-x">' + esc(extra) + '</span>' : '') + '</div></td></tr>';
   }
   function emptyRow(cols, text) {
-    return '<tr class="empty"><td class="l" colspan="' + cols + '">' + esc(text) + '</td></tr>';
+    return '<tr class="empty"><td class="l" colspan="' + cols + '"><div class="em-t">' + esc(text) + '</div></td></tr>';
   }
 
   function stTag(cls, text) { return '<span class="st-tag ' + cls + '">' + esc(text) + '</span>'; }
