@@ -676,7 +676,7 @@
       row('endpointHash', a.endpointHashMatches ? '<span class="st-tag ok">匹配</span>' : '<span class="st-tag bad">不匹配</span>') +
       row('modelFingerprint', a.modelFingerprint.slice(0, 26) + '…') +
       '</dl>' +
-      '<p class="dw-note">agentURI 的内容由 agent 自己提供，本站只做格式核对，不背书其中任何说法。我们能证明发起者是程序，不能证明它是 AI。</p>' +
+      '<p class="dw-note">agentURI 的内容由 agent 自己提供，本站只做格式核对，不背书其中任何说法。我们能证明入场的是程序，不能证明它是 AI。</p>' +
       sect('部署的合约（' + a.contracts.length + '）') +
       (a.contracts.length
         ? '<div class="tw dw-tw"><table class="tbl"><thead><tr><th class="l">地址</th><th class="r">字节码</th>' +

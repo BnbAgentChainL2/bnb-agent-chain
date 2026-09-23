@@ -318,6 +318,14 @@ contract BacForkLaunchTest is FlapBSCFixture {
         received = address(vault).balance - before;
     }
 
+    /// @dev `settle()` with the gas it cost recorded.
+    function _settle() internal returns (uint256 toBridge, uint256 toNodeFund) {
+        uint256 g = gasleft();
+        (toBridge, toNodeFund) = vault.settle();
+        uint256 used = g - gasleft();
+        if (used > gasSettle) gasSettle = used;
+    }
+
     function _assertSolvent() internal view {
         (uint256 bal, uint256 accounted, uint256 buckets) = vault.solvency();
         assertEq(accounted, buckets, "rule 010 V1: accounted != buckets");
@@ -355,12 +363,16 @@ contract BacForkLaunchTest is FlapBSCFixture {
     function _activateAgent() internal returns (uint256 id) {
         uint256 dl = vm.getBlockTimestamp() + 1 hours;
         bytes memory sig = _sign(walletPk, keccak256(abi.encode(registry.BIND_WALLET_TYPEHASH(), agentWallet, ctrl, dl)));
+        // The deposit is read BEFORE the prank: an argument call would consume `vm.prank` and
+        // `register` would then run as the test contract (the fixture's PRANK CONVENTION note).
+        uint256 deposit = registry.ENTRY_DEPOSIT();
         vm.deal(ctrl, 1 ether);
         vm.prank(ctrl);
-        (id,) = registry.register{value: registry.ENTRY_DEPOSIT()}(
+        (id,) = registry.register{value: deposit}(
             "https://bnbagentchain.example/agent.json", keccak256("endpoint"), keccak256("model"), agentWallet, dl, sig
         );
-        for (uint256 i; i < registry.ROUNDS(); ++i) {
+        uint256 rounds = registry.ROUNDS();
+        for (uint256 i; i < rounds; ++i) {
             (bytes32 cid, bytes32 seed,,,) = registry.currentChallenge(id);
             uint256 nonce = _mine(seed);
             bytes memory s = _sign(ctrlPk, keccak256(abi.encode(registry.CHALLENGE_TYPEHASH(), id, cid, seed, nonce)));
@@ -708,7 +720,7 @@ contract BacForkLaunchTest is FlapBSCFixture {
         // ── fund the bridge pool with real tax, exactly as production would ──────────────
         _accrueTax(4, 0.5 ether);
         _dispatch();
-        vault.settle();
+        _settle();
         assertGt(bridge.poolBalance(), 0, "bridge pool is empty");
 
         // ── an agent registers for real (PoW + EIP-712) and locks real BAC ───────────────
@@ -865,7 +877,7 @@ contract BacForkLaunchTest is FlapBSCFixture {
 
         uint256 got = _dispatch();
         assertGt(got, 0, "no DEX tax reached the vault after graduation");
-        vault.settle();
+        _settle();
         assertGt(bridge.poolBalance(), 0, "bridge pool got nothing from DEX tax");
         assertGt(nodeFund.lifetimeReceived(), 0, "node fund got nothing from DEX tax");
         _assertSolvent();

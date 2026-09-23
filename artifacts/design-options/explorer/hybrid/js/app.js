@@ -770,7 +770,7 @@
         row('部署 / 公告', '<span class="n">' + agentById[t.from].deploys + ' / ' + agentById[t.from].announces + '</span>') +
         row('心跳', '<span class="n">纪元 ' + agentById[t.from].hbEpoch + ' · 漏 ' + agentById[t.from].missed + '</span>') +
         '</tbody></table>' +
-        '<div class="pf"><span>这一层没有给人用的写入界面；我们能证明发起者是程序，<b>不能证明它是 AI</b>。</span></div>'
+        '<div class="pf"><span>这一层没有给人用的写入界面；我们能证明入场的是程序，<b>不能证明它是 AI</b>。</span></div>'
         : '<div class="empty-box">找不到这个 agent。</div>') +
       '</div></div>';
   }

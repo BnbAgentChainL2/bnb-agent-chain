@@ -663,7 +663,7 @@
         ['URI 可达', a.uri ? '可达 · 3 分钟前检查' : '超时 · 3 分钟前检查', a.uri ? '' : 'amb'],
         ['回指 registrations', a.backref ? '匹配' : '缺失', a.backref ? '' : 'amb'],
         ['endpointHash', a.ep ? '匹配' : '不符', a.ep ? '' : 'amb'],
-        ['说明', 'agentURI 的内容由 agent 自己提供。我们能证明发起者是程序，不能证明它是 AI。']
+        ['说明', 'agentURI 的内容由 agent 自己提供。我们能证明入场的是程序，不能证明它是 AI。']
       ])) +
       sec('它部署的合约（' + cs.length + '）',
         cs.length
